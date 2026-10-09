@@ -1,0 +1,70 @@
+{
+  "name": "Agentic Corporation HQ",
+  "_comment": "Edit me: move bots between rooms by moving their entry to another room's members list. Only names, roles and room membership belong here (no ids from other systems, no tokens). agent_id must be a unique lowercase slug.",
+  "rooms": [
+    {
+      "id": "dev_team",
+      "name": "Dev Team",
+      "color": "#4fc3f7",
+      "theme": "wood",
+      "desks": 6,
+      "members": [
+        {"agent_id": "android_dev", "name": "Android Dev", "role": "Android apps"},
+        {"agent_id": "ios_dev", "name": "iOS Dev", "role": "iOS apps"},
+        {"agent_id": "systems_architect", "name": "Systems Architect", "role": "Architecture"},
+        {"agent_id": "aws_devops", "name": "AWS DevOps", "role": "Cloud & CI"},
+        {"agent_id": "arch_diagrams", "name": "Arch Diagrams", "role": "Diagrams"},
+        {"agent_id": "product_manager", "name": "Product Manager", "role": "Roadmap"}
+      ]
+    },
+    {
+      "id": "admin_services",
+      "name": "Admin Services",
+      "color": "#81c784",
+      "theme": "sage",
+      "desks": 6,
+      "members": [
+        {"agent_id": "ea", "name": "EA", "role": "Executive assistant"},
+        {"agent_id": "finance_bot", "name": "Finance Bot", "role": "Finance"},
+        {"agent_id": "retirement", "name": "Retirement", "role": "Retirement planning"},
+        {"agent_id": "travel_advisor", "name": "Travel Advisor", "role": "Travel"},
+        {"agent_id": "support_desk", "name": "Support Desk", "role": "Customer support"},
+        {"agent_id": "odoo_bot", "name": "Odoo Bot", "role": "Odoo ERP"}
+      ]
+    },
+    {
+      "id": "special",
+      "name": "Special",
+      "color": "#ce93d8",
+      "theme": "lilac",
+      "desks": 6,
+      "members": [
+        {"agent_id": "chief_of_staff", "name": "Chief of Staff", "role": "Coordination"},
+        {"agent_id": "graphic_artist", "name": "Graphic Artist", "role": "Art & design"},
+        {"agent_id": "seo_aeo_desk", "name": "SEO & AEO Desk", "role": "Search visibility"},
+        {"agent_id": "outbound_prospecting", "name": "Outbound Prospecting", "role": "Outreach"},
+        {"agent_id": "dr_eggbot", "name": "DR eggbot", "role": "Bot designer"},
+        {"agent_id": "ai_research_g3_mn690", "name": "AI Research G3 - MN690", "role": "Research"}
+      ]
+    },
+    {
+      "id": "ptc",
+      "name": "Power Tech Consulting",
+      "color": "#ffb74d",
+      "theme": "navy",
+      "isolated": true,
+      "desks": 6,
+      "members": [
+        {"agent_id": "ptc_chief_of_staff", "name": "PTC Chief of Staff", "role": "Coordination"},
+        {"agent_id": "ptc_powerbrain", "name": "PTC PowerBrain", "role": "Knowledge"},
+        {"agent_id": "ptc_odoo", "name": "PTC Odoo", "role": "Odoo ERP"},
+        {"agent_id": "ptc_support_desk", "name": "PTC Support Desk", "role": "Support"},
+        {"agent_id": "ptc_arch_diagrams", "name": "PTC Arch Diagrams", "role": "Diagrams"}
+      ]
+    }
+  ],
+  "shared": {
+    "break_room": {"name": "Break Room"},
+    "meeting_room": {"name": "Meeting Room", "seats": 6}
+  }
+}

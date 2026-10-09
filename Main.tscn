@@ -1,9 +1,10 @@
-[gd_scene load_steps=7 format=3]
+[gd_scene load_steps=8 format=3]
 
 [ext_resource type="Script" path="res://Main.gd" id="1_main"]
 [ext_resource type="Script" path="res://Office.gd" id="2_office"]
 [ext_resource type="PackedScene" path="res://Agent.tscn" id="3_agent"]
 [ext_resource type="PackedScene" path="res://TerminalDrawer.tscn" id="4_drawer"]
+[ext_resource type="Script" path="res://CameraController.gd" id="5_camera"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_topbar"]
 bg_color = Color(0.11, 0.12, 0.15, 0.95)
@@ -21,6 +22,9 @@ corner_radius_bottom_left = 6
 script = ExtResource("1_main")
 agent_scene = ExtResource("3_agent")
 
+[node name="Camera2D" type="Camera2D" parent="."]
+script = ExtResource("5_camera")
+
 [node name="Office" type="Node2D" parent="."]
 script = ExtResource("2_office")
 
@@ -28,38 +32,16 @@ script = ExtResource("2_office")
 
 [node name="Waypoints" type="Node2D" parent="."]
 
-[node name="Desk_Coder" type="Marker2D" parent="Waypoints"]
-position = Vector2(190, 234)
-
-[node name="Desk_QA" type="Marker2D" parent="Waypoints"]
-position = Vector2(410, 234)
-
-[node name="Desk_Architect" type="Marker2D" parent="Waypoints"]
-position = Vector2(630, 234)
-
-[node name="Coffee_Machine" type="Marker2D" parent="Waypoints"]
-position = Vector2(902, 162)
-
-[node name="Water_Cooler" type="Marker2D" parent="Waypoints"]
-position = Vector2(1192, 162)
-
-[node name="Meeting_Table_1" type="Marker2D" parent="Waypoints"]
-position = Vector2(640, 492)
-
-[node name="Meeting_Table_2" type="Marker2D" parent="Waypoints"]
-position = Vector2(780, 492)
-
-[node name="Meeting_Table_3" type="Marker2D" parent="Waypoints"]
-position = Vector2(640, 660)
-
-[node name="Meeting_Table_4" type="Marker2D" parent="Waypoints"]
-position = Vector2(780, 660)
-
-[node name="Entrance" type="Marker2D" parent="Waypoints"]
-position = Vector2(131, 682)
-
-[node name="Agents" type="Node2D" parent="."]
+[node name="World" type="Node2D" parent="."]
 y_sort_enabled = true
+
+[node name="Props" type="Node2D" parent="World"]
+y_sort_enabled = true
+
+[node name="Agents" type="Node2D" parent="World"]
+y_sort_enabled = true
+
+[node name="Signs" type="Node2D" parent="."]
 
 [node name="HUD" type="CanvasLayer" parent="."]
 layer = 5
@@ -69,6 +51,7 @@ anchors_preset = 10
 anchor_right = 1.0
 offset_bottom = 46.0
 grow_horizontal = 2
+mouse_filter = 1
 theme_override_styles/panel = SubResource("StyleBoxFlat_topbar")
 
 [node name="Margin" type="MarginContainer" parent="HUD/TopBar"]
@@ -84,7 +67,7 @@ theme_override_constants/separation = 10
 layout_mode = 2
 theme_override_colors/font_color = Color(0.31, 0.76, 0.97, 1)
 theme_override_font_sizes/font_size = 17
-text = "AGENT OFFICE  ·  Mission Control"
+text = "AGENT OFFICE"
 
 [node name="VSeparator" type="VSeparator" parent="HUD/TopBar/Margin/HBox"]
 layout_mode = 2
@@ -107,10 +90,34 @@ clip_text = true
 layout_mode = 2
 theme_override_constants/separation = 6
 
-[node name="Hint" type="Label" parent="HUD/TopBar/Margin/HBox"]
+[node name="BottomBar" type="HBoxContainer" parent="HUD"]
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 12.0
+offset_top = -26.0
+offset_right = -12.0
+offset_bottom = -6.0
+grow_horizontal = 2
+grow_vertical = 0
+mouse_filter = 2
+
+[node name="Counts" type="Label" parent="HUD/BottomBar"]
 layout_mode = 2
-theme_override_colors/font_color = Color(0.55, 0.58, 0.64, 1)
-theme_override_font_sizes/font_size = 11
-text = "click an agent"
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.92, 0.93, 0.96, 1)
+theme_override_colors/font_outline_color = Color(0.08, 0.09, 0.12, 1)
+theme_override_constants/outline_size = 4
+theme_override_font_sizes/font_size = 12
+text = ""
+
+[node name="Hint" type="Label" parent="HUD/BottomBar"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.92, 0.93, 0.96, 0.9)
+theme_override_colors/font_outline_color = Color(0.08, 0.09, 0.12, 1)
+theme_override_constants/outline_size = 4
+theme_override_font_sizes/font_size = 12
+text = "drag / WASD: pan  ·  wheel: zoom  ·  F: fit  ·  click a person or a room sign"
 
 [node name="TerminalDrawer" parent="." instance=ExtResource("4_drawer")]
