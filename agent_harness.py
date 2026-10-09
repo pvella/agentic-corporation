@@ -23,6 +23,16 @@ Two runner modes:
                 process start/exit to WORKING/IDLE. Agents without a command fall
                 back to the mock runner.
 
+  --mode live   No simulation at all: agents only move on real status reports
+                (the MCP tool below) and on CLI runs bound with --agent-cmd.
+
+Live status over MCP: unless --no-mcp is given, office_mcp.py serves a remote
+MCP connector (Streamable HTTP) at http://127.0.0.1:8766/mcp with one tool,
+report_office_status(agent, action, detail). Every request needs
+"Authorization: Bearer <token>" (env OFFICE_MCP_TOKEN, or the token generated
+into .office_token on first run). In mock mode an agent that reports for real
+is left alone by the simulation for --live-hold seconds (default 600).
+
 Examples:
   python3 agent_harness.py
   python3 agent_harness.py --mode cli \
@@ -114,6 +124,13 @@ class Agent:
     activity_until: float = 0.0
     next_event_at: float = 0.0
     thinking_until: float = 0.0
+    # Real status reports (MCP): the simulation leaves the agent alone until
+    # this time.monotonic() value; live_reports counts them.
+    live_until: float = 0.0
+    live_reports: int = 0
+
+    def is_live(self) -> bool:
+        return time.monotonic() < self.live_until
 
     def to_json(self, include_logs: bool = True) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -128,6 +145,7 @@ class Agent:
             "text": self.text,
             "busy": self.lock.locked(),
             "queued": self.queue.qsize(),
+            "live": self.is_live(),
         }
         if include_logs:
             data["logs"] = list(self.logs)
@@ -151,6 +169,7 @@ class Hub:
         self.agents: dict[str, Agent] = {}
         self.clients: set[ServerConnection] = set()
         self.dispatcher: Callable[[str, str], Awaitable[None]] | None = None
+        self.live_hold = 600.0  # seconds a real report keeps the simulation off an agent
 
     # -- registry ----------------------------------------------------------
     def register(self, agent_id: str, name: str, desk: str, color: str, role: str = "", **extra: Any) -> Agent:
@@ -217,6 +236,61 @@ class Hub:
         if text:
             event["text"] = text
         self.emit(event)
+
+    # -- live status reports (office_mcp.py) ---------------------------------
+    def find_agent(self, name: str) -> Agent | None:
+        """Matches a bot by display name or agent_id, case-insensitively and
+        ignoring extra whitespace / '-' vs '_' in ids."""
+        key = " ".join(str(name).split()).casefold()
+        if not key:
+            return None
+        for agent in self.agents.values():
+            if key in (agent.name.casefold(), agent.agent_id.casefold()):
+                return agent
+        slug = re.sub(r"[\s-]+", "_", key)
+        for agent in self.agents.values():
+            if slug == agent.agent_id or slug == re.sub(r"[\s-]+", "_", agent.name.casefold()):
+                return agent
+        return None
+
+    def agent_names(self) -> list[str]:
+        return [a.name for a in self.agents.values()]
+
+    def apply_report(self, agent: Agent, action: str, detail: str = "") -> None:
+        """Turns one real status report into the usual office events."""
+        aid = agent.agent_id
+        agent.live_until = time.monotonic() + self.live_hold
+        agent.live_reports += 1
+        # The ambient director resumes from a clean desk session afterwards.
+        agent.thinking_until = 0.0
+        if action == "start_task":
+            text = detail or "Starting a task"
+            self.log_line(aid, f"\x1b[1;36m\u25b6 {text}\x1b[0m")
+            self.state(aid, "WORKING", target=agent.desk, text=text)
+            agent.activity = "desk"
+        elif action == "thinking":
+            text = detail or "Thinking..."
+            self.log_line(aid, f"\x1b[33m\u2026 {text}\x1b[0m")
+            self.state(aid, "THINKING", target=agent.desk, text=text)
+            agent.activity = "desk"
+        elif action == "run_tool":
+            text = detail or "Running a tool"
+            self.log_line(aid, f"\x1b[2m$ {text}\x1b[0m")
+            self.state(aid, "WORKING", target=agent.desk, text=text)
+            agent.activity = "desk"
+        elif action == "finish":
+            self.log_line(aid, f"\x1b[1;32m\u2714 Done:\x1b[0m {detail}" if detail else "\x1b[1;32m\u2714 Done\x1b[0m")
+            spot = random.choice(agent.break_spots)
+            self.state(aid, "IDLE", target=spot, text="Done! Coffee time." if "Coffee" in spot else "Done!")
+            agent.activity = "break"
+        elif action == "error":
+            text = detail or "Something went wrong"
+            self.log_line(aid, f"\x1b[1;31m\u2716 Error:\x1b[0m {text}", stream="stderr")
+            self.state(aid, "ERROR", target=agent.desk, text=text)
+            agent.activity = "desk"
+        else:
+            raise ValueError(f"unknown action {action!r}")
+        log.info("live report %s %s: %s", aid, action, detail)
 
     # -- connection handling ----------------------------------------------
     async def handler(self, ws: ServerConnection, *_legacy_path: Any) -> None:
@@ -530,7 +604,25 @@ class AmbientDirector:
         agent.next_event_at = now + self.rand(self.tempo.chat_every)
 
     def free(self, agent: Agent) -> bool:
+        if agent.live_until:
+            if agent.is_live():
+                return False  # real status reports own this agent for now
+            self.resume(agent)
         return self.agent_filter(agent) and not agent.lock.locked() and agent.queue.empty()
+
+    def resume(self, agent: Agent) -> None:
+        """The live hold ran out: pick the simulation back up from where the
+        last real report left the agent (a short linger, then the usual cycle)."""
+        agent.live_until = 0.0
+        now = self.now()
+        agent.thinking_until = 0.0
+        if agent.activity not in ("desk", "break"):
+            agent.activity = "desk"
+        span = self.tempo.break_time if agent.activity == "break" else self.tempo.work
+        agent.activity_until = now + self.rand(span) * 0.5
+        agent.next_event_at = now + self.rand(self.tempo.log_every)
+        if agent.state == "ERROR":
+            self.hub.state(agent.agent_id, "WORKING", text="Back to it.")
 
     async def run(self) -> None:
         while True:
@@ -878,12 +970,18 @@ class Harness:
         unknown = set(commands) - set(self.hub.agents)
         if unknown:
             raise SystemExit(f"--agent-cmd refers to unknown agents: {', '.join(sorted(unknown))}")
+        self.hub.live_hold = max(0.0, float(args.live_hold))
         self.cli = CliRunner(self.hub, commands, args.prompt_mode, args.cwd, args.cmd_timeout) \
-            if args.mode == "cli" else None
+            if args.mode in ("cli", "live") else None
         if self.cli is not None and not commands:
             log.warning("--mode cli without any --agent-cmd: every agent uses the mock runner")
         self.tasks: list[asyncio.Task[Any]] = []
+        self.stop_event: asyncio.Event | None = None
+        self.mcp_server: Any = None  # office_mcp.OfficeMCP when enabled
         self.tempo = TEMPOS[args.tempo]
+        if args.mode == "live":
+            for agent in self.hub.agents.values():  # seated, screens off, until a real report
+                agent.state, agent.target, agent.activity = "IDLE", agent.desk, "desk"
         ambient_on = (args.mode == "mock" and not args.no_ambient) or (args.mode == "cli" and args.ambient)
         self.director: AmbientDirector | None = None
         if ambient_on:
@@ -900,6 +998,12 @@ class Harness:
             prompt = await agent.queue.get()
             async with agent.lock:
                 runner = self.cli if (self.cli and self.cli.handles(agent.agent_id)) else self.mock
+                if self.args.mode == "live" and runner is self.mock:
+                    self.hub.log_line(agent.agent_id, f"\x1b[1;36m> {prompt}\x1b[0m")
+                    self.hub.log_line(agent.agent_id, "\x1b[33m(live mode: no command bound to this agent, "
+                                                      "the prompt was not run)\x1b[0m")
+                    agent.queue.task_done()
+                    continue
                 try:
                     await runner.run_prompt(agent, prompt)
                 except asyncio.CancelledError:
@@ -915,12 +1019,12 @@ class Harness:
 
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
-        stop = loop.create_future()
+        self.stop_event = stop = asyncio.Event()
 
         def request_stop(signame: str) -> None:
-            if not stop.done():
+            if not stop.is_set():
                 log.info("received %s, shutting down...", signame)
-                stop.set_result(None)
+                stop.set()
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
@@ -942,8 +1046,12 @@ class Harness:
                          len(self.hub.office["rooms"]), len(self.hub.agents))
             else:
                 log.info("legacy office, agents: %s", ", ".join(self.hub.agents))
-            await stop
+            if self.args.mcp_port:
+                await self.start_mcp()
+            await stop.wait()
             server.close()
+            if self.mcp_server is not None:
+                await self.mcp_server.stop()
         # Cleanup
         pending = list(self.tasks)
         for t in pending:
@@ -952,6 +1060,27 @@ class Harness:
         if self.cli:
             await self.cli.shutdown()
         log.info("bye")
+
+    async def start_mcp(self) -> None:
+        try:
+            import office_mcp
+        except ImportError as exc:  # the 'mcp' package is missing
+            log.warning("MCP connector disabled (%s). Install it with: pip install -r requirements.txt", exc)
+            return
+        token, source, created = office_mcp.load_token(self.args.mcp_token_file)
+        self.mcp_server = office_mcp.OfficeMCP(self.hub, token, rate_per_min=self.args.mcp_rate)
+        await self.mcp_server.start(self.args.mcp_host, self.args.mcp_port)
+        log.info("MCP connector on http://%s:%d/mcp (tool: report_office_status; bearer token from %s)",
+                 self.args.mcp_host, self.mcp_server.port, source)
+        if created:
+            # Shown once, when the token is first generated.
+            print(f"\n  New MCP token saved to {source} (chmod 600):\n\n    {token}\n\n"
+                  "  Use it as the connector's header:  Authorization: Bearer <token>\n", flush=True)
+
+    def request_stop(self) -> None:
+        """Stops run() (used by tests and embedders)."""
+        if self.stop_event is not None:
+            self.stop_event.set()
 
 
 def parse_agent_cmd(value: str) -> tuple[str, str]:
@@ -970,7 +1099,9 @@ def build_parser() -> argparse.ArgumentParser:
                                 formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8765)
-    p.add_argument("--mode", choices=("mock", "cli"), default="mock")
+    p.add_argument("--mode", choices=("mock", "cli", "live"), default="mock",
+                   help="mock: simulated office (real MCP reports override it per agent); cli: real commands; "
+                        "live: no simulation, agents only move on real reports / CLI runs")
     p.add_argument("--agent-cmd", action="append", type=parse_agent_cmd, metavar="AGENT_ID='CMD'",
                    help="bind a shell command to an agent (cli mode); repeatable. Use {prompt} as a placeholder")
     p.add_argument("--prompt-mode", choices=("arg", "stdin", "none"), default="arg",
@@ -985,6 +1116,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--speed", type=float, default=1.0, help="time multiplier for ambient tempo and mock prompt runs (2 = twice as fast)")
     p.add_argument("--no-ambient", action="store_true", help="mock mode: disable ambient simulation")
     p.add_argument("--ambient", action="store_true", help="cli mode: simulate agents that have no command")
+    p.add_argument("--mcp-port", type=int, default=8766,
+                   help="port for the MCP connector at /mcp (default 8766; 0 = off)")
+    p.add_argument("--no-mcp", dest="mcp_port", action="store_const", const=0, help="disable the MCP connector")
+    p.add_argument("--mcp-host", default="127.0.0.1",
+                   help="MCP bind address (default 127.0.0.1; Tailscale Funnel proxies to localhost)")
+    p.add_argument("--mcp-token-file", default=None, metavar="PATH",
+                   help="where the generated token is kept (default .office_token next to this script); "
+                        "env OFFICE_MCP_TOKEN wins if set")
+    p.add_argument("--mcp-rate", type=int, default=60,
+                   help="max MCP requests per minute per token (default 60, bursts up to 20)")
+    p.add_argument("--live-hold", type=float, default=600.0, metavar="SECONDS",
+                   help="after a real status report the simulation leaves that agent alone this long (default 600)")
     p.add_argument("-v", "--verbose", action="store_true")
     return p
 
@@ -993,6 +1136,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     args = build_parser().parse_args(list(argv) if argv is not None else None)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s", datefmt="%H:%M:%S")
+    if not args.verbose:  # the MCP SDK logs every stateless request at INFO
+        for name in ("mcp", "uvicorn", "uvicorn.error"):
+            logging.getLogger(name).setLevel(logging.WARNING)
     try:
         asyncio.run(Harness(args).run())
     except OSError as exc:

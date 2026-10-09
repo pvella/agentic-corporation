@@ -25,7 +25,7 @@ A small Python **event bridge** (`agent_harness.py`) drives the office over a lo
 
 ## Quick start
 
-> **macOS shortcut:** double-click `run-mac.command` to create the venv on first run, start the bridge and open the Godot client (needs `godot` on your PATH, e.g. `brew install --cask godot`). The bridge stops when you close the game.
+> **macOS shortcut:** double-click `run-mac.command` to create the venv on first run (Python 3.10+; it picks the newest `python3.x` it finds), start the bridge with the MCP connector on port 8766, print where the token is, and open the Godot client (needs `godot` on your PATH, e.g. `brew install --cask godot`). The bridge stops when you close the game. It reinstalls the requirements whenever `requirements.txt` changes.
 
 ### 1. Run the harness
 
@@ -82,7 +82,7 @@ python3 agent_harness.py --mode cli --prompt-mode none \
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--mode mock\|cli` | `mock` | Choose the runner. |
+| `--mode mock\|cli\|live` | `mock` | Choose the runner. `live` = no simulation at all: agents only move on real status reports (MCP) and CLI runs. |
 | `--agent-cmd ID='CMD'` | none | Bind a command to an agent (repeatable, cli mode). |
 | `--prompt-mode arg\|stdin\|none` | `arg` | How the prompt reaches the command when `{prompt}` isn't used. |
 | `--cwd DIR` | current directory | Working directory for CLI commands. |
@@ -91,7 +91,12 @@ python3 agent_harness.py --mode cli --prompt-mode none \
 | `--tempo calm\|normal\|busy` | `calm` | Background activity level (see the table above). |
 | `--speed X` | `1.0` | Time multiplier for background activity and mock prompt runs. |
 | `--no-ambient` / `--ambient` | | Turn background activity off (mock mode) or on for agents without a command (cli mode). |
-| `--host` / `--port` | `127.0.0.1` / `8765` | Listen address. |
+| `--host` / `--port` | `127.0.0.1` / `8765` | WebSocket listen address (the Godot client). |
+| `--mcp-port N` / `--no-mcp` | `8766` | Port of the MCP connector at `/mcp` (see "Live status from Grok Bot"); `--no-mcp` or `0` turns it off. |
+| `--mcp-host` | `127.0.0.1` | MCP bind address. Leave it on localhost; Tailscale Funnel proxies to it. |
+| `--mcp-token-file PATH` | `.office_token` next to the script | Where the generated bearer token is kept. `OFFICE_MCP_TOKEN` in the environment wins. |
+| `--mcp-rate N` | `60` | Max MCP requests per minute per token (bursts of up to 20); extra calls get HTTP 429. |
+| `--live-hold SECONDS` | `600` | After a real report, the simulation leaves that agent alone this long. |
 | `-v` | | Debug logging. |
 
 In cli mode, agents without a `--agent-cmd` fall back to the mock runner when given a prompt. Prompts for the same agent are queued and run one at a time. Ctrl+C shuts down cleanly and kills any running process groups (SIGTERM, then SIGKILL after 3 s).
@@ -150,6 +155,99 @@ Options after `--`:
 
 If you switch the same checkout between Godot 4.3 and 4.4+, run `godot --headless --path . --import` with the version you are about to use: the two write incompatible `.godot/` class caches.
 
+## Live status from Grok Bot (MCP)
+
+Your real bots can drive their own characters. The harness also serves a small **remote MCP connector** (Streamable HTTP, built on the official `mcp` Python SDK) with one tool, `report_office_status`. A cloud-hosted bot calls it over the internet through **Tailscale Funnel** on your Mac, and its character reacts straight away.
+
+```
+Grok Bot (cloud) --HTTPS--> https://<mac>.<tailnet>.ts.net/mcp --Funnel--> 127.0.0.1:8766/mcp --> harness --WebSocket :8765--> Godot
+```
+
+| | |
+|---|---|
+| Endpoint (local) | `http://127.0.0.1:8766/mcp` (POST JSON-RPC; `--mcp-port` changes the port) |
+| Endpoint (public) | `https://<your-mac>.<your-tailnet>.ts.net/mcp` once Funnel is on |
+| Auth | Every request needs the header `Authorization: Bearer <token>`. Anything else gets HTTP 401. |
+| Token | `OFFICE_MCP_TOKEN` from the environment, or generated on first run into `.office_token` (chmod 600, git-ignored) and printed once. Read it again with `cat .office_token`; delete the file and restart to rotate it. |
+| Transport | MCP Streamable HTTP, stateless, JSON responses (protocol 2025-03-26 and later). `GET` and `DELETE` return 405 because there are no server-push streams or sessions. |
+
+### The tool
+
+`report_office_status(agent, action, detail)`
+
+- `agent` (required): the bot's name exactly as in `office.json`, e.g. `"Android Dev"`. Matching ignores case and extra spaces, and the `agent_id` (`android_dev`) works too. An unknown name returns a tool error that lists every valid name.
+- `action` (required): one of the values below.
+- `detail`: one short sentence. Control characters and ANSI codes are stripped, and it's cut to 200 characters.
+
+| `action` | What the character does |
+|---|---|
+| `start_task` | Walks to its desk and starts typing (`WORKING`); `detail` appears as a bubble and a `▶` line in its terminal. |
+| `thinking` | At the desk, scratching its head with a thought bubble (`THINKING`). |
+| `run_tool` | Keeps working at the desk; `detail` goes in the bubble and as a `$ ...` line in the terminal. |
+| `finish` | Logs `✔ Done`, then heads off for a break (its room's break spots: the shared break room, or the PTC wing's own kitchenette). |
+| `error` | Stays at the desk with a red monitor, a pulsing red `!` and a red ring (`ERROR`); the HUD counts errors. The next report clears it. |
+
+The result is just `ok`.
+
+### Mixed and live modes
+
+- **Mock mode (default):** everyone is simulated, but as soon as a bot reports for real the simulation leaves **that** agent alone for 10 minutes after its latest report (`--live-hold`), so real status is never overwritten. Everyone else keeps the calm simulation. When the hold runs out, the simulation picks up again from where the bot left off.
+- **Live mode (`--mode live`):** no simulation at all. Everyone starts seated with their screens off and only moves on real reports (or on CLI runs bound with `--agent-cmd`). Prompts typed into the dashboard for agents without a command are logged, not run.
+
+```bash
+python3 agent_harness.py                    # simulated office + live overrides, MCP on :8766
+python3 agent_harness.py --mode live        # only real reports move people
+python3 agent_harness.py --no-mcp           # no connector
+```
+
+If the harness (or the Mac, or Funnel) is down, the bots' calls simply fail. Nothing is queued, and the instruction below tells the bots to ignore the failure and carry on.
+
+### Expose it with Tailscale Funnel
+
+One-time setup:
+
+1. Install Tailscale on the Mac and log in.
+2. In the tailnet admin console, enable **MagicDNS** and **HTTPS certificates**, and allow **Funnel** for this device (the policy needs the `funnel` node attribute). The first `tailscale funnel` command prints a link to do this if it isn't allowed yet.
+
+Then, with the harness running:
+
+```bash
+tailscale funnel --bg 8766          # or: tools/funnel-mac.sh on
+tailscale funnel status             # shows https://<mac>.<tailnet>.ts.net -> http://127.0.0.1:8766
+```
+
+The connector URL is `https://<mac>.<tailnet>.ts.net/mcp` (`tools/funnel-mac.sh url` prints it). `--bg` keeps Funnel on across reboots until you turn it off:
+
+```bash
+tailscale funnel --https=443 off    # or: tools/funnel-mac.sh off
+tailscale funnel reset              # clears every serve/funnel setting on this Mac
+```
+
+Only port 8766 is exposed. The WebSocket (8765) stays on localhost.
+
+### Connect your bots
+
+Add a remote MCP connector in Grok Bot with:
+
+- **URL:** `https://<mac>.<tailnet>.ts.net/mcp`
+- **Header:** `Authorization: Bearer <token>` (the contents of `.office_token`)
+
+Then add this to each bot's instructions, with its own name:
+
+> Whenever you start a task, make real progress, or finish/fail a job, call report_office_status with agent="<your name>" and a one-sentence detail. If the call fails, ignore it and carry on.
+
+Test it from a terminal first:
+
+```bash
+TOKEN=$(cat .office_token)
+curl -s https://<mac>.<tailnet>.ts.net/mcp \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" -H "MCP-Protocol-Version: 2025-03-26" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"report_office_status",
+       "arguments":{"agent":"Android Dev","action":"start_task","detail":"Building the release APK"}}}'
+# {"jsonrpc":"2.0","id":1,"result":{"content":[{"text":"ok","type":"text"}],"isError":false}}
+```
+
 ## Controls
 
 | Input | Action |
@@ -172,7 +270,8 @@ There is no packaged build or store listing yet. Agentic Corporation is a **loca
 
 ## Stack
 
-- **Harness:** Python 3.10+, `asyncio` and `websockets` (13 or newer, using the `websockets.asyncio` API, with a fallback to the legacy API for version 12). Tested with websockets 17.2 on Python 3.13.
+- **Harness:** Python 3.10+, `asyncio` and `websockets` (13 or newer, using the `websockets.asyncio` API, with a fallback to the legacy API for version 12). Tested with websockets 17.2 on Python 3.13 and 3.14.
+- **MCP connector:** the official `mcp` Python SDK (2.3; `MCPServer` with the Streamable HTTP transport, served by uvicorn inside the harness's event loop). It is optional: without the package the harness logs a warning and runs without the connector.
 - **Client:** Godot 4.3+ in typed GDScript, using the GL Compatibility renderer. There are no external assets: all art is drawn procedurally in code (see [CREDITS.md](CREDITS.md)). Tested on **Godot 4.3-stable and 4.7.2-stable** (Linux).
 
 ## Components
@@ -181,7 +280,8 @@ There is no packaged build or store listing yet. Agentic Corporation is a **loca
 |---|---|
 | `agent_harness.py` | WebSocket server. Holds the agent registry and broadcasts every event. Loads `office.json`, includes `MockRunner` (role-flavoured scripted runs), `AmbientDirector` (the tempo-driven background simulation), `CliRunner` (wraps a real process and streams its output) and a per-agent prompt queue. |
 | `office.json` | Rooms, members and shared spaces (see "Editing office.json"). |
-| `requirements.txt` | Python dependency (`websockets>=13`). |
+| `office_mcp.py` | The MCP connector: `report_office_status` tool, bearer-token check, rate limits, token file. Started by the harness. |
+| `requirements.txt` | Python dependencies (`websockets>=13`, `mcp>=2.3,<3`). |
 | `project.godot` | Godot project settings: 1280x800, resizable (stretch `canvas_items`, aspect `expand`), GL Compatibility, main scene `Main.tscn`. |
 | `Main.tscn` / `Main.gd` | The office scene. Builds the office from `OFFICE_LAYOUT` (or the legacy layout), creates the waypoints, furniture, room signs and navigation, runs the `WebSocketPeer` client with automatic retry, routes messages, assigns seats and spreads agents at shared spots, and drives the HUD. |
 | `Office.gd` | The layout builder and floor painter: turns the config into rooms, doors, walls, the corridor and wings, desks, amenities, waypoints, signs and the navigation outlines, and draws floors, walls and signs. |
@@ -195,7 +295,9 @@ There is no packaged build or store listing yet. Agentic Corporation is a **loca
 | `tests/test_ansi.gd` | Headless unit tests for the colour converter. |
 | `tests/smoke_test.gd` | Headless integration test that loads `Main.tscn` and feeds it protocol messages (legacy office and the team-room office). |
 | `tests/fixtures/office_layout.json` | The `OFFICE_LAYOUT` the harness sends for the default `office.json`, used by the smoke test. |
+| `tests/test_office_mcp.py` | Python unit tests for the MCP connector (auth, tools/list, tool calls reaching a WebSocket client, unknown agents, truncation, mixed and live modes, rate limit, token file). |
 | `tools/test_client.py` | Python test client for the harness protocol, in mock and cli modes. |
+| `tools/funnel-mac.sh` | `on` / `off` / `status` / `url` helper for Tailscale Funnel on the MCP port. |
 | `tools/tempo_check.py` | Watches the harness and reports walks per minute, dwell times and how many agents walk at once. |
 | `docs/images/` | Screenshots used in this README. |
 
@@ -226,6 +328,8 @@ flowchart LR
   Hub -- "SNAPSHOT, STATE_CHANGE, LOG_ENTRY, COLLABORATE, ACK, ERROR" --> Main
   Main -- "DISPATCH_PROMPT, REQUEST_SNAPSHOT, PING" --> Hub
   Hub -- "enqueue prompt" --> Worker
+  Bots["Grok Bot bots (cloud)"] -- "HTTPS /mcp via Tailscale Funnel<br/>report_office_status" --> MCP["office_mcp.py<br/>bearer auth + rate limit"]
+  MCP -- "apply_report()" --> Hub
 ```
 
 - **The harness is the source of truth.** Every event updates the registry before it is broadcast, so a newly connected or reconnected client receives an accurate `SNAPSHOT`, including each agent's last 200 log lines.
@@ -248,8 +352,8 @@ All messages are JSON text frames on `ws://127.0.0.1:8765`. Every server-to-clie
 | `type` | Fields | Client behaviour |
 |---|---|---|
 | `OFFICE_LAYOUT` | `office{name, rooms[{id,name,color,theme,desks,isolated,members[{agent_id,name,role,color,desk}],break_spots,meeting_target}], shared{break_room,meeting_room}}` | Sent on connect, before the `SNAPSHOT`, when the harness has an office config (and in reply to `REQUEST_LAYOUT`). The client rebuilds the floor plan if it changed. Without it the client uses the legacy 3-desk office. |
-| `SNAPSHOT` | `server{name,version,mode,tempo,office}`, `agents[{agent_id,name,role,room,desk,color,state,target,text,busy,queued,logs[]}]` | Sent when a client connects and in reply to `REQUEST_SNAPSHOT`. The client spawns, updates and removes agents to match (new agents appear directly at their spot), and restores their logs. |
-| `STATE_CHANGE` | `agent_id`, `state` (`IDLE`, `WORKING`, `THINKING`, `COLLAB`), optional `target`, optional `text` | Sets the animation state, walks to `target` if given, and shows `text` as a bubble (a thought bubble when `THINKING`). |
+| `SNAPSHOT` | `server{name,version,mode,tempo,office}`, `agents[{agent_id,name,role,room,desk,color,state,target,text,busy,queued,live,logs[]}]` | Sent when a client connects and in reply to `REQUEST_SNAPSHOT`. The client spawns, updates and removes agents to match (new agents appear directly at their spot), and restores their logs. |
+| `STATE_CHANGE` | `agent_id`, `state` (`IDLE`, `WORKING`, `THINKING`, `COLLAB`, `ERROR`), optional `target`, optional `text` | Sets the animation state, walks to `target` if given, and shows `text` as a bubble (a thought bubble when `THINKING`). |
 | `LOG_ENTRY` | `agent_id`, `log` (raw text, may contain ANSI codes), `stream` (`stdout` or `stderr`) | Appends to the agent's log, and to the drawer if it's open. |
 | `COLLABORATE` | `agents[]`, `target` (`Meeting_Room` or a waypoint), optional `text` | Every listed agent switches to `COLLAB` and takes its own seat. The first agent shows the bubble. |
 | `ACK` | `action`, `agent_id`, `prompt`, `queued` | Sent only to the client that sent a valid `DISPATCH_PROMPT`. |
@@ -299,6 +403,9 @@ python3 agent_harness.py --speed 10 --port 8770 &
 python3 tools/tempo_check.py --url ws://127.0.0.1:8770 --speed 10 --seconds 120
 kill %1
 
+# MCP connector unit tests (needs requirements.txt installed; starts its own harness on free ports)
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+
 # Godot tests. Import once so the class cache exists, then run headless.
 godot --headless --path . --import
 godot --headless --path . --script res://tests/test_ansi.gd     # colour converter unit tests
@@ -309,16 +416,17 @@ godot --headless --path . --script res://tests/smoke_test.gd    # layouts, spawn
 
 ## Security
 
-- The harness listens on **127.0.0.1 only** and has **no authentication**. Any local process can connect and send prompts.
+- The WebSocket listens on **127.0.0.1 only** and has **no authentication**. Any local process can connect and send prompts.
+- The **MCP connector** also binds to 127.0.0.1 and is the only part meant to be exposed (through Tailscale Funnel). Every request needs the bearer token (compared in constant time); bad tokens get 401 and are throttled per client, valid traffic is rate-limited (`--mcp-rate`), request bodies are capped at 64 KB, and `detail` is cleaned and capped at 200 characters. The tool can only move characters and add log lines: it can't run commands or send prompts. Keep `.office_token` private (it's git-ignored and chmod 600) and rotate it by deleting the file and restarting.
 - In **cli mode, a prompt runs a real command** on your machine with your user's permissions, in `--cwd`. Only bind commands you trust, and point `--cwd` at a working copy you're happy for an agent to change.
-- Don't expose the port beyond localhost (`--host 0.0.0.0`, port forwarding, tunnels) until an auth token is added.
+- Don't expose the WebSocket port (8765) beyond localhost (`--host 0.0.0.0`, port forwarding, tunnels).
 
 ## Roadmap
 
 - **Art:** optional sprite sheets through the existing `Agent.sprite_frames` hook (animations `idle`, `walk`, `work`, `think`, `collab`, `phone`), e.g. CC0 packs, recorded in `CREDITS.md`.
 - **Claude Code:** parse `claude -p --output-format stream-json` so tool calls drive desk work (tool name in the bubble), assistant text becomes thinking or speech bubbles, and `result` ends the run.
 - **Other agents:** adapters for Grok and Hermes CLIs and for other agent output formats.
-- **Security:** an auth token on the WebSocket, required before the bridge can be used anywhere other than localhost.
+- **Security:** an auth token on the WebSocket too, so the dashboard could be used remotely.
 - **Hand-offs:** `COLLABORATE` events when one agent passes work to another, e.g. coder to QA review.
 
 ## Limitations
@@ -329,4 +437,5 @@ godot --headless --path . --script res://tests/smoke_test.gd    # layouts, spawn
 - The shared meeting room has 2–8 seats (`shared.meeting_room.seats`) and isolated wings have 4. Extra collaborators share a seat, slightly offset.
 - The harness keeps the last 200 log lines per agent and nothing is saved to disk. Restarting the harness clears its history.
 - Testing has been on Linux (headless, plus Xvfb with software OpenGL). macOS and Windows should work but haven't been verified. The harness's Ctrl+C handling has a Windows fallback that hasn't been tested.
-- There is no authentication (see Security).
+- The WebSocket has no authentication (see Security). The MCP connector does.
+- Real bots only report what they choose to report; between reports the character holds its last state (in mock mode, until `--live-hold` runs out).

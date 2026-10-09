@@ -164,6 +164,14 @@ func _office() -> void:
 	main.handle_message({"type": "STATE_CHANGE", "agent_id": "ea", "state": "THINKING", "text": "hmm"})
 	_check(ea.is_phone_out(), "THINKING update while away: phone glance")
 
+	# A real bot reports a failure (MCP report -> ERROR at the desk).
+	main.handle_message({"type": "STATE_CHANGE", "agent_id": "android_dev", "state": "ERROR", "target": "Desk_android_dev", "text": "Gradle build failed"})
+	await _wait(0.3)
+	_check(android.state == "ERROR" and android.is_seated_at_desk() and android.bubble.visible, "ERROR state: stays at the desk with a bubble")
+	_check(main.counts_label.text.contains("1 error"), "HUD counts the error (%s)" % main.counts_label.text)
+	main.handle_message({"type": "STATE_CHANGE", "agent_id": "android_dev", "state": "WORKING", "text": "retrying"})
+	_check(android.state == "WORKING", "ERROR clears on the next report")
+
 	# Team summary from a room sign.
 	main.open_team("dev_team")
 	await _wait(0.5)

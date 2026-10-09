@@ -1,12 +1,28 @@
 #!/bin/zsh
-# Double-click on macOS: starts the event bridge and opens the Godot client.
+# Double-click on macOS: starts the event bridge (WebSocket :8765 for the game,
+# MCP connector :8766/mcp for live bot status) and opens the Godot client.
 # The bridge stops when the game window closes.
+# Extra harness flags can be passed through, e.g.  ./run-mac.command --mode live
 cd "$(dirname "$0")"
 if [ ! -d .venv ]; then
-  python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt
+  # The MCP connector needs Python 3.10+ (macOS's own python3 is 3.9).
+  for PY in python3.14 python3.13 python3.12 python3.11 python3.10 python3; do
+    command -v $PY >/dev/null && break
+  done
+  $PY -m venv .venv
 fi
-.venv/bin/python agent_harness.py &
+# (Re)install when requirements.txt changed since the last install.
+if [ ! -f .venv/.requirements.stamp ] || [ requirements.txt -nt .venv/.requirements.stamp ]; then
+  .venv/bin/pip install -q -r requirements.txt && touch .venv/.requirements.stamp
+fi
+.venv/bin/python agent_harness.py --mcp-port 8766 "$@" &
 BRIDGE=$!
 sleep 2
+if [ -n "$OFFICE_MCP_TOKEN" ]; then
+  echo "MCP connector: http://127.0.0.1:8766/mcp  (token from \$OFFICE_MCP_TOKEN)"
+else
+  echo "MCP connector: http://127.0.0.1:8766/mcp  (token in $PWD/.office_token)"
+fi
+echo "Public URL (if Tailscale Funnel is on): see ./tools/funnel-mac.sh status"
 godot --path .
 kill $BRIDGE 2>/dev/null
