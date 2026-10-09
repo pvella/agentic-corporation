@@ -21,10 +21,9 @@ A small Python **event bridge** (`agent_harness.py`) drives the office over a lo
 
 ## Quick start
 
-#
 > **macOS shortcut:** double-click `run-mac.command` to create the venv on first run, start the bridge and open the Godot client (needs `godot` on your PATH, e.g. `brew install --cask godot`). The bridge stops when you close the game.
 
-## 1. Run the harness
+### 1. Run the harness
 
 You need Python 3.10 or newer.
 
