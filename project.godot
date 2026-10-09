@@ -1,0 +1,25 @@
+; Engine configuration file.
+; Agent Office - Sims/Habbo-style mission control for coding agents.
+
+config_version=5
+
+[application]
+
+config/name="Agent Office"
+config/description="2D mission-control office for autonomous coding agents, fed by agent_harness.py over WebSocket."
+run/main_scene="res://Main.tscn"
+config/features=PackedStringArray("4.3", "GL Compatibility")
+config/icon="res://icon.svg"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/stretch/mode="canvas_items"
+window/stretch/aspect="keep"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+environment/defaults/default_clear_color=Color(0.17, 0.18, 0.23, 1)

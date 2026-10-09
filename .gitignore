@@ -1,0 +1,33 @@
+# Godot 4
+.godot/
+/android/
+*.translation
+export_presets.cfg
+export_credentials.cfg
+
+# Export builds
+/build/
+/exports/
+*.exe
+*.pck
+*.zip
+*.dmg
+*.app/
+*.x86_64
+*.apk
+*.aab
+*.ipa
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

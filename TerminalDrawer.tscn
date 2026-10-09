@@ -1,0 +1,113 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://TerminalDrawer.gd" id="1_drawer"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_panel"]
+bg_color = Color(0.0784, 0.0863, 0.11, 0.97)
+border_width_left = 3
+border_color = Color(0.3, 0.76, 0.97, 1)
+shadow_color = Color(0, 0, 0, 0.5)
+shadow_size = 12
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_log"]
+bg_color = Color(0.04, 0.045, 0.06, 1)
+corner_radius_top_left = 4
+corner_radius_top_right = 4
+corner_radius_bottom_right = 4
+corner_radius_bottom_left = 4
+content_margin_left = 8.0
+content_margin_top = 6.0
+content_margin_right = 8.0
+content_margin_bottom = 6.0
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_dot"]
+bg_color = Color(0.6, 0.6, 0.6, 1)
+corner_radius_top_left = 7
+corner_radius_top_right = 7
+corner_radius_bottom_right = 7
+corner_radius_bottom_left = 7
+
+[node name="TerminalDrawer" type="CanvasLayer"]
+layer = 10
+script = ExtResource("1_drawer")
+
+[node name="Panel" type="PanelContainer" parent="."]
+anchors_preset = 11
+anchor_left = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 0.0
+offset_top = 46.0
+offset_right = 470.0
+grow_horizontal = 0
+theme_override_styles/panel = SubResource("StyleBoxFlat_panel")
+
+[node name="Margin" type="MarginContainer" parent="Panel"]
+layout_mode = 2
+theme_override_constants/margin_left = 14
+theme_override_constants/margin_top = 12
+theme_override_constants/margin_right = 12
+theme_override_constants/margin_bottom = 12
+
+[node name="VBox" type="VBoxContainer" parent="Panel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Header" type="HBoxContainer" parent="Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="StateDot" type="Panel" parent="Panel/Margin/VBox/Header"]
+custom_minimum_size = Vector2(14, 14)
+layout_mode = 2
+size_flags_vertical = 4
+theme_override_styles/panel = SubResource("StyleBoxFlat_dot")
+
+[node name="NameLabel" type="Label" parent="Panel/Margin/VBox/Header"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 18
+text = "Agent"
+clip_text = true
+
+[node name="StateLabel" type="Label" parent="Panel/Margin/VBox/Header"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.75, 0.78, 0.84, 1)
+theme_override_font_sizes/font_size = 13
+text = "IDLE"
+
+[node name="CloseButton" type="Button" parent="Panel/Margin/VBox/Header"]
+layout_mode = 2
+tooltip_text = "Close (Esc)"
+text = " X "
+flat = true
+
+[node name="HSeparator" type="HSeparator" parent="Panel/Margin/VBox"]
+layout_mode = 2
+
+[node name="Log" type="RichTextLabel" parent="Panel/Margin/VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+focus_mode = 2
+theme_override_colors/default_color = Color(0.84, 0.85, 0.88, 1)
+theme_override_font_sizes/normal_font_size = 13
+theme_override_font_sizes/bold_font_size = 13
+theme_override_font_sizes/italics_font_size = 13
+theme_override_styles/normal = SubResource("StyleBoxFlat_log")
+bbcode_enabled = true
+scroll_following = true
+selection_enabled = true
+
+[node name="Footer" type="HBoxContainer" parent="Panel/Margin/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="PromptInput" type="LineEdit" parent="Panel/Margin/VBox/Footer"]
+layout_mode = 2
+size_flags_horizontal = 3
+placeholder_text = "Prompt, e.g. Fix bug in auth.py"
+clear_button_enabled = true
+
+[node name="SendButton" type="Button" parent="Panel/Margin/VBox/Footer"]
+layout_mode = 2
+text = "Send"

@@ -1,0 +1,116 @@
+[gd_scene load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://Main.gd" id="1_main"]
+[ext_resource type="Script" path="res://Office.gd" id="2_office"]
+[ext_resource type="PackedScene" path="res://Agent.tscn" id="3_agent"]
+[ext_resource type="PackedScene" path="res://TerminalDrawer.tscn" id="4_drawer"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_topbar"]
+bg_color = Color(0.11, 0.12, 0.15, 0.95)
+border_width_bottom = 2
+border_color = Color(0.3, 0.76, 0.97, 0.6)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_dot"]
+bg_color = Color(0.99, 0.85, 0.21, 1)
+corner_radius_top_left = 6
+corner_radius_top_right = 6
+corner_radius_bottom_right = 6
+corner_radius_bottom_left = 6
+
+[node name="Main" type="Node2D"]
+script = ExtResource("1_main")
+agent_scene = ExtResource("3_agent")
+
+[node name="Office" type="Node2D" parent="."]
+script = ExtResource("2_office")
+
+[node name="NavigationRegion2D" type="NavigationRegion2D" parent="."]
+
+[node name="Waypoints" type="Node2D" parent="."]
+
+[node name="Desk_Coder" type="Marker2D" parent="Waypoints"]
+position = Vector2(190, 234)
+
+[node name="Desk_QA" type="Marker2D" parent="Waypoints"]
+position = Vector2(410, 234)
+
+[node name="Desk_Architect" type="Marker2D" parent="Waypoints"]
+position = Vector2(630, 234)
+
+[node name="Coffee_Machine" type="Marker2D" parent="Waypoints"]
+position = Vector2(902, 162)
+
+[node name="Water_Cooler" type="Marker2D" parent="Waypoints"]
+position = Vector2(1192, 162)
+
+[node name="Meeting_Table_1" type="Marker2D" parent="Waypoints"]
+position = Vector2(640, 492)
+
+[node name="Meeting_Table_2" type="Marker2D" parent="Waypoints"]
+position = Vector2(780, 492)
+
+[node name="Meeting_Table_3" type="Marker2D" parent="Waypoints"]
+position = Vector2(640, 660)
+
+[node name="Meeting_Table_4" type="Marker2D" parent="Waypoints"]
+position = Vector2(780, 660)
+
+[node name="Entrance" type="Marker2D" parent="Waypoints"]
+position = Vector2(131, 682)
+
+[node name="Agents" type="Node2D" parent="."]
+y_sort_enabled = true
+
+[node name="HUD" type="CanvasLayer" parent="."]
+layer = 5
+
+[node name="TopBar" type="PanelContainer" parent="HUD"]
+anchors_preset = 10
+anchor_right = 1.0
+offset_bottom = 46.0
+grow_horizontal = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_topbar")
+
+[node name="Margin" type="MarginContainer" parent="HUD/TopBar"]
+layout_mode = 2
+theme_override_constants/margin_left = 14
+theme_override_constants/margin_right = 14
+
+[node name="HBox" type="HBoxContainer" parent="HUD/TopBar/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="Title" type="Label" parent="HUD/TopBar/Margin/HBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.31, 0.76, 0.97, 1)
+theme_override_font_sizes/font_size = 17
+text = "AGENT OFFICE  ·  Mission Control"
+
+[node name="VSeparator" type="VSeparator" parent="HUD/TopBar/Margin/HBox"]
+layout_mode = 2
+
+[node name="StatusDot" type="Panel" parent="HUD/TopBar/Margin/HBox"]
+custom_minimum_size = Vector2(12, 12)
+layout_mode = 2
+size_flags_vertical = 4
+theme_override_styles/panel = SubResource("StyleBoxFlat_dot")
+
+[node name="StatusLabel" type="Label" parent="HUD/TopBar/Margin/HBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.8, 0.82, 0.87, 1)
+theme_override_font_sizes/font_size = 12
+text = "Starting..."
+clip_text = true
+
+[node name="Roster" type="HBoxContainer" parent="HUD/TopBar/Margin/HBox"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Hint" type="Label" parent="HUD/TopBar/Margin/HBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.58, 0.64, 1)
+theme_override_font_sizes/font_size = 11
+text = "click an agent"
+
+[node name="TerminalDrawer" parent="." instance=ExtResource("4_drawer")]
