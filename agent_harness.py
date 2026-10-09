@@ -23,6 +23,16 @@ Two runner modes:
                 process start/exit to WORKING/IDLE. Agents without a command fall
                 back to the mock runner.
 
+  --mode live   No simulation at all: agents only move on real status reports
+                (the MCP tool below) and on CLI runs bound with --agent-cmd.
+
+Live status over MCP: unless --no-mcp is given, office_mcp.py serves a remote
+MCP connector (Streamable HTTP) at http://127.0.0.1:8766/mcp with one tool,
+report_office_status(agent, action, detail). Every request needs
+"Authorization: Bearer <token>" (env OFFICE_MCP_TOKEN, or the token generated
+into .office_token on first run). In mock mode an agent that reports for real
+is left alone by the simulation for --live-hold seconds (default 600).
+
 Examples:
   python3 agent_harness.py
   python3 agent_harness.py --mode cli \
@@ -36,6 +46,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import secrets
+import unicodedata
 import json
 import logging
 import os
@@ -72,6 +84,12 @@ MEETING_TARGET = "Meeting_Room"
 FOOSBALL_SPOTS = ("Foosball_1", "Foosball_2", "Foosball_3", "Foosball_4")
 SHARED_GROUP = "shared"
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
+DEFAULT_INBOX_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".office_inbox.json")
+INBOX_CAP = 20          # pending messages per agent
+INBOX_HISTORY = 30      # delivered messages remembered per agent (for replies)
+MAX_PROMPT = 2000
+MAX_REPLY = 2000
+MAX_REPLY_LINES = 40
 DEFAULT_OFFICE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "office.json")
 PALETTE = ("#4fc3f7", "#81c784", "#ffb74d", "#f06292", "#ba68c8", "#4db6ac", "#ffd54f", "#7986cb",
            "#a1887f", "#e57373", "#64b5f6", "#aed581", "#ff8a65", "#9575cd", "#4dd0e1", "#dce775",
@@ -84,6 +102,125 @@ def strip_ansi(text: str) -> str:
 
 def now_ms() -> int:
     return int(time.time() * 1000)
+
+
+_ESC_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(\x07|\x1b\\)|\x1b.?")
+
+
+def clean_line(text: Any, limit: int = 200) -> str:
+    """One line of untrusted text: escape sequences and control/format
+    characters removed, whitespace collapsed, length capped (ellipsis)."""
+    text = _ESC_RE.sub("", str(text or ""))
+    text = "".join(" " if unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") else ch for ch in text)
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "\u2026"
+
+
+def clean_lines(text: Any, limit: int = MAX_REPLY, max_lines: int = MAX_REPLY_LINES) -> list[str]:
+    """Multi-line untrusted text: the total is capped at `limit` characters,
+    each line is cleaned like clean_line(), blank runs collapse, and at most
+    `max_lines` lines are kept."""
+    raw = _ESC_RE.sub("", str(text or "")).replace("\r\n", "\n").replace("\r", "\n")
+    if len(raw) > limit:
+        raw = raw[: limit - 1] + "\u2026"
+    lines: list[str] = []
+    for part in raw.split("\n"):
+        line = clean_line(part, limit)
+        if line or (lines and lines[-1]):
+            lines.append(line)
+    while lines and not lines[-1]:
+        lines.pop()
+    if len(lines) > max_lines:
+        lines = lines[: max_lines - 1] + ["\u2026"]
+    return lines
+
+
+def age_text(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s ago"
+    if seconds < 3600:
+        return f"{seconds // 60} min ago"
+    if seconds < 86400:
+        return f"{seconds // 3600} h ago"
+    return f"{seconds // 86400} d ago"
+
+
+class Inbox:
+    """Per-agent queue of dashboard prompts for real (cloud) bots, which pick
+    them up through the check_office_inbox MCP tool. Persisted as JSON so a
+    restart does not lose anything. Items: {id, text, created} (epoch s)."""
+
+    def __init__(self, path: str | None) -> None:
+        self.path = path  # None = memory only
+        self.pending: dict[str, list[dict[str, Any]]] = {}
+        self.delivered: dict[str, list[dict[str, Any]]] = {}
+        self.load()
+
+    def load(self) -> None:
+        if not self.path or not os.path.exists(self.path):
+            return
+        try:
+            with open(self.path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError) as exc:
+            log.warning("could not read inbox %s (%s): starting empty", self.path, exc)
+            return
+        for key, store in (("pending", self.pending), ("delivered", self.delivered)):
+            for aid, items in (data.get(key) or {}).items() if isinstance(data, dict) else ():
+                if not isinstance(items, list):
+                    continue
+                good = [{"id": str(i["id"]), "text": str(i["text"]), "created": float(i["created"]),
+                         **({"delivered": float(i["delivered"])} if "delivered" in i else {})}
+                        for i in items if isinstance(i, dict) and {"id", "text", "created"} <= i.keys()]
+                if good:
+                    store[str(aid)] = good
+
+    def save(self) -> None:
+        if not self.path:
+            return
+        tmp = self.path + ".tmp"
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump({"version": 1, "pending": self.pending, "delivered": self.delivered}, fh,
+                          ensure_ascii=False, indent=1)
+            os.replace(tmp, self.path)
+        except OSError as exc:
+            log.error("could not save inbox %s: %s", self.path, exc)
+
+    def unread(self, agent_id: str) -> int:
+        return len(self.pending.get(agent_id, ()))
+
+    def add(self, agent_id: str, text: str) -> dict[str, Any] | None:
+        """Queues a message; None when the agent's inbox is full."""
+        items = self.pending.setdefault(agent_id, [])
+        if len(items) >= INBOX_CAP:
+            return None
+        item = {"id": secrets.token_hex(3), "text": text, "created": time.time()}
+        items.append(item)
+        self.save()
+        return item
+
+    def take(self, agent_id: str) -> list[dict[str, Any]]:
+        """Returns and clears the pending messages (they move to the history)."""
+        items = self.pending.pop(agent_id, [])
+        if items:
+            now = time.time()
+            hist = self.delivered.setdefault(agent_id, [])
+            hist.extend({**i, "delivered": now} for i in items)
+            del hist[:-INBOX_HISTORY]
+            self.save()
+        return items
+
+    def find(self, agent_id: str, message_id: str) -> dict[str, Any] | None:
+        for item in [*self.delivered.get(agent_id, ()), *self.pending.get(agent_id, ())]:
+            if item["id"] == message_id:
+                return item
+        return None
+
+    def has_history(self, agent_id: str) -> bool:
+        return bool(self.pending.get(agent_id) or self.delivered.get(agent_id))
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +251,13 @@ class Agent:
     activity_until: float = 0.0
     next_event_at: float = 0.0
     thinking_until: float = 0.0
+    # Real status reports (MCP): the simulation leaves the agent alone until
+    # this time.monotonic() value; live_reports counts them.
+    live_until: float = 0.0
+    live_reports: int = 0
+
+    def is_live(self) -> bool:
+        return time.monotonic() < self.live_until
 
     def to_json(self, include_logs: bool = True) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -128,6 +272,8 @@ class Agent:
             "text": self.text,
             "busy": self.lock.locked(),
             "queued": self.queue.qsize(),
+            "live": self.is_live(),
+            "unread": 0,  # filled in by Hub.snapshot()
         }
         if include_logs:
             data["logs"] = list(self.logs)
@@ -151,6 +297,10 @@ class Hub:
         self.agents: dict[str, Agent] = {}
         self.clients: set[ServerConnection] = set()
         self.dispatcher: Callable[[str, str], Awaitable[None]] | None = None
+        self.live_hold = 600.0  # seconds a real report keeps the simulation off an agent
+        self.inbox = Inbox(None)
+        # Decides whether a dashboard prompt goes to the agent's inbox (set by Harness).
+        self.inbox_for: Callable[[Agent], bool] = lambda agent: False
 
     # -- registry ----------------------------------------------------------
     def register(self, agent_id: str, name: str, desk: str, color: str, role: str = "", **extra: Any) -> Agent:
@@ -168,7 +318,7 @@ class Hub:
             "type": "SNAPSHOT",
             "server": {"name": "agent_harness", "version": __version__, "mode": self.mode, "tempo": self.tempo,
                        "office": self.office.get("name") if self.office else None},
-            "agents": [a.to_json() for a in self.agents.values()],
+            "agents": [{**a.to_json(), "unread": self.inbox.unread(a.agent_id)} for a in self.agents.values()],
             "ts": now_ms(),
         }
 
@@ -218,6 +368,108 @@ class Hub:
             event["text"] = text
         self.emit(event)
 
+    # -- live status reports (office_mcp.py) ---------------------------------
+    def find_agent(self, name: str) -> Agent | None:
+        """Matches a bot by display name or agent_id, case-insensitively and
+        ignoring extra whitespace / '-' vs '_' in ids."""
+        key = " ".join(str(name).split()).casefold()
+        if not key:
+            return None
+        for agent in self.agents.values():
+            if key in (agent.name.casefold(), agent.agent_id.casefold()):
+                return agent
+        slug = re.sub(r"[\s-]+", "_", key)
+        for agent in self.agents.values():
+            if slug == agent.agent_id or slug == re.sub(r"[\s-]+", "_", agent.name.casefold()):
+                return agent
+        return None
+
+    def agent_names(self) -> list[str]:
+        return [a.name for a in self.agents.values()]
+
+    def apply_report(self, agent: Agent, action: str, detail: str = "") -> None:
+        """Turns one real status report into the usual office events."""
+        aid = agent.agent_id
+        self.touch_live(agent)
+        # The ambient director resumes from a clean desk session afterwards.
+        agent.thinking_until = 0.0
+        if action == "start_task":
+            text = detail or "Starting a task"
+            self.log_line(aid, f"\x1b[1;36m\u25b6 {text}\x1b[0m")
+            self.state(aid, "WORKING", target=agent.desk, text=text)
+            agent.activity = "desk"
+        elif action == "thinking":
+            text = detail or "Thinking..."
+            self.log_line(aid, f"\x1b[33m\u2026 {text}\x1b[0m")
+            self.state(aid, "THINKING", target=agent.desk, text=text)
+            agent.activity = "desk"
+        elif action == "run_tool":
+            text = detail or "Running a tool"
+            self.log_line(aid, f"\x1b[2m$ {text}\x1b[0m")
+            self.state(aid, "WORKING", target=agent.desk, text=text)
+            agent.activity = "desk"
+        elif action == "finish":
+            self.log_line(aid, f"\x1b[1;32m\u2714 Done:\x1b[0m {detail}" if detail else "\x1b[1;32m\u2714 Done\x1b[0m")
+            spot = random.choice(agent.break_spots)
+            self.state(aid, "IDLE", target=spot, text="Done! Coffee time." if "Coffee" in spot else "Done!")
+            agent.activity = "break"
+        elif action == "error":
+            text = detail or "Something went wrong"
+            self.log_line(aid, f"\x1b[1;31m\u2716 Error:\x1b[0m {text}", stream="stderr")
+            self.state(aid, "ERROR", target=agent.desk, text=text)
+            agent.activity = "desk"
+        else:
+            raise ValueError(f"unknown action {action!r}")
+        log.info("live report %s %s: %s", aid, action, detail)
+
+    # -- inbox (dashboard -> real bots) ---------------------------------------
+    def inbox_event(self, agent_id: str) -> None:
+        self.emit({"type": "INBOX", "agent_id": agent_id, "unread": self.inbox.unread(agent_id)})
+
+    def queue_message(self, agent: Agent, prompt: str) -> dict[str, Any] | None:
+        text = "\n".join(clean_lines(prompt, MAX_PROMPT))
+        item = self.inbox.add(agent.agent_id, text)
+        self.log_line(agent.agent_id, f"\x1b[1;36m> {clean_line(text, MAX_PROMPT)}\x1b[0m")
+        if item is None:
+            self.log_line(agent.agent_id, f"\x1b[31minbox full ({INBOX_CAP} unread) for {agent.name}: "
+                                          "message not queued\x1b[0m", stream="stderr")
+            return None
+        self.log_line(agent.agent_id, f"\x1b[33mqueued for {agent.name}: they'll pick it up next time "
+                                      f"they check in\x1b[0m \x1b[2m(#{item['id']})\x1b[0m")
+        self.inbox_event(agent.agent_id)
+        log.info("inbox %s += #%s", agent.agent_id, item["id"])
+        return item
+
+    def deliver_messages(self, agent: Agent) -> list[dict[str, Any]]:
+        items = self.inbox.take(agent.agent_id)
+        if items:
+            ids = ", ".join("#" + i["id"] for i in items)
+            self.log_line(agent.agent_id, f"\x1b[32mdelivered to {agent.name}\x1b[0m \x1b[2m({ids})\x1b[0m")
+            self.inbox_event(agent.agent_id)
+            self.touch_live(agent)
+        return items
+
+    def post_reply(self, agent: Agent, reply: str, message_id: str = "", bubble: bool = True) -> None:
+        """Prints a bot's reply in its terminal as plain text ("<name>> ...")."""
+        lines = clean_lines(reply, MAX_REPLY) or ["(empty reply)"]
+        ref = ""
+        if message_id:
+            item = self.inbox.find(agent.agent_id, message_id)
+            if item is not None:
+                ref = f" \x1b[2m(re #{message_id}: {clean_line(item['text'], 40)})\x1b[0m"
+        prefix = f"\x1b[1;32m{agent.name}>\x1b[0m "
+        self.log_line(agent.agent_id, prefix + lines[0] + ref)
+        pad = " " * (len(agent.name) + 2)
+        for line in lines[1:]:
+            self.log_line(agent.agent_id, pad + line)
+        if bubble:
+            self.state(agent.agent_id, agent.state, text=clean_line(" ".join(lines), 60))
+        self.touch_live(agent)
+
+    def touch_live(self, agent: Agent) -> None:
+        agent.live_until = time.monotonic() + self.live_hold
+        agent.live_reports += 1
+
     # -- connection handling ----------------------------------------------
     async def handler(self, ws: ServerConnection, *_legacy_path: Any) -> None:
         peer = getattr(ws, "remote_address", None)
@@ -265,6 +517,16 @@ class Hub:
                 return
             log.info("DISPATCH_PROMPT -> %s: %s", agent_id, prompt)
             agent = self.agents[agent_id]
+            if self.inbox_for(agent):
+                item = self.queue_message(agent, prompt)
+                if item is None:
+                    await self.reply(ws, {"type": "ERROR", "action": action, "agent_id": agent_id,
+                                          "message": f"{agent.name}'s inbox is full ({INBOX_CAP} unread)"})
+                else:
+                    await self.reply(ws, {"type": "ACK", "action": action, "agent_id": agent_id, "prompt": prompt,
+                                          "inbox": True, "message_id": item["id"],
+                                          "unread": self.inbox.unread(agent_id), "queued": 0})
+                return
             # The ambient director never holds an agent's lock across an await,
             # so the worker picks this up immediately and the director then
             # leaves the agent alone until the run finishes.
@@ -530,7 +792,25 @@ class AmbientDirector:
         agent.next_event_at = now + self.rand(self.tempo.chat_every)
 
     def free(self, agent: Agent) -> bool:
+        if agent.live_until:
+            if agent.is_live():
+                return False  # real status reports own this agent for now
+            self.resume(agent)
         return self.agent_filter(agent) and not agent.lock.locked() and agent.queue.empty()
+
+    def resume(self, agent: Agent) -> None:
+        """The live hold ran out: pick the simulation back up from where the
+        last real report left the agent (a short linger, then the usual cycle)."""
+        agent.live_until = 0.0
+        now = self.now()
+        agent.thinking_until = 0.0
+        if agent.activity not in ("desk", "break"):
+            agent.activity = "desk"
+        span = self.tempo.break_time if agent.activity == "break" else self.tempo.work
+        agent.activity_until = now + self.rand(span) * 0.5
+        agent.next_event_at = now + self.rand(self.tempo.log_every)
+        if agent.state == "ERROR":
+            self.hub.state(agent.agent_id, "WORKING", text="Back to it.")
 
     async def run(self) -> None:
         while True:
@@ -878,12 +1158,21 @@ class Harness:
         unknown = set(commands) - set(self.hub.agents)
         if unknown:
             raise SystemExit(f"--agent-cmd refers to unknown agents: {', '.join(sorted(unknown))}")
+        self.hub.live_hold = max(0.0, float(args.live_hold))
+        inbox_path = None if str(args.inbox_file).lower() == "none" else (args.inbox_file or DEFAULT_INBOX_FILE)
+        self.hub.inbox = Inbox(inbox_path)
+        self.hub.inbox_for = self.inbox_for
         self.cli = CliRunner(self.hub, commands, args.prompt_mode, args.cwd, args.cmd_timeout) \
-            if args.mode == "cli" else None
+            if args.mode in ("cli", "live") else None
         if self.cli is not None and not commands:
             log.warning("--mode cli without any --agent-cmd: every agent uses the mock runner")
         self.tasks: list[asyncio.Task[Any]] = []
+        self.stop_event: asyncio.Event | None = None
+        self.mcp_server: Any = None  # office_mcp.OfficeMCP when enabled
         self.tempo = TEMPOS[args.tempo]
+        if args.mode == "live":
+            for agent in self.hub.agents.values():  # seated, screens off, until a real report
+                agent.state, agent.target, agent.activity = "IDLE", agent.desk, "desk"
         ambient_on = (args.mode == "mock" and not args.no_ambient) or (args.mode == "cli" and args.ambient)
         self.director: AmbientDirector | None = None
         if ambient_on:
@@ -894,12 +1183,28 @@ class Harness:
                 if self.director.agent_filter(agent):
                     self.director.place_initial(agent)
 
+    def inbox_for(self, agent: Agent) -> bool:
+        """Dashboard prompts go to the inbox for real bots: every agent without a
+        bound command in live mode; in mock/cli mode, agents that have reported
+        for real (or already have inbox history)."""
+        if self.cli and self.cli.handles(agent.agent_id):
+            return False
+        if self.args.mode == "live":
+            return True
+        return agent.live_reports > 0 or self.hub.inbox.has_history(agent.agent_id)
+
     async def worker(self, agent: Agent) -> None:
         """Serially executes prompts queued for one agent."""
         while True:
             prompt = await agent.queue.get()
             async with agent.lock:
                 runner = self.cli if (self.cli and self.cli.handles(agent.agent_id)) else self.mock
+                if self.args.mode == "live" and runner is self.mock:
+                    self.hub.log_line(agent.agent_id, f"\x1b[1;36m> {prompt}\x1b[0m")
+                    self.hub.log_line(agent.agent_id, "\x1b[33m(live mode: no command bound to this agent, "
+                                                      "the prompt was not run)\x1b[0m")
+                    agent.queue.task_done()
+                    continue
                 try:
                     await runner.run_prompt(agent, prompt)
                 except asyncio.CancelledError:
@@ -915,12 +1220,12 @@ class Harness:
 
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
-        stop = loop.create_future()
+        self.stop_event = stop = asyncio.Event()
 
         def request_stop(signame: str) -> None:
-            if not stop.done():
+            if not stop.is_set():
                 log.info("received %s, shutting down...", signame)
-                stop.set_result(None)
+                stop.set()
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
@@ -942,8 +1247,12 @@ class Harness:
                          len(self.hub.office["rooms"]), len(self.hub.agents))
             else:
                 log.info("legacy office, agents: %s", ", ".join(self.hub.agents))
-            await stop
+            if self.args.mcp_port:
+                await self.start_mcp()
+            await stop.wait()
             server.close()
+            if self.mcp_server is not None:
+                await self.mcp_server.stop()
         # Cleanup
         pending = list(self.tasks)
         for t in pending:
@@ -952,6 +1261,27 @@ class Harness:
         if self.cli:
             await self.cli.shutdown()
         log.info("bye")
+
+    async def start_mcp(self) -> None:
+        try:
+            import office_mcp
+        except ImportError as exc:  # the 'mcp' package is missing
+            log.warning("MCP connector disabled (%s). Install it with: pip install -r requirements.txt", exc)
+            return
+        token, source, created = office_mcp.load_token(self.args.mcp_token_file)
+        self.mcp_server = office_mcp.OfficeMCP(self.hub, token, rate_per_min=self.args.mcp_rate)
+        await self.mcp_server.start(self.args.mcp_host, self.args.mcp_port)
+        log.info("MCP connector on http://%s:%d/mcp (tool: report_office_status; bearer token from %s)",
+                 self.args.mcp_host, self.mcp_server.port, source)
+        if created:
+            # Shown once, when the token is first generated.
+            print(f"\n  New MCP token saved to {source} (chmod 600):\n\n    {token}\n\n"
+                  "  Use it as the connector's header:  Authorization: Bearer <token>\n", flush=True)
+
+    def request_stop(self) -> None:
+        """Stops run() (used by tests and embedders)."""
+        if self.stop_event is not None:
+            self.stop_event.set()
 
 
 def parse_agent_cmd(value: str) -> tuple[str, str]:
@@ -970,7 +1300,9 @@ def build_parser() -> argparse.ArgumentParser:
                                 formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8765)
-    p.add_argument("--mode", choices=("mock", "cli"), default="mock")
+    p.add_argument("--mode", choices=("mock", "cli", "live"), default="mock",
+                   help="mock: simulated office (real MCP reports override it per agent); cli: real commands; "
+                        "live: no simulation, agents only move on real reports / CLI runs")
     p.add_argument("--agent-cmd", action="append", type=parse_agent_cmd, metavar="AGENT_ID='CMD'",
                    help="bind a shell command to an agent (cli mode); repeatable. Use {prompt} as a placeholder")
     p.add_argument("--prompt-mode", choices=("arg", "stdin", "none"), default="arg",
@@ -985,6 +1317,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--speed", type=float, default=1.0, help="time multiplier for ambient tempo and mock prompt runs (2 = twice as fast)")
     p.add_argument("--no-ambient", action="store_true", help="mock mode: disable ambient simulation")
     p.add_argument("--ambient", action="store_true", help="cli mode: simulate agents that have no command")
+    p.add_argument("--mcp-port", type=int, default=8766,
+                   help="port for the MCP connector at /mcp (default 8766; 0 = off)")
+    p.add_argument("--no-mcp", dest="mcp_port", action="store_const", const=0, help="disable the MCP connector")
+    p.add_argument("--mcp-host", default="127.0.0.1",
+                   help="MCP bind address (default 127.0.0.1; Tailscale Funnel proxies to localhost)")
+    p.add_argument("--mcp-token-file", default=None, metavar="PATH",
+                   help="where the generated token is kept (default .office_token next to this script); "
+                        "env OFFICE_MCP_TOKEN wins if set")
+    p.add_argument("--mcp-rate", type=int, default=60,
+                   help="max MCP requests per minute per token (default 60, bursts up to 20)")
+    p.add_argument("--inbox-file", default=None, metavar="PATH",
+                   help="where queued dashboard messages for real bots are kept (default .office_inbox.json next "
+                        "to this script; 'none' = memory only)")
+    p.add_argument("--live-hold", type=float, default=600.0, metavar="SECONDS",
+                   help="after a real status report the simulation leaves that agent alone this long (default 600)")
     p.add_argument("-v", "--verbose", action="store_true")
     return p
 
@@ -993,6 +1340,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     args = build_parser().parse_args(list(argv) if argv is not None else None)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s", datefmt="%H:%M:%S")
+    if not args.verbose:  # the MCP SDK logs every stateless request at INFO
+        for name in ("mcp", "uvicorn", "uvicorn.error"):
+            logging.getLogger(name).setLevel(logging.WARNING)
     try:
         asyncio.run(Harness(args).run())
     except OSError as exc:

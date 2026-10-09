@@ -31,3 +31,6 @@ venv/
 Thumbs.db
 .vscode/
 .idea/
+.office_token
+.office_inbox.json
+.office_inbox.json.tmp

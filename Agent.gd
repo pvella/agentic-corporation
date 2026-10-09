@@ -23,12 +23,13 @@ signal log_added(agent: Agent, line: String)
 signal arrived(agent: Agent, waypoint: String)
 
 const Office := preload("res://Office.gd")
-const STATES: PackedStringArray = ["IDLE", "WORKING", "THINKING", "COLLAB"]
+const STATES: PackedStringArray = ["IDLE", "WORKING", "THINKING", "COLLAB", "ERROR"]
 const STATE_COLORS := {
 	"IDLE": Color("#9e9e9e"),
 	"WORKING": Color("#43a047"),
 	"THINKING": Color("#fdd835"),
 	"COLLAB": Color("#ab47bc"),
+	"ERROR": Color("#e53935"),
 }
 const MAX_LOG_LINES := 1000
 const BUBBLE_SECONDS := 3.0
@@ -65,6 +66,8 @@ var role: String = ""
 var room_id: String = ""
 var state: String = "IDLE"
 var last_text: String = ""
+## Unread dashboard messages waiting in this (real) bot's inbox: envelope badge.
+var unread: int = 0
 var current_waypoint: String = ""
 var log_lines: PackedStringArray = []
 ## name -> Marker2D (meta: facing, seat), injected by Main.
@@ -245,7 +248,7 @@ func show_bubble(text: String, is_thought: bool = false) -> void:
 	_bubble_tween.chain().tween_callback(func() -> void: bubble.visible = false)
 
 
-## IDLE | WORKING | THINKING | COLLAB. Unknown states fall back to IDLE.
+## IDLE | WORKING | THINKING | COLLAB | ERROR. Unknown states fall back to IDLE.
 func set_state(state_name: String) -> void:
 	state_name = state_name.to_upper()
 	if state_name == "COLLABORATE":
@@ -876,6 +879,29 @@ func _draw_overlays(drop: float) -> void:
 		for i in 3:
 			var a := 0.3 + 0.7 * clampf(sin(t * 5.0 - i * 0.9), 0.0, 1.0)
 			draw_circle(top + Vector2(4 + i * 7, -5.5), 2.0, Color(0.25, 0.25, 0.3, a))
+	if unread > 0:
+		# Envelope: messages waiting for this bot to check in.
+		var bob := sin(t * 2.5) * 1.5
+		var e := Vector2(-24, _head_top() - 8 + bob)
+		draw_set_transform(e, 0.0, Vector2.ONE * _ui_scale)
+		_rrect(Rect2(-10, -7, 20, 14), 2.5, OUTLINE)
+		_rrect(Rect2(-9, -6, 18, 12), 2, Color("#fff8e1"))
+		draw_polyline(PackedVector2Array([Vector2(-8.5, -5.5), Vector2(0, 1), Vector2(8.5, -5.5)]), Color("#8d6e63"), 1.4)
+		if unread > 1:
+			draw_circle(Vector2(9, -7), 6.0, Color("#e53935"))
+			draw_string(ThemeDB.fallback_font, Vector2(5.5 if unread < 10 else 3.0, -3.0), str(mini(unread, 99)),
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color.WHITE)
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+	if state == "ERROR":
+		# A pulsing red "!" badge (a real bot reported a failure).
+		var p := Vector2(16, _head_top() - 10)
+		var pulse := 1.0 + 0.1 * sin(t * 6.0)
+		draw_set_transform(p, 0.0, Vector2.ONE * pulse * _ui_scale)
+		draw_circle(Vector2.ZERO, 9.5, OUTLINE)
+		draw_circle(Vector2.ZERO, 8.0, STATE_COLORS["ERROR"])
+		draw_rect(Rect2(-1.4, -5.5, 2.8, 7.0), Color.WHITE)
+		draw_circle(Vector2(0, 4.2), 1.5, Color.WHITE)
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	if t < _ping_until:
 		var k := clampf((_ping_until - t) / 1.4, 0.0, 1.0)
 		var p := Vector2(-20, _head_top() - 2 - (1.0 - k) * 6.0)

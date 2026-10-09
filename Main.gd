@@ -322,7 +322,15 @@ func handle_message(msg: Dictionary) -> void:
 			_apply_collaborate(msg)
 		"ACK":
 			if drawer.agent and drawer.agent.agent_id == str(msg.get("agent_id", "")):
-				drawer.append_system("prompt accepted by harness (queue: %d)" % int(msg.get("queued", 0)), "#56b6c2")
+				if msg.get("inbox", false):
+					drawer.append_system("in %s's inbox (%d unread)" % [drawer.agent.display_name, int(msg.get("unread", 0))], "#e5c07b")
+				else:
+					drawer.append_system("prompt accepted by harness (queue: %d)" % int(msg.get("queued", 0)), "#56b6c2")
+		"INBOX":
+			var agent := _get_or_spawn(str(msg.get("agent_id", "")))
+			if agent:
+				agent.unread = maxi(0, int(msg.get("unread", 0)))
+				agent.queue_redraw()
 		"ERROR":
 			push_warning("Harness error: %s" % str(msg.get("message", "")))
 			if drawer.agent:
@@ -351,6 +359,7 @@ func _apply_snapshot(msg: Dictionary) -> void:
 		if fresh:
 			agent = _spawn_agent(data)
 		agent.set_logs(data.get("logs", []))
+		agent.unread = maxi(0, int(data.get("unread", 0)))
 		var state := str(data.get("state", "IDLE"))
 		var target := _str_or_empty(data.get("target"))
 		if target.is_empty() or not (waypoints.has(target) or office.meeting_groups.has(target)):
@@ -381,7 +390,7 @@ func _apply_state(agent: Agent, state: String, target: String, text: String) -> 
 	agent.set_state(state)
 	if not target.is_empty():
 		_route(agent, target)
-	elif state.to_upper() in ["THINKING", "WORKING"] and agent.is_away_from_desk():
+	elif state.to_upper() in ["THINKING", "WORKING", "ERROR"] and agent.is_away_from_desk():
 		agent.glance_phone(4.0)  # an update while away from the desk: check the phone
 	if not text.is_empty():
 		agent.show_bubble(Ansi.strip(text), state.to_upper() == "THINKING")
@@ -480,7 +489,7 @@ func _meeting_target_for(agent: Agent) -> String:
 
 func _default_target(agent: Agent, state: String) -> String:
 	match state.to_upper():
-		"WORKING", "THINKING":
+		"WORKING", "THINKING", "ERROR":
 			return agent.desk
 		"COLLAB", "COLLABORATE":
 			return _meeting_target_for(agent)
@@ -581,6 +590,8 @@ func _update_counts() -> void:
 		c[a.state] = int(c.get(a.state, 0)) + 1
 	counts_label.text = "%d agents · %d working · %d thinking · %d meeting · %d idle" % [
 		agents.size(), c.get("WORKING", 0), c.get("THINKING", 0), c.get("COLLAB", 0), c.get("IDLE", 0)]
+	if int(c.get("ERROR", 0)) > 0:
+		counts_label.text += " · %d error" % int(c.get("ERROR", 0))
 
 
 ## Name pills and bubbles grow a little when zoomed out so they stay legible.

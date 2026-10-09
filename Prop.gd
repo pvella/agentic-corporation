@@ -82,7 +82,13 @@ func _draw_desk() -> void:
 	if agent:
 		col = agent.body_color
 	var active: bool = agent != null and agent.is_seated_at_desk() and agent.state in ["WORKING", "THINKING"]
-	if active:
+	if agent != null and agent.is_seated_at_desk() and agent.state == "ERROR":
+		# Error screen: dark red with a blinking warning bar.
+		draw_rect(screen, Color("#3b0d0d"))
+		draw_rect(Rect2(screen.position.x + 4, screen.position.y + 5, screen.size.x - 8, 6), Color("#e53935", 0.9 if fmod(_t, 1.0) < 0.6 else 0.45))
+		for i in 3:
+			draw_line(Vector2(screen.position.x + 5, screen.position.y + 17 + i * 5), Vector2(screen.position.x + 12 + (i * 9) % 22, screen.position.y + 17 + i * 5), Color("#ef9a9a", 0.8), 1.6)
+	elif active:
 		draw_rect(screen, Color("#0d1b24"))
 		# Scrolling code lines in the agent's colour.
 		var line_h := 4.0
