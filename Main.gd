@@ -22,11 +22,29 @@
 ##   --dispatch=AGENT_ID:prompt    send a prompt once connected
 ##   --zoom=1.5 --focus=x,y        start the camera zoomed in on a world point
 ##   --focus-agent=AGENT_ID        ...or on an agent (followed until the screenshot)
+##   --view=iso|top                start in the isometric or the classic top-down view
+##
+## Views: the simulation (layout, navigation, agents' bodies and paths) always
+## runs in flat top-down "world" coordinates. What you see is a projection of
+## it (Iso.gd): the isometric (Habbo-style 2:1) view by default, or the classic
+## top-down view (identity projection). V or the header button toggles; the
+## choice is saved in user://agent_office.cfg. Agent bodies live in a hidden
+## layer; each has an AgentView in the y-sorted World/Agents layer at its
+## projected feet that draws it and carries its name pill, bubble and click
+## area.
 extends Node2D
 
 const Ansi := preload("res://ansi.gd")
 const PropScript := preload("res://Prop.gd")
 const Office := preload("res://Office.gd")
+const Iso := preload("res://Iso.gd")
+const AgentViewScript := preload("res://AgentView.gd")
+const SignTagScript := preload("res://SignTag.gd")
+const SETTINGS_PATH := "user://agent_office.cfg"
+## Iso: long furniture / walls are split into slices this long (world px) so
+## each slice sorts correctly against people.
+const SLICE_PROP := 60.0
+const SLICE_WALL := 24.0
 ## Offsets used when several agents share one standing spot (index = slot).
 const SPOT_OFFSETS: Array[Vector2] = [Vector2.ZERO, Vector2(-30, 10), Vector2(30, 10), Vector2(0, 34), Vector2(-32, 42), Vector2(32, 42), Vector2(-56, 24), Vector2(56, 24)]
 const FALLBACK_COLORS: Array[Color] = [Color("#4fc3f7"), Color("#81c784"), Color("#ffb74d"), Color("#f06292"), Color("#ba68c8"), Color("#4db6ac")]
@@ -57,6 +75,9 @@ var _desk_props: Dictionary = {}  # agent_id -> Prop
 var _foosball_props: Array = []
 var _room_buttons: Array[Button] = []
 var _spawn_index := 0
+var _sign_tags: Array[Node2D] = []
+var _view_button: Button = null
+var _view_arg := ""
 
 # user-arg options
 var _screenshot_path: String = ""
@@ -83,11 +104,20 @@ var _follow_agent: String = ""
 @onready var status_label: Label = $HUD/TopBar/Margin/HBox/StatusLabel
 @onready var roster: HBoxContainer = $HUD/TopBar/Margin/HBox/Roster
 @onready var counts_label: Label = $HUD/BottomBar/Counts
+## Hidden layer holding the agents' physics bodies (world coordinates).
+var bodies_root: Node2D
 
 
 func _ready() -> void:
 	get_viewport().physics_object_picking = true
+	bodies_root = Node2D.new()
+	bodies_root.name = "Bodies"
+	bodies_root.visible = false
+	add_child(bodies_root)
+	move_child(bodies_root, $World.get_index())
 	_parse_user_args()
+	Iso.enabled = _load_view_setting() if _view_arg == "" else _view_arg != "top"
+	_add_view_button()
 	drawer.prompt_submitted.connect(_on_prompt_submitted)
 	drawer.closed.connect(_on_drawer_closed)
 	drawer.agent_requested.connect(func(id: String) -> void:
@@ -105,7 +135,16 @@ func _process(delta: float) -> void:
 	_poll_socket(delta)
 	_update_foosball()
 	if _follow_agent != "" and agents.has(_follow_agent):
-		camera.position = (agents[_follow_agent] as Agent).global_position + Vector2(0, -30)
+		camera.position = Iso.to_screen((agents[_follow_agent] as Agent).global_position) + Vector2(0, -30)
+
+
+func _unhandled_key_input(event: InputEvent) -> void:
+	var k := event as InputEventKey
+	if k and k.pressed and not k.echo and k.keycode == KEY_V:
+		if get_viewport().gui_get_focus_owner() is LineEdit or get_viewport().gui_get_focus_owner() is TextEdit:
+			return
+		set_view_mode(not Iso.enabled)
+		get_viewport().set_input_as_handled()
 
 
 func _exit_tree() -> void:
@@ -124,12 +163,10 @@ func build_layout(cfg: Dictionary, legacy: bool = false) -> void:
 		_remove_agent(id)
 	_spawn_index = 0
 	drawer.close()
-	for n in waypoints_root.get_children() + props_root.get_children() + signs_root.get_children():
+	for n in waypoints_root.get_children():
 		n.queue_free()
 	waypoints.clear()
 	_occupancy.clear()
-	_desk_props.clear()
-	_foosball_props.clear()
 
 	office.build(cfg)
 	layout_cfg = cfg
@@ -143,15 +180,117 @@ func build_layout(cfg: Dictionary, legacy: bool = false) -> void:
 		m.set_meta("seat", wp.seat)
 		waypoints_root.add_child(m)
 		waypoints[str(wp.name)] = m
+	_build_visuals()
+	_build_room_buttons()
+	camera.set_bounds(_camera_bounds(), true)
+	if _start_zoom > 0.0:
+		camera.focus_on(Iso.to_screen(_start_focus) if _start_focus != Vector2.INF else _camera_bounds().get_center(), _start_zoom)
+	_apply_ui_scale(camera.zoom.x)
+	print("[AgentOffice] layout '%s': %d rooms, %d waypoints, %d props (%s view)" % [office.layout_name, office.rooms.size(), waypoints.size(), office.props.size(), "iso" if Iso.enabled else "top-down"])
+
+
+## Camera limits in screen (projected) space.
+func _camera_bounds() -> Rect2:
+	if not Iso.enabled:
+		return office.bounds
+	return Iso.screen_aabb(office.bounds.grow(-12), Office.WALL_H_BACK + 40.0)
+
+
+## (Re)creates everything drawn for the current view mode: furniture props
+## (sliced in iso), iso walls, room signs and their click areas.
+func _build_visuals() -> void:
+	for n in props_root.get_children() + signs_root.get_children():
+		n.get_parent().remove_child(n)
+		n.queue_free()
+	_desk_props.clear()
+	_foosball_props.clear()
+	_sign_tags.clear()
 	for d: Dictionary in office.props:
-		var p := Node2D.new()
-		p.set_script(PropScript)
-		props_root.add_child(p)
-		p.setup(d)
-		if d.kind == "desk" and str(d.get("owner", "")) != "":
-			_desk_props[str(d.owner)] = p
-		elif d.kind == "foosball":
-			_foosball_props.append(p)
+		if not Iso.enabled:
+			var p := _add_prop(d)
+			_link_prop(d, p)
+			continue
+		match str(d.kind):
+			"table", "counter", "reception", "bench":
+				for sl in _slices(d.rect, SLICE_PROP):
+					_add_prop(d, sl)
+			"sofa":
+				var r: Rect2 = d.rect
+				var back := d.duplicate()
+				back.kind = "sofaback"
+				for sl in _slices(Rect2(r.position, Vector2(r.size.x, 12)), 54.0):
+					_add_prop(back, sl)
+				_add_prop(d)
+				var arm := d.duplicate()
+				arm.kind = "sofaarm"
+				arm.rect = Rect2(r.end.x - 14, r.position.y, 14, r.size.y)
+				_add_prop(arm)
+			_:
+				_link_prop(d, _add_prop(d))
+	if Iso.enabled:
+		for a: Dictionary in office.areas:
+			if a.kind == "meeting":  # whiteboard on the meeting room's west wall
+				var r: Rect2 = a.rect
+				_add_prop({"kind": "whiteboard", "rect": Rect2(r.position.x + 2, r.get_center().y - 70, 6, 120)})
+		for cb: Dictionary in office.chair_backs:
+			var pos: Vector2 = cb.pos
+			_add_prop({"kind": "chairback", "rect": Rect2(pos.x - 13, pos.y - 16, 26, 22), "pos": pos})
+		for w: Dictionary in office.iso_walls():
+			var d := w.duplicate()
+			d.kind = "wall"
+			for sl in _slices(w.rect, SLICE_WALL):
+				_add_prop(d, sl)
+	for id: String in _desk_props.keys():
+		if agents.has(id):
+			_desk_props[id].owner_agent = agents[id]
+	_build_signs()
+	office.queue_redraw()
+
+
+func _add_prop(d: Dictionary, slice: Rect2 = Rect2()) -> Node2D:
+	var p := Node2D.new()
+	p.set_script(PropScript)
+	props_root.add_child(p)
+	p.setup(d, slice)
+	return p
+
+
+func _link_prop(d: Dictionary, p: Node2D) -> void:
+	if d.kind == "desk" and str(d.get("owner", "")) != "":
+		_desk_props[str(d.owner)] = p
+	elif d.kind == "foosball":
+		_foosball_props.append(p)
+
+
+## Splits `r` along its long axis into equal pieces no longer than `max_len`.
+func _slices(r: Rect2, max_len: float) -> Array[Rect2]:
+	var out: Array[Rect2] = []
+	var along_x := r.size.x >= r.size.y
+	var length := r.size.x if along_x else r.size.y
+	var n := maxi(1, ceili(length / max_len))
+	var step := length / n
+	for i in n:
+		if along_x:
+			out.append(Rect2(r.position.x + i * step, r.position.y, step, r.size.y))
+		else:
+			out.append(Rect2(r.position.x, r.position.y + i * step, r.size.x, step))
+	return out
+
+
+func _build_signs() -> void:
+	if Iso.enabled:
+		for s: Dictionary in office.signs:
+			# Placard on a post in the room's back (north-west) corner.
+			var tag := _add_sign_tag(s, Iso.to_screen((s.rect as Rect2).position + Vector2(18, 20)))
+			if s.clickable:
+				var room_id := str(s.room_id)
+				tag.pressed.connect(func() -> void: open_team(room_id))
+		for f: Dictionary in office.outer_frames:
+			var o: Rect2 = (f.rect as Rect2).grow(Office.EXT_WALL)
+			_add_sign_tag({"name": str(f.name), "style": "building"}, Iso.to_screen(o.position, Office.WALL_H_BACK + 6.0))
+			if f.get("wing", false) and (f.door as Rect2).has_area():
+				_add_sign_tag({"name": "Separate entrance", "style": "note"}, Iso.to_screen((f.door as Rect2).get_center() + Vector2(0, 46)))
+		return
 	for s: Dictionary in office.signs:
 		if not s.clickable:
 			continue
@@ -171,12 +310,78 @@ func build_layout(cfg: Dictionary, legacy: bool = false) -> void:
 				open_team(room_id)
 				get_viewport().set_input_as_handled())
 		signs_root.add_child(area)
-	_build_room_buttons()
-	camera.set_bounds(office.bounds, true)
-	if _start_zoom > 0.0:
-		camera.focus_on(_start_focus if _start_focus != Vector2.INF else office.bounds.get_center(), _start_zoom)
+
+
+func _add_sign_tag(s: Dictionary, anchor: Vector2) -> Node2D:
+	var tag := Node2D.new()
+	tag.set_script(SignTagScript)
+	signs_root.add_child(tag)
+	tag.setup(s, anchor)
+	tag.scale = Vector2.ONE * _ui_scale_for(camera.zoom.x)
+	_sign_tags.append(tag)
+	return tag
+
+
+# ---------------------------------------------------------------------------
+# View mode (isometric / top-down)
+# ---------------------------------------------------------------------------
+## Switches between the isometric and the classic top-down view, keeping the
+## camera on the same world spot.
+func set_view_mode(iso: bool, persist: bool = true) -> void:
+	if iso == Iso.enabled:
+		_update_view_button()
+		return
+	var look_at := Iso.to_world(camera.position)
+	var fitted := absf(camera.zoom.x - _fit_zoom()) < 0.01
+	Iso.enabled = iso
+	_build_visuals()
+	for a: Agent in agents.values():
+		a.sync_view()
+	camera.set_bounds(_camera_bounds(), fitted)
+	if not fitted:
+		camera.focus_on(Iso.to_screen(look_at), camera.zoom.x)
 	_apply_ui_scale(camera.zoom.x)
-	print("[AgentOffice] layout '%s': %d rooms, %d waypoints, %d props" % [office.layout_name, office.rooms.size(), waypoints.size(), office.props.size()])
+	_update_view_button()
+	if persist:
+		_save_view_setting()
+	print("[AgentOffice] view: %s" % ("isometric" if iso else "top-down"))
+
+
+func _fit_zoom() -> float:
+	var view := get_viewport_rect().size - Vector2(0, float(camera.get("top_margin")))
+	var b: Rect2 = camera.get("world_bounds")
+	return clampf(minf(view.x / b.size.x, view.y / b.size.y) * 0.98, float(camera.get("min_zoom")), float(camera.get("max_zoom")))
+
+
+func _add_view_button() -> void:
+	_view_button = Button.new()
+	_view_button.focus_mode = Control.FOCUS_NONE
+	_view_button.add_theme_font_size_override("font_size", 12)
+	_view_button.tooltip_text = "Toggle isometric / top-down view (V)"
+	_view_button.pressed.connect(func() -> void: set_view_mode(not Iso.enabled))
+	var hbox := roster.get_parent()
+	hbox.add_child(_view_button)
+	hbox.move_child(_view_button, roster.get_index())
+	_update_view_button()
+
+
+func _update_view_button() -> void:
+	if _view_button:
+		_view_button.text = "◇ 3D view" if not Iso.enabled else "▦ Top view"
+
+
+func _load_view_setting() -> bool:
+	var cfg := ConfigFile.new()
+	if cfg.load(SETTINGS_PATH) != OK:
+		return true
+	return str(cfg.get_value("view", "mode", "iso")) != "top"
+
+
+func _save_view_setting() -> void:
+	var cfg := ConfigFile.new()
+	cfg.load(SETTINGS_PATH)
+	cfg.set_value("view", "mode", "iso" if Iso.enabled else "top")
+	cfg.save(SETTINGS_PATH)
 
 
 ## Builds the NavigationPolygon from the generated floor minus walls and furniture.
@@ -445,11 +650,17 @@ func _spawn_agent(data: Dictionary) -> Agent:
 	agent.room_id = str(data.get("room", office.agent_room.get(id, "")))
 	if not waypoints.has(desk):
 		agent.desk = _break_spots_for(agent)[0]
-	agents_root.add_child(agent)
+	bodies_root.add_child(agent)
+	var view := Node2D.new()
+	view.set_script(AgentViewScript)
+	view.agent = agent
+	agents_root.add_child(view)
+	agent.attach_view(view)
 	var entrance_name := "%s_Entrance" % agent.room_id if waypoints.has("%s_Entrance" % agent.room_id) else "Entrance"
 	var entrance: Marker2D = waypoints.get(entrance_name)
 	if entrance:
 		agent.global_position = entrance.global_position
+	agent.sync_view()
 	agent.clicked.connect(_on_agent_clicked)
 	agent.set_ui_scale(_ui_scale_for(camera.zoom.x))
 	agents[id] = agent
@@ -466,6 +677,8 @@ func _remove_agent(id: String) -> void:
 		drawer.close()
 	_release(agent)
 	agents.erase(id)
+	if is_instance_valid(agent.view):
+		agent.view.queue_free()
 	agent.queue_free()
 
 
@@ -603,6 +816,9 @@ func _apply_ui_scale(z: float) -> void:
 	var s := _ui_scale_for(z)
 	for a: Agent in agents.values():
 		a.set_ui_scale(s)
+	for t in _sign_tags:
+		if is_instance_valid(t):
+			t.scale = Vector2.ONE * s
 
 
 # ---------------------------------------------------------------------------
@@ -644,6 +860,8 @@ func _parse_user_args() -> void:
 					_start_focus = Vector2(xy[0].to_float(), xy[1].to_float())
 			"--focus-agent":
 				_follow_agent = value
+			"--view":
+				_view_arg = value
 			"--dispatch":
 				var parts := value.split(":", true, 1)
 				if parts.size() == 2:

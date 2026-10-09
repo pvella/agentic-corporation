@@ -16,6 +16,7 @@
 ##   Virtual targets: Meeting_Room and <id>_Meeting_Room (resolved to seats).
 extends Node2D
 
+const Iso := preload("res://Iso.gd")
 const WALL := 12.0
 const EXT_WALL := 14.0
 const CORRIDOR := 96.0
@@ -27,6 +28,11 @@ const DOOR := 84.0
 const WING_GAP := 34.0
 const AMENITY_W := 176.0
 const ORIGIN := Vector2(40, 40)
+## Isometric wall heights (screen px): tall back walls (north / west of each
+## building), medium interior walls, low front walls so the rooms stay visible.
+const WALL_H_BACK := 66.0
+const WALL_H_INNER := 30.0
+const WALL_H_FRONT := 10.0
 
 ## The layout used when the harness sends no OFFICE_LAYOUT (legacy 3 agents).
 const LEGACY_LAYOUT := {
@@ -288,6 +294,7 @@ func _build_break(cell: Dictionary, r: Rect2) -> void:
 	_prop("coffee", Rect2(p.x + 30, p.y + 44, 52, 42))
 	_wp("Coffee_Machine", Vector2(p.x + 56, p.y + 112), "up")
 	_prop("water", Rect2(r.end.x - 66, p.y + 44, 40, 44))
+	_prop("vending", Rect2(p.x + 264, p.y + 42, 44, 40))
 	_wp("Water_Cooler", Vector2(r.end.x - 46, p.y + 114), "down")
 	var sofa := Rect2(p.x + 22, p.y + 250, 156, 46)
 	_prop("sofa", sofa)
@@ -412,6 +419,9 @@ func sign_at(world_pos: Vector2) -> Dictionary:
 func _draw() -> void:
 	if _font == null:
 		_font = ThemeDB.fallback_font
+	if Iso.enabled:
+		_draw_iso()
+		return
 	# Grass / outdoor ground around the buildings.
 	draw_rect(bounds.grow(400), Color("#7da36b"))
 	for i in 60:
@@ -426,7 +436,9 @@ func _draw() -> void:
 				draw_rect(Rect2(d.position.x + 10, d.position.y, d.size.x - 20, bounds.end.y - d.position.y + 400), Color("#cdbf9f"))
 			else:
 				draw_rect(Rect2(bounds.position.x - 400, d.position.y + 8, d.position.x - bounds.position.x + 400, d.size.y - 16), Color("#cdbf9f"))
-	# Floors.
+	# Floors (a base under each building first, so door gaps aren't grass).
+	for f: Dictionary in outer_frames:
+		draw_rect(f.rect, Color("#b3aa99"))
 	for a: Dictionary in areas:
 		_draw_floor(a)
 	# Corridor runner.
@@ -570,3 +582,109 @@ static func rounded_rect_points(r: Rect2, radius: float, steps: int = 4) -> Pack
 			var a: float = c[1] + (PI / 2) * i / steps
 			pts.append(c[0] + Vector2(cos(a), sin(a)) * radius)
 	return pts
+
+
+# ===========================================================================
+# Isometric view: floors only (walls, furniture and signs are sorted nodes)
+# ===========================================================================
+## Wall pieces for the isometric view: {rect, h, color, windows}. Exterior
+## frames get tall north/west walls (with windows) and low south/east walls,
+## with the door cut out; interior walls are medium height.
+func iso_walls() -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	for w in walls:
+		out.append({"rect": w, "h": WALL_H_INNER, "color": Color("#8a909c")})
+	for f: Dictionary in outer_frames:
+		var r: Rect2 = f.rect
+		var c: Color = f.color
+		var o := r.grow(EXT_WALL)
+		var wing: bool = f.get("wing", false)
+		var sides := [
+			{"rect": Rect2(o.position, Vector2(o.size.x, EXT_WALL)), "h": WALL_H_BACK, "windows": "south"},
+			{"rect": Rect2(o.position.x, r.position.y, EXT_WALL, r.size.y), "h": WALL_H_INNER if wing else WALL_H_BACK, "windows": "" if wing else "east"},
+			{"rect": Rect2(o.position.x, r.end.y, o.size.x, EXT_WALL), "h": WALL_H_FRONT, "windows": ""},
+			{"rect": Rect2(r.end.x, r.position.y, EXT_WALL, r.size.y), "h": WALL_H_FRONT, "windows": ""},
+		]
+		var door: Rect2 = f.door
+		for sd: Dictionary in sides:
+			for piece: Rect2 in _cut(sd.rect, door):
+				out.append({"rect": piece, "h": sd.h, "color": c.lightened(0.18), "windows": sd.windows})
+	return out
+
+
+## `r` minus the door opening (split along r's long axis).
+func _cut(r: Rect2, door: Rect2) -> Array[Rect2]:
+	if not door.has_area() or not r.intersects(door):
+		return [r]
+	var out: Array[Rect2] = []
+	if r.size.x >= r.size.y:
+		if door.position.x > r.position.x:
+			out.append(Rect2(r.position.x, r.position.y, door.position.x - r.position.x, r.size.y))
+		if door.end.x < r.end.x:
+			out.append(Rect2(door.end.x, r.position.y, r.end.x - door.end.x, r.size.y))
+	else:
+		if door.position.y > r.position.y:
+			out.append(Rect2(r.position.x, r.position.y, r.size.x, door.position.y - r.position.y))
+		if door.end.y < r.end.y:
+			out.append(Rect2(r.position.x, door.end.y, r.size.x, r.end.y - door.end.y))
+	return out
+
+
+func _iso_poly(pts: Array, c: Color) -> void:
+	draw_colored_polygon(PackedVector2Array(pts.map(func(p: Variant) -> Vector2: return Iso.to_screen(p[0], p[1]))), c)
+
+
+func _draw_iso() -> void:
+	# Grass all around, in screen space.
+	var sb := Iso.screen_aabb(bounds, WALL_H_BACK)
+	draw_rect(sb.grow(1600), Color("#7da36b"))
+	for i in 140:
+		var gx := sb.position.x - 300 + fmod(i * 137.0, sb.size.x + 600)
+		var gy := sb.position.y - 200 + fmod(i * 89.0, sb.size.y + 400)
+		draw_circle(Vector2(gx, gy), 3.0, Color("#6e955d"))
+		draw_circle(Vector2(gx + 9, gy + 2), 2.0, Color("#8db27a"))
+	# Building foundations: a slab edge under each building.
+	for f: Dictionary in outer_frames:
+		var o: Rect2 = (f.rect as Rect2).grow(EXT_WALL)
+		var a := Vector2(o.position.x, o.end.y)
+		var b := o.end
+		var c := Vector2(o.end.x, o.position.y)
+		_iso_poly([[a, 0.0], [b, 0.0], [b, -9.0], [a, -9.0]], Color("#8f8778"))
+		_iso_poly([[b, 0.0], [c, 0.0], [c, -9.0], [b, -9.0]], Color("#6f685c"))
+	# Everything else on the floor plane.
+	draw_set_transform_matrix(Iso.floor_xf())
+	for f: Dictionary in outer_frames:
+		var d: Rect2 = f.door
+		if d.size.x > d.size.y:
+			draw_rect(Rect2(d.position.x + 10, d.position.y, d.size.x - 20, bounds.end.y - d.position.y + 600), Color("#cdbf9f"))
+		elif d.has_area():
+			draw_rect(Rect2(bounds.position.x - 600, d.position.y + 8, d.position.x - bounds.position.x + 600, d.size.y - 16), Color("#cdbf9f"))
+	for f: Dictionary in outer_frames:
+		var o: Rect2 = (f.rect as Rect2).grow(EXT_WALL)
+		draw_rect(o, Color("#b3aa99"))  # base under door gaps / wall feet
+	for a: Dictionary in areas:
+		_draw_floor(a)
+	for a: Dictionary in areas:
+		if a.kind == "corridor":
+			var r: Rect2 = a.rect
+			draw_rect(Rect2(r.position.x + 20, r.position.y + r.size.y * 0.5 - 16, r.size.x - 40, 32), Color("#9c5b4a", 0.55))
+			draw_rect(Rect2(r.position.x + 24, r.position.y + r.size.y * 0.5 - 12, r.size.x - 48, 24), Color("#b7735f", 0.45), false, 2.0)
+	# Subtle 32 px tile grid so the floor reads as Habbo-style diamonds.
+	for a: Dictionary in areas:
+		var r: Rect2 = a.rect
+		var gc := Color(0, 0, 0, 0.045)
+		var x := ceilf(r.position.x / 32.0) * 32.0
+		while x < r.end.x:
+			draw_line(Vector2(x, r.position.y), Vector2(x, r.end.y), gc, 1.0)
+			x += 32.0
+		var y := ceilf(r.position.y / 32.0) * 32.0
+		while y < r.end.y:
+			draw_line(Vector2(r.position.x, y), Vector2(r.end.x, y), gc, 1.0)
+			y += 32.0
+	# Door mats.
+	for f: Dictionary in outer_frames:
+		var d: Rect2 = f.door
+		if d.has_area():
+			draw_rect(d, Color("#8d6e63"))
+			draw_rect(d.grow(-3), Color("#a1887f"))
+	draw_set_transform_matrix(Transform2D.IDENTITY)

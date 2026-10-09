@@ -6,6 +6,8 @@
 ##   godot --headless --path . --script res://tests/smoke_test.gd
 extends SceneTree
 
+const Iso := preload("res://Iso.gd")
+
 var main: Node
 var failures: PackedStringArray = []
 
@@ -34,6 +36,8 @@ func _dist(a: Agent, wp: String) -> float:
 func _run() -> void:
 	await process_frame
 	await physics_frame
+	main.set_view_mode(true, false)  # explicit: don't depend on a saved preference
+	_check(Iso.enabled, "isometric view is active")
 	await _legacy()
 	await _office()
 	print("smoke test: %s" % ("PASS" if failures.is_empty() else "FAIL (%d)" % failures.size()))
@@ -200,9 +204,100 @@ func _office() -> void:
 	await _wait(0.3)
 	_check(main.drawer.agent == ios and main.drawer.footer.visible, "clicking a member opens their terminal")
 	main.drawer.close()
+	await _views(android)
 
 	# Harness restarted without office.json: back to the legacy layout.
 	main.handle_message({"type": "SNAPSHOT", "server": {"mode": "mock", "office": null}, "agents": [
 		{"agent_id": "coder_agent", "name": "Coder", "desk": "Desk_Coder", "state": "WORKING", "target": "Desk_Coder", "logs": []}]})
 	await process_frame
 	_check(main.using_legacy_layout and main.agents.size() == 1, "snapshot without an office falls back to the legacy layout")
+
+
+## Isometric projection, picking in screen space, and the top-down toggle.
+func _views(android: Agent) -> void:
+	print("views")
+	var worst := 0.0
+	for p: Vector2 in [Vector2.ZERO, Vector2(123.5, -40), Vector2(1600, 900), Vector2(-77, 2048)]:
+		worst = maxf(worst, Iso.to_world(Iso.to_screen(p)).distance_to(p))
+	_check(worst < 0.01, "iso projection round-trips world -> screen -> world (err %.4f)" % worst)
+	_check(Iso.to_screen(Vector2(10, 0)).y > 0 and Iso.to_screen(Vector2(10, 0)).x > 0 and Iso.to_screen(Vector2(0, 10)).x < 0, "iso axes: +x down-right, +y down-left")
+	await process_frame
+	_check(android.view.position.distance_to(Iso.to_screen(android.global_position)) < 1.0, "agent sprite sits at the projected body position")
+	_check(not main.bodies_root.visible and android.get_parent() == main.bodies_root and android.view.get_parent() == main.agents_root, "bodies in the hidden world layer, views in the y-sorted layer")
+	var walls: int = main.props_root.get_children().filter(func(n: Node) -> bool: return n.kind == "wall").size()
+	_check(walls > 50, "iso walls are y-sorted slices (%d)" % walls)
+	# Depth: a person south of a desk (sitting at it) is drawn after the desk.
+	var desk: Node2D = main._desk_props["android_dev"]
+	_check(android.view.position.y > desk.position.y, "seated agent sorts in front of its desk")
+
+	# Click picking in screen space: a click on the drawn person / room sign.
+	await physics_frame
+	var space: PhysicsDirectSpaceState2D = main.get_world_2d().direct_space_state
+	var q := PhysicsPointQueryParameters2D.new()
+	q.collide_with_areas = true
+	q.collide_with_bodies = false
+	q.collision_mask = 4
+	q.position = android.view.global_position + Vector2(0, -30)
+	var hits: Array = space.intersect_point(q, 32).map(func(h: Dictionary) -> Object: return h.collider)
+	_check(hits.has(android.click_area), "point query at the drawn person hits its click area")
+	q.position = android.global_position + Vector2(0, -30)
+	var stale: Array = space.intersect_point(q, 32).map(func(h: Dictionary) -> Object: return h.collider)
+	_check(not stale.has(android.click_area), "...and not at the unprojected world position")
+	await _click(android.view.global_position + Vector2(0, -30))
+	_check(main.drawer.is_open() and main.drawer.agent == android, "mouse click on the iso sprite opens the terminal")
+	main.drawer.close()
+	await _wait(0.3)
+	var tag: Node2D = null
+	for t: Node2D in main._sign_tags:
+		if t.info.get("room_id", "") == "dev_team":
+			tag = t
+	_check(tag != null, "iso room sign exists for dev_team")
+	if tag:
+		q.collision_mask = 8
+		q.position = tag.to_global(tag.box.get_center())
+		_check(space.intersect_point(q, 8).size() > 0, "point query at the iso room sign hits its area")
+		await _click(tag.to_global(tag.box.get_center()))
+		_check(main.drawer.is_team_open(), "mouse click on the iso room sign opens the team summary")
+		main.drawer.close()
+		await _wait(0.3)
+
+	# Toggle to the classic view and back.
+	main.set_view_mode(false, false)
+	await process_frame
+	_check(not Iso.enabled and android.view.position.distance_to(android.global_position) < 1.0, "top-down view: sprite at the body position")
+	_check(main.props_root.get_child_count() == main.office.props.size(), "top-down view: one prop per piece of furniture, no wall slices")
+	_check(main._desk_props["android_dev"].owner_agent == android, "desk monitor stays linked across the toggle")
+	await physics_frame
+	q.collision_mask = 4
+	q.position = android.global_position + Vector2(0, -30)
+	_check(space.intersect_point(q, 32).map(func(h: Dictionary) -> Object: return h.collider).has(android.click_area), "top-down picking at the world position")
+	# The V key toggles back (and would save the preference: restore it after).
+	var cfg := ConfigFile.new()
+	var had_cfg := cfg.load(main.SETTINGS_PATH) == OK
+	var key := InputEventKey.new()
+	key.keycode = KEY_V
+	key.pressed = true
+	root.push_input(key)
+	await process_frame
+	_check(Iso.enabled, "V key switches back to the iso view")
+	if had_cfg:
+		cfg.save(main.SETTINGS_PATH)
+	else:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(main.SETTINGS_PATH))
+	main.set_view_mode(true, false)
+	await process_frame
+	_check(Iso.enabled and android.view.position.distance_to(Iso.to_screen(android.global_position)) < 1.0, "back to iso")
+
+
+## Simulates a left click at a canvas (world-layer) position.
+func _click(canvas_pos: Vector2) -> void:
+	var screen := root.get_canvas_transform() * canvas_pos
+	for pressed: bool in [true, false]:
+		var ev := InputEventMouseButton.new()
+		ev.button_index = MOUSE_BUTTON_LEFT
+		ev.pressed = pressed
+		ev.position = screen
+		ev.global_position = screen
+		root.push_input(ev, true)  # viewport-local coordinates
+		await physics_frame
+		await process_frame

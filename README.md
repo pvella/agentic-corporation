@@ -2,7 +2,7 @@
 
 **Agentic Corporation** is a mission-control dashboard for autonomous agents such as Claude Code, Grok, Hermes or any command-line agent. It looks like a cosy Sims / Habbo / Stardew office. The visual client is called **Agent Office**: a 2D office built in Godot 4 where every agent is a small chibi character at its own desk, and what it does on screen shows what the agent is actually doing.
 
-![Agent Office overview: four team rooms, the shared break room and meeting room, and the separate Power Tech Consulting wing](docs/images/agent-office-overview.png)
+![Agent Office overview in the isometric view: four team rooms, the shared break room and meeting room, and the separate Power Tech Consulting wing](docs/images/agent-office-overview.png)
 
 The office is laid out from **`office.json`**: team rooms with a desk per member and a clickable name sign, a central corridor, a shared **Break Room** (coffee, water cooler, sofa and a foosball table) and **Meeting Room**, and optionally **isolated wings** with their own entrance, kitchenette and meeting nook (the Power Tech Consulting wing has no walkable route into the rest of the building).
 
@@ -15,13 +15,21 @@ The office is laid out from **`office.json`**: team rooms with a desk per member
 
 When an agent is **away from its desk** (walking, on a break, at foosball or in a meeting) and a log line or a THINKING / WORKING update arrives for it, it pulls out a glowing phone with a little ping bubble.
 
-![Close-up: agents seated at their monitors, typing](docs/images/agent-office-desks.png)
+![Close-up: a team room in 3D, one agent with a red error screen, two on the break-room sofa](docs/images/agent-office-desks.png)
 
 Clicking an agent slides out a **terminal drawer** with its live log, colour codes included, and a prompt bar that sends work back to that agent. Clicking a **room sign** shows a team summary (members, state, where they are, latest status).
 
 A small Python **event bridge** (`agent_harness.py`) drives the office over a local WebSocket. It either simulates agents (mock mode) or wraps real CLI processes and streams their output (cli mode).
 
-![The break room: someone checking their phone, a foosball game](docs/images/agent-office-break-room.png)
+![The break room: a foosball game, the sofa, the coffee machine, the vending machine](docs/images/agent-office-break-room.png)
+
+### 3D (isometric) and top-down views
+
+The office opens in a Habbo-style **isometric view**: a 2:1 dimetric projection, about 45 degrees. Floors are diamond tiles in each room's colour. The north and west walls of each building are tall, with windows. Interior walls are waist height and the front walls are low, so you can always see into the rooms. Furniture is drawn as shaded 3D blocks, and people stand upright and are sorted by depth, so they walk behind and in front of desks, tables and walls correctly. Press **V**, or the **Top view** / **3D view** button in the header, to switch to the classic top-down view and back. The choice is saved in `user://agent_office.cfg`. To force one view at startup, pass `-- --view=top` or `-- --view=iso`.
+
+![The same office in the classic top-down view](docs/images/agent-office-top-down.png)
+
+Only the drawing changes between the views. The layout, the navigation mesh and the agents' paths always live in flat top-down "world" coordinates. `Iso.gd` projects a world point `(x, y)` to the screen as `((x - y) * K, (x + y) * K / 2 - height)`. Each agent's physics body walks in a hidden world layer. An `AgentView` node in the y-sorted render layer sits at the projected feet: it draws the character and carries the name pill, the bubble and the click area, so clicks land where the person is drawn. Long furniture and walls are split into short slices so each slice sorts correctly against people.
 
 ## Quick start
 
@@ -273,6 +281,7 @@ curl -s https://<mac>.<tailnet>.ts.net/mcp \
 | Drag (left on the floor, or middle / right anywhere), **WASD** / arrow keys, trackpad two-finger scroll | Pan. |
 | Mouse wheel, pinch, **+** / **-** | Zoom (about the cursor). |
 | **F** or **Home** | Fit the whole office in the window. |
+| **V**, or the view button in the top bar | Switch between the 3D (isometric) view and the top-down view. The choice is remembered. |
 | Type in the prompt bar, then **Enter** or **Send** | Send a `DISPATCH_PROMPT` to the selected agent. If you're offline, the drawer says the prompt wasn't sent. |
 | **Esc** or **X** | Close the drawer. |
 
@@ -300,8 +309,11 @@ There is no packaged build or store listing yet. Agentic Corporation is a **loca
 | `requirements.txt` | Python dependencies (`websockets>=13`, `mcp>=2.3,<3`). |
 | `project.godot` | Godot project settings: 1280x800, resizable (stretch `canvas_items`, aspect `expand`), GL Compatibility, main scene `Main.tscn`. |
 | `Main.tscn` / `Main.gd` | The office scene. Builds the office from `OFFICE_LAYOUT` (or the legacy layout), creates the waypoints, furniture, room signs and navigation, runs the `WebSocketPeer` client with automatic retry, routes messages, assigns seats and spreads agents at shared spots, and drives the HUD. |
-| `Office.gd` | The layout builder and floor painter: turns the config into rooms, doors, walls, the corridor and wings, desks, amenities, waypoints, signs and the navigation outlines, and draws floors, walls and signs. |
-| `Prop.gd` | One piece of furniture, y-sorted with the agents: desks with a live monitor (scrolling code / screensaver), chairs, coffee machine, water cooler, sofa, the animated foosball table, meeting table, plants, reception. |
+| `Office.gd` | The layout builder and floor painter: turns the config into rooms, doors, walls, the corridor and wings, desks, amenities, waypoints, signs and the navigation outlines. It draws the floors (diamond tiles in the iso view) and, in the top-down view, the walls and signs. It also lists the iso wall pieces (tall back walls, low front walls, door gaps). |
+| `Prop.gd` | One piece of furniture (or, in iso, one wall or furniture slice), y-sorted with the agents. Pieces include desks with a live monitor (scrolling code, red error screen, screensaver), chairs, coffee machine, water cooler, vending machine, sofa, the animated foosball table, meeting table, whiteboard, plants and reception. The iso view draws each as a shaded box with a top face and two side faces. |
+| `Iso.gd` | The isometric projection (world to screen and back, plus plane transforms for drawing on tops and side faces) and the current view mode. |
+| `AgentView.gd` | The render node for one agent in the y-sorted layer, at the agent's projected feet. It draws the character and holds the name pill, the bubble and the click area. |
+| `SignTag.gd` | The iso-view room signs on posts, building names and the "Separate entrance" note. Clickable signs carry their own click area. |
 | `CameraController.gd` | Pan / zoom / fit camera with world bounds. |
 | `Agent.tscn` / `Agent.gd` | One agent: a `CharacterBody2D` that strolls with `NavigationAgent2D` (gentle acceleration, settles exactly into its seat, avoids other agents). Draws the chibi character procedurally (front and back views, poses, blinking, phone), a name pill, a speech or thought bubble (fades after 3 s), its own log (up to 1000 lines), and an `AnimatedSprite2D` hook for sprite sheets. |
 | `TerminalDrawer.tscn` / `TerminalDrawer.gd` | The slide-out drawer on a `CanvasLayer`: an agent's terminal (header, `RichTextLabel` log, prompt bar) or a room's team summary. It updates live while open. |
@@ -309,7 +321,7 @@ There is no packaged build or store listing yet. Agentic Corporation is a **loca
 | `icon.svg` | Project icon. |
 | `CREDITS.md` | Art and asset credits (all original, procedural). |
 | `tests/test_ansi.gd` | Headless unit tests for the colour converter. |
-| `tests/smoke_test.gd` | Headless integration test that loads `Main.tscn` and feeds it protocol messages (legacy office and the team-room office). |
+| `tests/smoke_test.gd` | Headless integration test that loads `Main.tscn` and feeds it protocol messages (legacy office and the team-room office). It also checks the iso projection round-trip, clicking people and room signs in the iso view, and the top-down toggle. |
 | `tests/fixtures/office_layout.json` | The `OFFICE_LAYOUT` the harness sends for the default `office.json`, used by the smoke test. |
 | `tests/test_office_mcp.py` | Python unit tests for the MCP connector (auth, tools/list, tool calls reaching a WebSocket client, unknown agents, truncation, mixed and live modes, rate limit, token file, and the inbox: queue, persist, deliver, reply, badge events, cap, escaping). |
 | `tools/test_client.py` | Python test client for the harness protocol, in mock and cli modes. |
@@ -426,7 +438,7 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 # Godot tests. Import once so the class cache exists, then run headless.
 godot --headless --path . --import
 godot --headless --path . --script res://tests/test_ansi.gd     # colour converter unit tests
-godot --headless --path . --script res://tests/smoke_test.gd    # layouts, spawning, seating, meetings, foosball, phone, PTC wall, drawer
+godot --headless --path . --script res://tests/smoke_test.gd    # layouts, spawning, seating, meetings, foosball, phone, PTC wall, drawer, iso view + picking
 ```
 
 `smoke_test.gd` needs no harness: it feeds messages straight into `Main`. Each script exits with code 0 on success and 1 on failure. If you change `office.json`, regenerate the fixture with `python3 -c "import json, agent_harness as h; json.dump({'type': 'OFFICE_LAYOUT', 'office': h.load_office(None)}, open('tests/fixtures/office_layout.json', 'w'), indent=1)"`.
@@ -449,6 +461,7 @@ godot --headless --path . --script res://tests/smoke_test.gd    # layouts, spawn
 ## Limitations
 
 - All art is drawn in code. There are no sprites, no tiles and no sound.
+- The iso view sorts by each object's anchor point (world `x + y`). Long pieces are sliced to keep this right, but someone brushing right past the corner of a desk or a sofa can still overlap it for a frame. The optional sprite-sheet hook doesn't have iso directions.
 - An agent that isn't in `office.json` (for example a new id from cli mode) still spawns, but it has no desk of its own and uses a break spot instead.
 - CLI mode treats output as plain lines. It doesn't understand structured output such as stream-json yet, so tool calls don't drive the animation beyond WORKING and the latest line in the bubble.
 - The shared meeting room has 2–8 seats (`shared.meeting_room.seats`) and isolated wings have 4. Extra collaborators share a seat, slightly offset.

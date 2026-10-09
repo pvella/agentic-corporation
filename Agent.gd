@@ -23,6 +23,7 @@ signal log_added(agent: Agent, line: String)
 signal arrived(agent: Agent, waypoint: String)
 
 const Office := preload("res://Office.gd")
+const Iso := preload("res://Iso.gd")
 const STATES: PackedStringArray = ["IDLE", "WORKING", "THINKING", "COLLAB", "ERROR"]
 const STATE_COLORS := {
 	"IDLE": Color("#9e9e9e"),
@@ -167,6 +168,13 @@ func _apply_identity() -> void:
 	name_label.add_theme_color_override("font_color", Color.WHITE)
 	_layout_name()
 	queue_redraw()
+
+
+## Moves the name pill, speech bubble and click area onto the render node.
+func attach_view(v: Node2D) -> void:
+	view = v
+	for n: Node in [name_label, bubble, click_area, sprite]:
+		n.reparent(v, false)
 
 
 func _layout_name() -> void:
@@ -395,20 +403,36 @@ func _process(delta: float) -> void:
 		sprite.position.y = -32 + SIT_DROP.get(_seat, 0.0) * _sit
 		_play_anim()
 	_position_bubble()
-	queue_redraw()
+	sync_view()
 
 
-## Back view when walking up or sitting facing "up" (desk, far side of tables).
+## Puts the render node at the projected feet and redraws it.
+func sync_view() -> void:
+	if view:
+		view.position = Iso.to_screen(global_position)
+		view.queue_redraw()
+
+
+const FACING_DIRS := {"up": Vector2(0, -1), "down": Vector2(0, 1), "left": Vector2(-1, 0), "right": Vector2(1, 0)}
+
+
+## Back view when walking away from the viewer or sitting facing away (desk,
+## far side of tables). In the isometric view "away" is up the screen, so
+## north and west facings show the back.
 func _is_back() -> bool:
 	if _walk_amount > 0.25:
-		return _dir.y < -0.55
+		return Iso.screen_dir(_dir).y < (-0.2 if Iso.enabled else -0.55)
+	if Iso.enabled:
+		return Iso.screen_dir(FACING_DIRS.get(_pose_facing, Vector2.DOWN)).y < 0.0
 	return _pose_facing == "up"
 
 
 ## -1 (looking left) .. 1 (looking right).
 func _side() -> float:
 	if _walk_amount > 0.25:
-		return clampf(_dir.x * 1.4, -1.0, 1.0)
+		return clampf(Iso.screen_dir(_dir).x * 1.4, -1.0, 1.0)
+	if Iso.enabled:
+		return 0.6 * signf(Iso.screen_dir(FACING_DIRS.get(_pose_facing, Vector2.DOWN)).x)
 	match _pose_facing:
 		"left": return -1.0
 		"right": return 1.0
@@ -446,24 +470,34 @@ func _position_bubble() -> void:
 
 
 func _draw() -> void:
+	pass  # the AgentView in the sorted render layer draws us (see paint())
+
+
+## Draws the character into `canvas` (its AgentView) at the canvas origin = feet.
+func paint(canvas: CanvasItem) -> void:
+	_c = canvas
+	_paint()
+
+
+func _paint() -> void:
 	var state_col: Color = STATE_COLORS.get(state, Color.GRAY)
 	# Soft shadow + state ring at the feet.
-	draw_set_transform(Vector2.ZERO, 0.0, Vector2(1.0, 0.42))
-	draw_circle(Vector2.ZERO, 16.0, Color(0, 0, 0, 0.22))
-	draw_circle(Vector2.ZERO, 11.0, Color(0, 0, 0, 0.12))
-	draw_arc(Vector2.ZERO, 19.0, 0.0, TAU, 40, Color(state_col, 0.9), 2.5, true)
+	_c.draw_set_transform(Vector2.ZERO, 0.0, Vector2(1.0, 0.42))
+	_c.draw_circle(Vector2.ZERO, 16.0, Color(0, 0, 0, 0.22))
+	_c.draw_circle(Vector2.ZERO, 11.0, Color(0, 0, 0, 0.12))
+	_c.draw_arc(Vector2.ZERO, 19.0, 0.0, TAU, 40, Color(state_col, 0.9), 2.5, true)
 	if _selected or _hovered:
-		draw_arc(Vector2.ZERO, 24.0, 0.0, TAU, 40, Color(1, 1, 1, 0.95 if _selected else 0.5), 2.0, true)
-	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+		_c.draw_arc(Vector2.ZERO, 24.0, 0.0, TAU, 40, Color(1, 1, 1, 0.95 if _selected else 0.5), 2.0, true)
+	_c.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 	var drop: float = SIT_DROP.get(_seat, 0.0) * _sit
 	if not sprite.visible:
-		draw_set_transform(Vector2(0, drop), 0.0, Vector2.ONE)
+		_c.draw_set_transform(Vector2(0, drop), 0.0, Vector2.ONE)
 		if _is_back():
 			_draw_back()
 		else:
 			_draw_front()
-		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+		_c.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	_draw_overlays(drop)
 	if bubble.visible:
 		_draw_bubble_tail()
@@ -471,9 +505,9 @@ func _draw() -> void:
 
 # ---- drawing helpers ---------------------------------------------------------
 func _cap(a: Vector2, b: Vector2, w: float, c: Color) -> void:
-	draw_line(a, b, c, w)
-	draw_circle(a, w * 0.5, c)
-	draw_circle(b, w * 0.5, c)
+	_c.draw_line(a, b, c, w)
+	_c.draw_circle(a, w * 0.5, c)
+	_c.draw_circle(b, w * 0.5, c)
 
 
 func _cap_ol(a: Vector2, b: Vector2, w: float, c: Color) -> void:
@@ -482,21 +516,26 @@ func _cap_ol(a: Vector2, b: Vector2, w: float, c: Color) -> void:
 
 
 func _circ_ol(p: Vector2, r: float, c: Color) -> void:
-	draw_circle(p, r + 1.5, OUTLINE)
-	draw_circle(p, r, c)
+	_c.draw_circle(p, r + 1.5, OUTLINE)
+	_c.draw_circle(p, r, c)
 
 
 func _rrect(r: Rect2, radius: float, c: Color) -> void:
-	draw_colored_polygon(Office.rounded_rect_points(r, radius, 3), c)
+	_c.draw_colored_polygon(Office.rounded_rect_points(r, radius, 3), c)
 
 
 func _oval(p: Vector2, rx: float, ry: float, c: Color) -> void:
-	draw_set_transform(p + _xf_origin, 0.0, Vector2(rx, ry))
-	draw_circle(Vector2.ZERO, 1.0, c)
-	draw_set_transform(_xf_origin, 0.0, Vector2.ONE)
+	_c.draw_set_transform(p + _xf_origin, 0.0, Vector2(rx, ry))
+	_c.draw_circle(Vector2.ZERO, 1.0, c)
+	_c.draw_set_transform(_xf_origin, 0.0, Vector2.ONE)
 
 
 var _xf_origin := Vector2.ZERO
+## The CanvasItem currently being drawn into (the AgentView during its _draw).
+var _c: CanvasItem = self
+## The node that draws this agent and carries its name pill, bubble and click
+## area: positioned at the projected feet in the y-sorted render layer.
+var view: Node2D = null
 
 
 func _arm(shoulder: Vector2, elbow: Vector2, hand: Vector2) -> void:
@@ -554,13 +593,13 @@ func _draw_front() -> void:
 	_rrect(torso, 6, body_color)
 	_rrect(Rect2(torso.position.x + 2, torso.position.y + 3, 5, torso.size.y - 7), 2.5, body_color.lightened(0.28))
 	_rrect(Rect2(torso.end.x - 6, torso.position.y + 3, 4, torso.size.y - 6), 2.0, body_color.darkened(0.18))
-	draw_rect(Rect2(torso.position.x + 1, torso.end.y - 4, torso.size.x - 2, 3), _look.pants.darkened(0.1))
-	draw_colored_polygon(PackedVector2Array([Vector2(-3.5, torso.position.y), Vector2(3.5, torso.position.y), Vector2(0, torso.position.y + 4.5)]), skin)
-	draw_line(Vector2(-4.5, torso.position.y + 0.5), Vector2(0, torso.position.y + 5), body_color.lightened(0.45), 1.2)
-	draw_line(Vector2(4.5, torso.position.y + 0.5), Vector2(0, torso.position.y + 5), body_color.lightened(0.45), 1.2)
+	_c.draw_rect(Rect2(torso.position.x + 1, torso.end.y - 4, torso.size.x - 2, 3), _look.pants.darkened(0.1))
+	_c.draw_colored_polygon(PackedVector2Array([Vector2(-3.5, torso.position.y), Vector2(3.5, torso.position.y), Vector2(0, torso.position.y + 4.5)]), skin)
+	_c.draw_line(Vector2(-4.5, torso.position.y + 0.5), Vector2(0, torso.position.y + 5), body_color.lightened(0.45), 1.2)
+	_c.draw_line(Vector2(4.5, torso.position.y + 0.5), Vector2(0, torso.position.y + 5), body_color.lightened(0.45), 1.2)
 	# Lanyard badge.
-	draw_line(Vector2(-2, torso.position.y + 4), Vector2(3, torso.position.y + 10), Color(_look.accent, 0.9), 1.0)
-	draw_rect(Rect2(2, torso.position.y + 9, 4, 5), Color(1, 1, 1, 0.9))
+	_c.draw_line(Vector2(-2, torso.position.y + 4), Vector2(3, torso.position.y + 10), Color(_look.accent, 0.9), 1.0)
+	_c.draw_rect(Rect2(2, torso.position.y + 9, 4, 5), Color(1, 1, 1, 0.9))
 
 	# Hair behind the head (long styles).
 	_hair_back_layer(H, false)
@@ -568,7 +607,7 @@ func _draw_front() -> void:
 	_circ_ol(H + Vector2(-HEAD_R + 0.5 - side, 2), 3.2, skin)
 	_circ_ol(H + Vector2(HEAD_R - 0.5 - side, 2), 3.2, skin)
 	_circ_ol(H, HEAD_R, skin)
-	draw_circle(H + Vector2(0, 5), HEAD_R * 0.75, Color(skin.darkened(0.05), 0.35))
+	_c.draw_circle(H + Vector2(0, 5), HEAD_R * 0.75, Color(skin.darkened(0.05), 0.35))
 	# Face.
 	_draw_face(H, side, phone)
 	# Hair + accessories.
@@ -613,27 +652,27 @@ func _draw_face(H: Vector2, side: float, phone: bool) -> void:
 	for ex: float in [-5.0, 5.0]:
 		var e := H + Vector2(ex, 1) + look
 		if blink:
-			draw_line(e + Vector2(-2.2, 0), e + Vector2(2.2, 0), eye_col, 1.6)
+			_c.draw_line(e + Vector2(-2.2, 0), e + Vector2(2.2, 0), eye_col, 1.6)
 		else:
 			_oval(e, 2.2, 3.0, eye_col)
-			draw_circle(e + Vector2(-0.7, -1.2), 0.9, Color.WHITE)
+			_c.draw_circle(e + Vector2(-0.7, -1.2), 0.9, Color.WHITE)
 		# Eyebrows (raised while thinking).
 		var by := -5.0 - (1.5 if state == "THINKING" else 0.0)
-		draw_line(e + Vector2(-2.5, by), e + Vector2(2.5, by - (0.6 if ex > 0 else -0.6) * (1.0 if state == "THINKING" else 0.0)), Color(_look.hair.darkened(0.2), 0.9), 1.4)
+		_c.draw_line(e + Vector2(-2.5, by), e + Vector2(2.5, by - (0.6 if ex > 0 else -0.6) * (1.0 if state == "THINKING" else 0.0)), Color(_look.hair.darkened(0.2), 0.9), 1.4)
 	# Cheeks.
-	draw_circle(H + Vector2(-8.5 + look.x, 6), 2.4, Color(1.0, 0.45, 0.45, 0.28))
-	draw_circle(H + Vector2(8.5 + look.x, 6), 2.4, Color(1.0, 0.45, 0.45, 0.28))
+	_c.draw_circle(H + Vector2(-8.5 + look.x, 6), 2.4, Color(1.0, 0.45, 0.45, 0.28))
+	_c.draw_circle(H + Vector2(8.5 + look.x, 6), 2.4, Color(1.0, 0.45, 0.45, 0.28))
 	# Mouth.
 	var m := H + Vector2(look.x, 7.5 + look.y * 0.5)
 	var talking := (state == "COLLAB" or (bubble.visible and not _bubble_is_thought)) and fmod(t, 0.36) < 0.2
 	var mouth_col := Color("#7a2e35")
 	if talking:
 		_oval(m + Vector2(0, 0.5), 2.6, 2.0, mouth_col)
-		draw_circle(m + Vector2(0, 1.4), 1.2, Color("#e57373"))
+		_c.draw_circle(m + Vector2(0, 1.4), 1.2, Color("#e57373"))
 	elif state == "THINKING":
-		draw_line(m + Vector2(-1.5, 0.5), m + Vector2(2.5, -0.3), mouth_col, 1.5)
+		_c.draw_line(m + Vector2(-1.5, 0.5), m + Vector2(2.5, -0.3), mouth_col, 1.5)
 	else:
-		draw_arc(m + Vector2(0, -2.2), 3.0, 0.2 * PI, 0.8 * PI, 8, mouth_col, 1.5)
+		_c.draw_arc(m + Vector2(0, -2.2), 3.0, 0.2 * PI, 0.8 * PI, 8, mouth_col, 1.5)
 
 
 func _hair_back_layer(H: Vector2, _back: bool) -> void:
@@ -679,16 +718,16 @@ func _hair_front(H: Vector2, side: float) -> void:
 				var base := H + Vector2(cos(a), sin(a)) * (HEAD_R - 1)
 				var tip := H + Vector2(cos(a), sin(a)) * (HEAD_R + 7)
 				var perp := Vector2(-sin(a), cos(a)) * 4.0
-				draw_colored_polygon(PackedVector2Array([base - perp * 1.4, tip, base + perp * 1.4]), OUTLINE)
-				draw_colored_polygon(PackedVector2Array([base - perp, tip + (base - tip).normalized() * 1.5, base + perp]), c)
+				_c.draw_colored_polygon(PackedVector2Array([base - perp * 1.4, tip, base + perp * 1.4]), OUTLINE)
+				_c.draw_colored_polygon(PackedVector2Array([base - perp, tip + (base - tip).normalized() * 1.5, base + perp]), c)
 		"curly":
 			for k in 7:
 				var a := PI * (1.0 + k / 6.0)
 				_circ_ol(H + Vector2(cos(a), sin(a)) * (HEAD_R + 1), 4.5, c)
 		"bun":
 			_circ_ol(H + Vector2(0, -HEAD_R - 3), 6.0, c)
-	draw_polyline(pts + PackedVector2Array([pts[0]]), OUTLINE, 2.5, true)
-	draw_colored_polygon(pts, c)
+	_c.draw_polyline(pts + PackedVector2Array([pts[0]]), OUTLINE, 2.5, true)
+	_c.draw_colored_polygon(pts, c)
 	if style in ["bob", "long"]:
 		for sx: float in [-1.0, 1.0]:
 			var r := Rect2(H.x + sx * (HEAD_R - 1.5) - 3.5, H.y - 4, 7, 15 if style == "bob" else 20)
@@ -697,9 +736,9 @@ func _hair_front(H: Vector2, side: float) -> void:
 	if style == "curly":
 		for k in 5:
 			var a := PI * (1.1 + k / 5.0)
-			draw_circle(H + Vector2(cos(a), sin(a)) * (HEAD_R - 1), 4.0, c)
+			_c.draw_circle(H + Vector2(cos(a), sin(a)) * (HEAD_R - 1), 4.0, c)
 	# Shine.
-	draw_arc(H + Vector2(-3, -5), HEAD_R - 4, PI * 1.15, PI * 1.45, 6, Color(hl, 0.8), 2.0)
+	_c.draw_arc(H + Vector2(-3, -5), HEAD_R - 4, PI * 1.15, PI * 1.45, 6, Color(hl, 0.8), 2.0)
 
 
 func _accessory_front(H: Vector2, side: float) -> void:
@@ -708,11 +747,11 @@ func _accessory_front(H: Vector2, side: float) -> void:
 	match acc:
 		"glasses":
 			for ex: float in [-5.0, 5.0]:
-				draw_arc(H + Vector2(ex + side * 2.5, 1), 4.3, 0, TAU, 16, Color("#263238"), 1.5)
-			draw_line(H + Vector2(-0.8 + side * 2.5, 0), H + Vector2(0.8 + side * 2.5, 0), Color("#263238"), 1.5)
+				_c.draw_arc(H + Vector2(ex + side * 2.5, 1), 4.3, 0, TAU, 16, Color("#263238"), 1.5)
+			_c.draw_line(H + Vector2(-0.8 + side * 2.5, 0), H + Vector2(0.8 + side * 2.5, 0), Color("#263238"), 1.5)
 		"headphones":
-			draw_arc(H, HEAD_R + 3.0, PI * 1.05, PI * 1.95, 16, OUTLINE, 5.0)
-			draw_arc(H, HEAD_R + 3.0, PI * 1.05, PI * 1.95, 16, Color("#455a64"), 3.0)
+			_c.draw_arc(H, HEAD_R + 3.0, PI * 1.05, PI * 1.95, 16, OUTLINE, 5.0)
+			_c.draw_arc(H, HEAD_R + 3.0, PI * 1.05, PI * 1.95, 16, Color("#455a64"), 3.0)
 			_circ_ol(H + Vector2(-HEAD_R - 1, 1), 4.5, a)
 			_circ_ol(H + Vector2(HEAD_R + 1, 1), 4.5, a)
 		"beard":
@@ -723,25 +762,25 @@ func _accessory_front(H: Vector2, side: float) -> void:
 			for i in 5:
 				var x := H.x - 7.0 + 14.0 * i / 4.0
 				pts.append(Vector2(x, H.y + 5.0 + (1.0 if i % 2 == 0 else 0.0)))
-			draw_colored_polygon(pts, _look.hair)
-			draw_line(H + Vector2(-2.5 + side * 2, 8), H + Vector2(2.5 + side * 2, 8), Color("#7a2e35"), 1.5)
+			_c.draw_colored_polygon(pts, _look.hair)
+			_c.draw_line(H + Vector2(-2.5 + side * 2, 8), H + Vector2(2.5 + side * 2, 8), Color("#7a2e35"), 1.5)
 		"cap", "beanie":
 			var pts := PackedVector2Array()
 			for i in 15:
 				var ang := PI + 0.2 + (PI - 0.4) * i / 14.0
 				pts.append(H + Vector2(cos(ang), sin(ang)) * (HEAD_R + 2.0))
-			draw_polyline(pts + PackedVector2Array([pts[0]]), OUTLINE, 2.5, true)
-			draw_colored_polygon(pts, a)
+			_c.draw_polyline(pts + PackedVector2Array([pts[0]]), OUTLINE, 2.5, true)
+			_c.draw_colored_polygon(pts, a)
 			if acc == "cap":
 				_oval(H + Vector2(side * 4.0, -3), HEAD_R * 0.8, 3.0, a.darkened(0.3))
 			else:
-				draw_rect(Rect2(H.x - HEAD_R - 2, H.y - 6, HEAD_R * 2 + 4, 4), a.darkened(0.2))
+				_c.draw_rect(Rect2(H.x - HEAD_R - 2, H.y - 6, HEAD_R * 2 + 4, 4), a.darkened(0.2))
 				_circ_ol(H + Vector2(0, -HEAD_R - 3), 3.0, a.lightened(0.3))
 		"bow":
 			var b := H + Vector2(HEAD_R - 3, -HEAD_R + 3)
-			draw_colored_polygon(PackedVector2Array([b, b + Vector2(-6, -4), b + Vector2(-6, 4)]), a)
-			draw_colored_polygon(PackedVector2Array([b, b + Vector2(6, -4), b + Vector2(6, 4)]), a)
-			draw_circle(b, 2.0, a.darkened(0.25))
+			_c.draw_colored_polygon(PackedVector2Array([b, b + Vector2(-6, -4), b + Vector2(-6, 4)]), a)
+			_c.draw_colored_polygon(PackedVector2Array([b, b + Vector2(6, -4), b + Vector2(6, 4)]), a)
+			_c.draw_circle(b, 2.0, a.darkened(0.25))
 
 
 # ---- back view ----------------------------------------------------------------
@@ -749,8 +788,8 @@ func _draw_back() -> void:
 	_xf_origin = Vector2(0, SIT_DROP.get(_seat, 0.0) * _sit)
 	var t := _anim_time
 	var bob := _bob()
-	var at_desk := _seat == "desk" and _sit > 0.5
-	var seated := _sit > 0.5
+	var at_desk := _seat in ["desk", "foosball"] and _sit > 0.5
+	var seated := _sit > 0.5 and _seat != "foosball"
 	var skin: Color = _look.skin
 	var H := Vector2(0, -44.0 + bob)
 	var sh := -28.0 + bob
@@ -764,7 +803,7 @@ func _draw_back() -> void:
 		_oval(Vector2(5, -1 - lift_r), 4.5, 2.6, OUTLINE)
 
 	# Arms that reach forward go *behind* the body: draw them first.
-	var typing := at_desk and state == "WORKING"
+	var typing := at_desk and (state == "WORKING" or _seat == "foosball")
 	var tap_l := sin(t * 18.0) * 1.6 if typing else 0.0
 	var tap_r := sin(t * 18.0 + 2.0) * 1.6 if typing else 0.0
 	if at_desk:
@@ -780,10 +819,10 @@ func _draw_back() -> void:
 	_rrect(torso, 6, body_color)
 	_rrect(Rect2(torso.end.x - 7, torso.position.y + 3, 5, torso.size.y - 7), 2.5, body_color.lightened(0.22))
 	_rrect(Rect2(torso.position.x + 2, torso.position.y + 3, 4, torso.size.y - 6), 2.0, body_color.darkened(0.18))
-	draw_line(Vector2(0, torso.position.y + 4), Vector2(0, torso.end.y - 4), body_color.darkened(0.12), 1.0)
-	draw_rect(Rect2(torso.position.x + 1, torso.end.y - 4, torso.size.x - 2, 3), _look.pants.darkened(0.1))
+	_c.draw_line(Vector2(0, torso.position.y + 4), Vector2(0, torso.end.y - 4), body_color.darkened(0.12), 1.0)
+	_c.draw_rect(Rect2(torso.position.x + 1, torso.end.y - 4, torso.size.x - 2, 3), _look.pants.darkened(0.1))
 	# Neck.
-	draw_rect(Rect2(-3.5, torso.position.y - 4, 7, 5), skin.darkened(0.08))
+	_c.draw_rect(Rect2(-3.5, torso.position.y - 4, 7, 5), skin.darkened(0.08))
 
 	# Head from behind: ears, then hair covering most of it.
 	_circ_ol(H + Vector2(-HEAD_R + 0.5, 2), 3.2, skin)
@@ -792,12 +831,12 @@ func _draw_back() -> void:
 	var c: Color = _look.hair
 	var style := str(_look.style)
 	if _look.acc in ["cap", "beanie"]:
-		draw_circle(H, HEAD_R - 0.5, c)  # short hair under the hat
+		_c.draw_circle(H, HEAD_R - 0.5, c)  # short hair under the hat
 		var pts := PackedVector2Array()
 		for i in 15:
 			var ang := PI + PI * i / 14.0
 			pts.append(H + Vector2(cos(ang), sin(ang)) * (HEAD_R + 2.0))
-		draw_colored_polygon(pts, _look.accent)
+		_c.draw_colored_polygon(pts, _look.accent)
 	else:
 		# Hair covers the head except a gap at the nape (bigger for a buzz cut).
 		var gap := PI * (1.0 if style == "buzz" else 0.45)
@@ -805,7 +844,7 @@ func _draw_back() -> void:
 		for i in 21:
 			var ang := PI * 0.5 + gap * 0.5 + (TAU - gap) * i / 20.0
 			pts.append(H + Vector2(cos(ang), sin(ang)) * (HEAD_R + 1.0))
-		draw_colored_polygon(pts, c.darkened(0.1) if style == "buzz" else c)
+		_c.draw_colored_polygon(pts, c.darkened(0.1) if style == "buzz" else c)
 		match style:
 			"long":
 				_rrect(Rect2(H.x - HEAD_R, H.y, HEAD_R * 2, 20).grow(1.2), 6, OUTLINE)
@@ -816,7 +855,7 @@ func _draw_back() -> void:
 				var sway := sin(t * 3.0 + _walk_phase) * 1.5
 				_circ_ol(H + Vector2(sway, HEAD_R - 2), 5.0, c)
 				_circ_ol(H + Vector2(sway * 1.3, HEAD_R + 5), 3.5, c)
-				draw_circle(H + Vector2(sway, HEAD_R - 6), 2.0, _look.accent)
+				_c.draw_circle(H + Vector2(sway, HEAD_R - 6), 2.0, _look.accent)
 			"bun":
 				_circ_ol(H + Vector2(0, -HEAD_R - 2), 6.0, c)
 			"spiky":
@@ -825,19 +864,19 @@ func _draw_back() -> void:
 					var base := H + Vector2(cos(ang), sin(ang)) * (HEAD_R - 1)
 					var tip := H + Vector2(cos(ang), sin(ang)) * (HEAD_R + 6)
 					var perp := Vector2(-sin(ang), cos(ang)) * 4.0
-					draw_colored_polygon(PackedVector2Array([base - perp, tip, base + perp]), c)
+					_c.draw_colored_polygon(PackedVector2Array([base - perp, tip, base + perp]), c)
 			"curly":
 				for k in 9:
 					var ang := PI * (0.9 + k * 1.2 / 8.0)
-					draw_circle(H + Vector2(cos(ang), sin(ang)) * (HEAD_R), 4.5, c)
-		draw_arc(H + Vector2(3, -4), HEAD_R - 4, PI * 1.55, PI * 1.85, 6, Color(c.lightened(0.25), 0.8), 2.0)
+					_c.draw_circle(H + Vector2(cos(ang), sin(ang)) * (HEAD_R), 4.5, c)
+		_c.draw_arc(H + Vector2(3, -4), HEAD_R - 4, PI * 1.55, PI * 1.85, 6, Color(c.lightened(0.25), 0.8), 2.0)
 	if _look.acc == "headphones":
-		draw_arc(H, HEAD_R + 3.0, PI * 1.05, PI * 1.95, 16, Color("#455a64"), 3.0)
+		_c.draw_arc(H, HEAD_R + 3.0, PI * 1.05, PI * 1.95, 16, Color("#455a64"), 3.0)
 		_circ_ol(H + Vector2(-HEAD_R - 1, 1), 4.5, _look.accent)
 		_circ_ol(H + Vector2(HEAD_R + 1, 1), 4.5, _look.accent)
 	elif _look.acc == "glasses":
-		draw_line(H + Vector2(-HEAD_R, 0), H + Vector2(-HEAD_R + 4, 1), Color("#263238"), 1.4)
-		draw_line(H + Vector2(HEAD_R, 0), H + Vector2(HEAD_R - 4, 1), Color("#263238"), 1.4)
+		_c.draw_line(H + Vector2(-HEAD_R, 0), H + Vector2(-HEAD_R + 4, 1), Color("#263238"), 1.4)
+		_c.draw_line(H + Vector2(HEAD_R, 0), H + Vector2(HEAD_R - 4, 1), Color("#263238"), 1.4)
 
 	# Arms visible at the sides.
 	if at_desk:
@@ -846,7 +885,7 @@ func _draw_back() -> void:
 	elif is_phone_out():
 		_arm(Vector2(-11, sh), Vector2(-14, sh + 8), Vector2(-7, sh + 2))
 		_arm(Vector2(11, sh), Vector2(14, sh + 8), Vector2(7, sh + 2))
-		draw_circle(Vector2(0, sh - 2), 10.0, Color(0.55, 0.85, 1.0, 0.18))  # screen glow
+		_c.draw_circle(Vector2(0, sh - 2), 10.0, Color(0.55, 0.85, 1.0, 0.18))  # screen glow
 	elif state == "COLLAB" and seated:
 		var g := sin(t * 5.0)
 		_arm(Vector2(-11, sh), Vector2(-15, sh + 6), Vector2(-12, sh + 12))
@@ -860,12 +899,12 @@ func _draw_back() -> void:
 
 func _draw_phone(p: Vector2, _back: bool) -> void:
 	var glow := 0.55 + 0.2 * sin(_anim_time * 6.0)
-	draw_circle(p + Vector2(0, 2), 9.0, Color(0.55, 0.85, 1.0, 0.18))
+	_c.draw_circle(p + Vector2(0, 2), 9.0, Color(0.55, 0.85, 1.0, 0.18))
 	_rrect(Rect2(p.x - 3.5, p.y - 2, 7, 10).grow(1.0), 2, OUTLINE)
 	_rrect(Rect2(p.x - 3.5, p.y - 2, 7, 10), 1.5, Color("#263238"))
-	draw_rect(Rect2(p.x - 2.5, p.y - 1, 5, 7.5), Color(0.6, 0.88, 1.0, glow))
-	draw_line(Vector2(p.x - 1.5, p.y + 1), Vector2(p.x + 1.5, p.y + 1), Color(1, 1, 1, 0.8), 0.8)
-	draw_line(Vector2(p.x - 1.5, p.y + 3), Vector2(p.x + 0.5, p.y + 3), Color(1, 1, 1, 0.8), 0.8)
+	_c.draw_rect(Rect2(p.x - 2.5, p.y - 1, 5, 7.5), Color(0.6, 0.88, 1.0, glow))
+	_c.draw_line(Vector2(p.x - 1.5, p.y + 1), Vector2(p.x + 1.5, p.y + 1), Color(1, 1, 1, 0.8), 0.8)
+	_c.draw_line(Vector2(p.x - 1.5, p.y + 3), Vector2(p.x + 0.5, p.y + 3), Color(1, 1, 1, 0.8), 0.8)
 
 
 ## Things above the head: thought dots, phone ping.
@@ -873,56 +912,56 @@ func _draw_overlays(drop: float) -> void:
 	var t := _anim_time
 	var top := Vector2(14, _head_top() - 4)
 	if state == "THINKING" and not bubble.visible:
-		draw_circle(top + Vector2(-6, 10), 2.0, Color(1, 1, 1, 0.85))
-		draw_circle(top + Vector2(-2, 5), 3.0, Color(1, 1, 1, 0.9))
+		_c.draw_circle(top + Vector2(-6, 10), 2.0, Color(1, 1, 1, 0.85))
+		_c.draw_circle(top + Vector2(-2, 5), 3.0, Color(1, 1, 1, 0.9))
 		_rrect(Rect2(top.x - 2, top.y - 12, 26, 13), 6.5, Color(1, 1, 1, 0.95))
 		for i in 3:
 			var a := 0.3 + 0.7 * clampf(sin(t * 5.0 - i * 0.9), 0.0, 1.0)
-			draw_circle(top + Vector2(4 + i * 7, -5.5), 2.0, Color(0.25, 0.25, 0.3, a))
+			_c.draw_circle(top + Vector2(4 + i * 7, -5.5), 2.0, Color(0.25, 0.25, 0.3, a))
 	if unread > 0:
 		# Envelope: messages waiting for this bot to check in.
 		var bob := sin(t * 2.5) * 1.5
 		var e := Vector2(-24, _head_top() - 8 + bob)
-		draw_set_transform(e, 0.0, Vector2.ONE * _ui_scale)
+		_c.draw_set_transform(e, 0.0, Vector2.ONE * _ui_scale)
 		_rrect(Rect2(-10, -7, 20, 14), 2.5, OUTLINE)
 		_rrect(Rect2(-9, -6, 18, 12), 2, Color("#fff8e1"))
-		draw_polyline(PackedVector2Array([Vector2(-8.5, -5.5), Vector2(0, 1), Vector2(8.5, -5.5)]), Color("#8d6e63"), 1.4)
+		_c.draw_polyline(PackedVector2Array([Vector2(-8.5, -5.5), Vector2(0, 1), Vector2(8.5, -5.5)]), Color("#8d6e63"), 1.4)
 		if unread > 1:
-			draw_circle(Vector2(9, -7), 6.0, Color("#e53935"))
-			draw_string(ThemeDB.fallback_font, Vector2(5.5 if unread < 10 else 3.0, -3.0), str(mini(unread, 99)),
+			_c.draw_circle(Vector2(9, -7), 6.0, Color("#e53935"))
+			_c.draw_string(ThemeDB.fallback_font, Vector2(5.5 if unread < 10 else 3.0, -3.0), str(mini(unread, 99)),
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color.WHITE)
-		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+		_c.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	if state == "ERROR":
 		# A pulsing red "!" badge (a real bot reported a failure).
 		var p := Vector2(16, _head_top() - 10)
 		var pulse := 1.0 + 0.1 * sin(t * 6.0)
-		draw_set_transform(p, 0.0, Vector2.ONE * pulse * _ui_scale)
-		draw_circle(Vector2.ZERO, 9.5, OUTLINE)
-		draw_circle(Vector2.ZERO, 8.0, STATE_COLORS["ERROR"])
-		draw_rect(Rect2(-1.4, -5.5, 2.8, 7.0), Color.WHITE)
-		draw_circle(Vector2(0, 4.2), 1.5, Color.WHITE)
-		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+		_c.draw_set_transform(p, 0.0, Vector2.ONE * pulse * _ui_scale)
+		_c.draw_circle(Vector2.ZERO, 9.5, OUTLINE)
+		_c.draw_circle(Vector2.ZERO, 8.0, STATE_COLORS["ERROR"])
+		_c.draw_rect(Rect2(-1.4, -5.5, 2.8, 7.0), Color.WHITE)
+		_c.draw_circle(Vector2(0, 4.2), 1.5, Color.WHITE)
+		_c.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	if t < _ping_until:
 		var k := clampf((_ping_until - t) / 1.4, 0.0, 1.0)
 		var p := Vector2(-20, _head_top() - 2 - (1.0 - k) * 6.0)
 		var pulse := 1.0 + 0.12 * sin(t * 12.0)
-		draw_set_transform(p, 0.0, Vector2.ONE * pulse * _ui_scale)
+		_c.draw_set_transform(p, 0.0, Vector2.ONE * pulse * _ui_scale)
 		_rrect(Rect2(-9, -7, 18, 13), 5, Color(OUTLINE, k))
 		_rrect(Rect2(-8, -6, 16, 11), 4, Color(1.0, 0.85, 0.3, k))
-		draw_colored_polygon(PackedVector2Array([Vector2(1, 4), Vector2(5, 4), Vector2(4, 8)]), Color(1.0, 0.85, 0.3, k))
+		_c.draw_colored_polygon(PackedVector2Array([Vector2(1, 4), Vector2(5, 4), Vector2(4, 8)]), Color(1.0, 0.85, 0.3, k))
 		for i in 3:
-			draw_circle(Vector2(-4 + i * 4, -0.5), 1.2, Color(0.2, 0.2, 0.2, k))
-		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+			_c.draw_circle(Vector2(-4 + i * 4, -0.5), 1.2, Color(0.2, 0.2, 0.2, k))
+		_c.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
 func _draw_bubble_tail() -> void:
 	var a := bubble.modulate.a
 	var base := bubble.position + Vector2(bubble.size.x * 0.5, bubble.size.y)
 	if _bubble_is_thought:
-		draw_circle(base + Vector2(-4, 8), 4.0, Color(0.93, 0.96, 1.0, a))
-		draw_circle(base + Vector2(-7, 15), 2.5, Color(0.93, 0.96, 1.0, a))
+		_c.draw_circle(base + Vector2(-4, 8), 4.0, Color(0.93, 0.96, 1.0, a))
+		_c.draw_circle(base + Vector2(-7, 15), 2.5, Color(0.93, 0.96, 1.0, a))
 	else:
-		draw_colored_polygon(PackedVector2Array([base + Vector2(-6, -1), base + Vector2(6, -1), base + Vector2(0, 9)]), Color(1, 1, 1, a))
+		_c.draw_colored_polygon(PackedVector2Array([base + Vector2(-6, -1), base + Vector2(6, -1), base + Vector2(0, 9)]), Color(1, 1, 1, a))
 
 
 func _style_bubble(is_thought: bool) -> void:
