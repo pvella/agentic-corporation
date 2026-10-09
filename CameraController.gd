@@ -7,7 +7,7 @@ extends Camera2D
 
 signal zoom_changed(zoom_level: float)
 
-@export var min_zoom: float = 0.35
+@export var min_zoom: float = 0.2
 @export var max_zoom: float = 2.4
 @export var pan_speed: float = 700.0
 @export var top_margin: float = 46.0  ## HUD bar height (screen px)

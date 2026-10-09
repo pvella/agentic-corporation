@@ -57,8 +57,14 @@
     "break_spots": [
      "Coffee_Machine",
      "Water_Cooler",
+     "Vending_Machine",
      "Sofa_1",
      "Sofa_2"
+    ],
+    "chat_spots": [
+     "Chat_Break",
+     "Chat_Corridor",
+     "Chat_dev_team"
     ],
     "meeting_target": "Meeting_Room"
    },
@@ -116,8 +122,14 @@
     "break_spots": [
      "Coffee_Machine",
      "Water_Cooler",
+     "Vending_Machine",
      "Sofa_1",
      "Sofa_2"
+    ],
+    "chat_spots": [
+     "Chat_Break",
+     "Chat_Corridor",
+     "Chat_admin_services"
     ],
     "meeting_target": "Meeting_Room"
    },
@@ -175,8 +187,14 @@
     "break_spots": [
      "Coffee_Machine",
      "Water_Cooler",
+     "Vending_Machine",
      "Sofa_1",
      "Sofa_2"
+    ],
+    "chat_spots": [
+     "Chat_Break",
+     "Chat_Corridor",
+     "Chat_special"
     ],
     "meeting_target": "Meeting_Room"
    },
@@ -226,7 +244,12 @@
     ],
     "break_spots": [
      "ptc_Coffee",
-     "ptc_Water"
+     "ptc_Water",
+     "ptc_Sofa_1",
+     "ptc_Sofa_2"
+    ],
+    "chat_spots": [
+     "ptc_Chat"
     ],
     "meeting_target": "ptc_Meeting_Room"
    }
@@ -237,6 +260,7 @@
     "spots": [
      "Coffee_Machine",
      "Water_Cooler",
+     "Vending_Machine",
      "Sofa_1",
      "Sofa_2"
     ],
