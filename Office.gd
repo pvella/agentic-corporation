@@ -19,10 +19,10 @@ extends Node2D
 const WALL := 12.0
 const EXT_WALL := 14.0
 const CORRIDOR := 96.0
-const CELL := Vector2(160, 124)
+const CELL := Vector2(160, 150)   ## one desk + chair + aisle
 const PAD_X := 26.0
-const ROOM_TOP := 46.0
-const ROOM_BOTTOM := 40.0
+const ROOM_TOP := 68.0            ## space above the first desk row (sign, plant)
+const ROOM_BOTTOM := 72.0         ## open floor below the last desk row
 const DOOR := 84.0
 const WING_GAP := 34.0
 const AMENITY_W := 176.0
@@ -194,11 +194,11 @@ func _team_size(r: Dictionary) -> Vector2:
 func _cell_size(cell: Dictionary) -> Vector2:
 	match str(cell.kind):
 		"team": return _team_size(cell.room)
-		"break": return Vector2(440, 330)
+		"break": return Vector2(440, 440)
 		"meeting":
 			var per_side := ceili(int(cell.seats) / 2.0)
-			return Vector2(maxf(340.0, per_side * 84.0 + 180.0), 300)
-		_: return Vector2(300, 300)
+			return Vector2(maxf(340.0, per_side * 84.0 + 180.0), 420)
+		_: return Vector2(300, 420)
 
 
 func _corridor_wall(cell: Dictionary, r: Rect2) -> void:
@@ -289,11 +289,11 @@ func _build_break(cell: Dictionary, r: Rect2) -> void:
 	_wp("Coffee_Machine", Vector2(p.x + 56, p.y + 112), "up")
 	_prop("water", Rect2(r.end.x - 66, p.y + 44, 40, 44))
 	_wp("Water_Cooler", Vector2(r.end.x - 46, p.y + 114), "down")
-	var sofa := Rect2(p.x + 22, p.y + 190, 156, 46)
+	var sofa := Rect2(p.x + 22, p.y + 250, 156, 46)
 	_prop("sofa", sofa)
 	_wp("Sofa_1", Vector2(sofa.position.x + 48, sofa.position.y + 26), "down", "sofa")
 	_wp("Sofa_2", Vector2(sofa.position.x + 108, sofa.position.y + 26), "down", "sofa")
-	var table := Rect2(r.end.x - 196, p.y + 178, 120, 58)
+	var table := Rect2(r.end.x - 196, p.y + 238, 120, 58)
 	_prop("foosball", table)
 	_wp("Foosball_1", Vector2(table.position.x - 22, table.position.y + 22), "right", "foosball")
 	_wp("Foosball_2", Vector2(table.end.x + 22, table.position.y + 22), "left", "foosball")
@@ -308,7 +308,7 @@ func _build_meeting(cell: Dictionary, r: Rect2) -> void:
 	var n := int(cell.seats)
 	var per_side := ceili(n / 2.0)
 	var tw := per_side * 84.0 + 20.0
-	var table := Rect2(r.position.x + r.size.x * 0.5 - tw * 0.5, r.position.y + 120, tw, 64)
+	var table := Rect2(r.position.x + r.size.x * 0.5 - tw * 0.5, r.position.y + maxf(120.0, r.size.y * 0.5 - 40.0), tw, 64)
 	_prop("table", table)
 	var names: Array[String] = []
 	for i in n:
@@ -343,7 +343,7 @@ func _build_wing(room: Dictionary, wing: Rect2) -> Rect2:
 	_wp(rid + "_Coffee", Vector2(ax + 44, wing.position.y + 118), "up")
 	_prop("water", Rect2(ax + 112, wing.position.y + 48, 40, 44))
 	_wp(rid + "_Water", Vector2(ax + 132, wing.position.y + 118), "down")
-	var table := Rect2(ax + 28, wing.position.y + 250, 120, 60)
+	var table := Rect2(ax + 28, wing.position.y + 330, 120, 60)
 	_prop("table", table)
 	var seats: Array[String] = []
 	for i in 4:
