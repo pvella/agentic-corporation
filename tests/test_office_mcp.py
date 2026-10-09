@@ -221,14 +221,18 @@ class MixedModeTests(HarnessCase):
 class LiveModeTests(HarnessCase):
     extra_args = ["--mode", "live", "--live-hold", "5"]
 
-    async def test_live_mode_has_no_simulation(self) -> None:
-        self.assertIsNone(self.harness.director)
+    async def test_live_mode_has_no_fake_work(self) -> None:
+        director = self.harness.director
+        self.assertIsNotNone(director)
+        self.assertTrue(director.idle_only, "live mode only simulates idle life")
         hub = self.harness.hub
         self.assertTrue(all(a.state == "IDLE" and a.target == a.desk for a in hub.agents.values()))
         await self.call("PTC Odoo", "finish", "Invoices posted")
         ptc = hub.agents["ptc_odoo"]
         self.assertEqual(ptc.state, "IDLE")
-        self.assertIn(ptc.target, ("ptc_Coffee", "ptc_Water"))  # the isolated wing's own kitchenette
+        self.assertIn(ptc.target, ("ptc_Coffee", "ptc_Water", "ptc_Sofa_1", "ptc_Sofa_2"))  # the wing's own spots
+        self.assertFalse(ptc.is_live(), "finish hands the agent back to the ambient life")
+        self.assertEqual(ptc.activity, "break")
         self.assertEqual(hub.live_hold, 5.0)
 
 

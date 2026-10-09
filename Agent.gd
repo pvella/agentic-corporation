@@ -286,9 +286,10 @@ func set_logs(lines: Array) -> void:
 		log_lines.append(str(l))
 
 
-## Pulls out the phone for `seconds` (with a little ping on the first glance).
-func glance_phone(seconds: float = 3.5) -> void:
-	if _phone_until < _anim_time:
+## Pulls out the phone for `seconds` (with a little ping on the first glance,
+## unless it's just idle scrolling: ping = false).
+func glance_phone(seconds: float = 3.5, ping: bool = true) -> void:
+	if ping and _phone_until < _anim_time:
 		_ping_until = _anim_time + 1.4
 	_phone_until = maxf(_phone_until, _anim_time + seconds)
 

@@ -3,7 +3,12 @@
 ## top-down "world" coordinates built by Office.gd; only drawing goes through
 ## here:
 ##
-##   screen = ((x - y) * K, (x + y) * K / 2 - z)        (z = height above the floor)
+##   screen = SCALE * ((x - y) * K, (x + y) * K / 2 - z)   (z = height above the floor)
+##
+## SCALE blows the whole drawn world up (rooms, furniture, wall heights) without
+## touching the simulation: the layout, navigation mesh, waypoints and agent
+## speeds stay in the original "world" units. The top-down view is just
+## SCALE * (x, y).
 ##
 ## World north (-y) points up-right on screen, world west (-x) up-left, so the
 ## back walls of a room are its north and west walls. Depth order is screen y
@@ -12,9 +17,13 @@
 extends RefCounted
 
 const K := 1.0
+## Drawn size of one world unit (both views). People get their own, slightly
+## larger factor (PEOPLE_SCALE) so they read well next to the furniture.
+const SCALE := 1.4
+const PEOPLE_SCALE := 1.6
 ## The linear part of the projection as a Transform2D (x axis, y axis).
-const AXIS_X := Vector2(K, K * 0.5)
-const AXIS_Y := Vector2(-K, K * 0.5)
+const AXIS_X := Vector2(K, K * 0.5) * SCALE
+const AXIS_Y := Vector2(-K, K * 0.5) * SCALE
 
 ## True: isometric view. False: the classic top-down view (identity projection).
 static var enabled := true
@@ -22,11 +31,12 @@ static var enabled := true
 
 static func to_screen(p: Vector2, z: float = 0.0) -> Vector2:
 	if not enabled:
-		return p
-	return Vector2((p.x - p.y) * K, (p.x + p.y) * K * 0.5 - z)
+		return p * SCALE
+	return Vector2((p.x - p.y) * K, (p.x + p.y) * K * 0.5 - z) * SCALE
 
 
 static func to_world(s: Vector2) -> Vector2:
+	s /= SCALE
 	if not enabled:
 		return s
 	var a := s.x / K          # x - y
@@ -38,20 +48,20 @@ static func to_world(s: Vector2) -> Vector2:
 ## added (e.g. -node.position to draw in a node's local space).
 static func floor_xf(z: float = 0.0, origin_shift: Vector2 = Vector2.ZERO) -> Transform2D:
 	if not enabled:
-		return Transform2D(Vector2.RIGHT, Vector2.DOWN, origin_shift)
-	return Transform2D(AXIS_X, AXIS_Y, origin_shift + Vector2(0, -z))
+		return Transform2D(Vector2.RIGHT * SCALE, Vector2.DOWN * SCALE, origin_shift)
+	return Transform2D(AXIS_X, AXIS_Y, origin_shift + Vector2(0, -z) * SCALE)
 
 
 ## Vertical plane at world y = y0 (faces south, i.e. towards the lower left of
 ## the screen). Local coords: u = world x, v = pixels down from height z_top.
 static func south_xf(y0: float, z_top: float, origin_shift: Vector2 = Vector2.ZERO) -> Transform2D:
-	return Transform2D(AXIS_X, Vector2(0, 1), Vector2(-y0 * K, y0 * K * 0.5 - z_top) + origin_shift)
+	return Transform2D(AXIS_X, Vector2(0, SCALE), Vector2(-y0 * K, y0 * K * 0.5 - z_top) * SCALE + origin_shift)
 
 
 ## Vertical plane at world x = x0 (faces east, towards the lower right).
 ## Local coords: u = world y, v = pixels down from height z_top.
 static func east_xf(x0: float, z_top: float, origin_shift: Vector2 = Vector2.ZERO) -> Transform2D:
-	return Transform2D(Vector2(-K, K * 0.5), Vector2(0, 1), Vector2(x0 * K, x0 * K * 0.5 - z_top) + origin_shift)
+	return Transform2D(Vector2(-K, K * 0.5) * SCALE, Vector2(0, SCALE), Vector2(x0 * K, x0 * K * 0.5 - z_top) * SCALE + origin_shift)
 
 
 ## Screen-space bounding box of a world rect raised up to height `h`.

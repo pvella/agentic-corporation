@@ -4,13 +4,13 @@
 
 ![Agent Office overview in the isometric view: four team rooms, the shared break room and meeting room, and the separate Power Tech Consulting wing](docs/images/agent-office-overview.png)
 
-The office is laid out from **`office.json`**: team rooms with a desk per member and a clickable name sign, a central corridor, a shared **Break Room** (coffee, water cooler, sofa and a foosball table) and **Meeting Room**, and optionally **isolated wings** with their own entrance, kitchenette and meeting nook (the Power Tech Consulting wing has no walkable route into the rest of the building).
+The office is laid out from **`office.json`**: team rooms with a desk per member and a clickable name sign, a central corridor, a shared **Break Room** (coffee, water cooler, vending machine, sofa and a foosball table) and **Meeting Room**, and optionally **isolated wings** with their own entrance, kitchenette and meeting nook (the Power Tech Consulting wing has no walkable route into the rest of the building).
 
 | State | What you see |
 |---|---|
 | `WORKING` | The agent sits in its chair, seen from behind, typing at its own monitor, which scrolls code in the agent's colour. |
 | `THINKING` | At the desk: scratches its head while the screen keeps glowing. Elsewhere: a hand on the chin and a "..." cloud. |
-| `IDLE` | A break: coffee machine, water cooler, sofa or the occasional foosball game ("Goal!"). The desk monitor drops to a dim screensaver. |
+| `IDLE` | Sitting back at the desk, or a break: coffee machine, water cooler, vending machine, sofa, a foosball game for 2 to 4 ("Goal!"), small talk with a couple of colleagues, or a look at the phone. The desk monitor drops to a dim screensaver. |
 | `COLLAB` | Colleagues take separate seats at the meeting table and talk with their hands. |
 
 When an agent is **away from its desk** (walking, on a break, at foosball or in a meeting) and a log line or a THINKING / WORKING update arrives for it, it pulls out a glowing phone with a little ping bubble.
@@ -21,15 +21,17 @@ Clicking an agent slides out a **terminal drawer** with its live log, colour cod
 
 A small Python **event bridge** (`agent_harness.py`) drives the office over a local WebSocket. It either simulates agents (mock mode) or wraps real CLI processes and streams their output (cli mode).
 
-![The break room: a foosball game, the sofa, the coffee machine, the vending machine](docs/images/agent-office-break-room.png)
+![The break room: a four-player foosball game, three colleagues chatting by the counter, two on the sofa](docs/images/agent-office-break-room.png)
 
 ### 3D (isometric) and top-down views
 
 The office opens in a Habbo-style **isometric view**: a 2:1 dimetric projection, about 45 degrees. Floors are diamond tiles in each room's colour. The north and west walls of each building are tall, with windows. Interior walls are waist height and the front walls are low, so you can always see into the rooms. Furniture is drawn as shaded 3D blocks, and people stand upright and are sorted by depth, so they walk behind and in front of desks, tables and walls correctly. Press **V**, or the **Top view** / **3D view** button in the header, to switch to the classic top-down view and back. The choice is saved in `user://agent_office.cfg`. To force one view at startup, pass `-- --view=top` or `-- --view=iso`.
 
+**Scale.** Rooms, desks, monitors, chairs and the rest of the furniture are drawn 1.4x larger than the simulation's world units (`Iso.SCALE`), and people 1.6x (`Iso.PEOPLE_SCALE`), so they read well on a laptop screen. Rooms also have more floor area than before. The office opens at a comfortable zoom centred on the main building (the team rooms around the break room) rather than fitted. **F** still fits everything, and the room names in the top bar jump to that room and zoom in beside its team summary. Name pills and bubbles stay legible at the default zoom on a MacBook Air (1470x956). On a HiDPI (Retina) screen a window that would open too small is enlarged to match the display scale. To open fitted, pass `-- --fit`.
+
 ![The same office in the classic top-down view](docs/images/agent-office-top-down.png)
 
-Only the drawing changes between the views. The layout, the navigation mesh and the agents' paths always live in flat top-down "world" coordinates. `Iso.gd` projects a world point `(x, y)` to the screen as `((x - y) * K, (x + y) * K / 2 - height)`. Each agent's physics body walks in a hidden world layer. An `AgentView` node in the y-sorted render layer sits at the projected feet: it draws the character and carries the name pill, the bubble and the click area, so clicks land where the person is drawn. Long furniture and walls are split into short slices so each slice sorts correctly against people.
+Only the drawing changes between the views. The layout, the navigation mesh and the agents' paths always live in flat top-down "world" coordinates. `Iso.gd` projects a world point `(x, y)` to the screen as `SCALE * ((x - y) * K, (x + y) * K / 2 - height)` (the top-down view is just `SCALE * (x, y)`). Each agent's physics body walks in a hidden world layer. An `AgentView` node in the y-sorted render layer sits at the projected feet: it draws the character and carries the name pill, the bubble and the click area, so clicks land where the person is drawn. Long furniture and walls are split into short slices so each slice sorts correctly against people.
 
 ## Quick start
 
@@ -98,7 +100,7 @@ python3 agent_harness.py --mode cli --prompt-mode none \
 | `--office PATH\|none` | `office.json` next to the script, if present | Office config; `none` forces the legacy 3-agent office. |
 | `--tempo calm\|normal\|busy` | `calm` | Background activity level (see the table above). |
 | `--speed X` | `1.0` | Time multiplier for background activity and mock prompt runs. |
-| `--no-ambient` / `--ambient` | | Turn background activity off (mock mode) or on for agents without a command (cli mode). |
+| `--no-ambient` / `--ambient` | | Turn background activity off (mock and live mode) or on for agents without a command (cli mode). |
 | `--host` / `--port` | `127.0.0.1` / `8765` | WebSocket listen address (the Godot client). |
 | `--mcp-port N` / `--no-mcp` | `8766` | Port of the MCP connector at `/mcp` (see "Live status from Grok Bot"); `--no-mcp` or `0` turns it off. |
 | `--mcp-host` | `127.0.0.1` | MCP bind address. Leave it on localhost; Tailscale Funnel proxies to it. |
@@ -214,11 +216,11 @@ Type a prompt into a real bot's terminal and it goes into that bot's **inbox** i
 ### Mixed and live modes
 
 - **Mock mode (default):** everyone is simulated, but as soon as a bot reports for real the simulation leaves **that** agent alone for 10 minutes after its latest report (`--live-hold`), so real status is never overwritten. Everyone else keeps the calm simulation. When the hold runs out, the simulation picks up again from where the bot left off.
-- **Live mode (`--mode live`):** no simulation at all. Everyone starts seated with their screens off and only moves on real reports (or on CLI runs bound with `--agent-cmd`). Prompts typed into the dashboard for agents without a command go to their inbox (see above).
+- **Live mode (`--mode live`):** no fake work. Only real reports (or CLI runs bound with `--agent-cmd`) make anyone work, think or log, and the header says so: `LIVE · 23 agents · 1 working · 0 thinking · 22 idle (ambient)`. Agents that aren't busy with a real report live a calm idle office life instead: they sit at their desk with the screen on its screensaver, fetch a coffee or water, visit the vending machine, sit on the sofa, play foosball (2 to 4 players), stop for small talk in twos and threes (in the break room, the corridor or their own room) and now and then look at their phone. None of it shows task text or log lines. A real report takes over that agent at once, even mid-chat. After `finish` (or when the `--live-hold` window runs out without one) the agent goes back to the idle life. The Power Tech Consulting wing has its own kitchenette, sofa and chat corner, and its people never mingle with the main building. `--no-ambient` turns the idle life off (everyone stays at their desk until a report arrives). Prompts typed into the dashboard for agents without a command go to their inbox (see above).
 
 ```bash
 python3 agent_harness.py                    # simulated office + live overrides, MCP on :8766
-python3 agent_harness.py --mode live        # only real reports move people
+python3 agent_harness.py --mode live        # only real reports make people work; idle office life otherwise
 python3 agent_harness.py --no-mcp           # no connector
 ```
 
@@ -277,7 +279,7 @@ curl -s https://<mac>.<tailnet>.ts.net/mcp \
 | Input | Action |
 |---|---|
 | Left-click an agent | Open its terminal drawer. The agent gets a white selection ring. Hovering shows a faint ring. |
-| Left-click a room sign, or a room name in the top bar | Open that room's team summary. Click a member's name in it to open their terminal. |
+| Left-click a room sign, or a room name in the top bar | Open that room's team summary (the top-bar buttons also jump and zoom to the room). Click a member's name in it to open their terminal. |
 | Drag (left on the floor, or middle / right anywhere), **WASD** / arrow keys, trackpad two-finger scroll | Pan. |
 | Mouse wheel, pinch, **+** / **-** | Zoom (about the cursor). |
 | **F** or **Home** | Fit the whole office in the window. |
@@ -287,7 +289,7 @@ curl -s https://<mac>.<tailnet>.ts.net/mcp \
 
 ![Team summary for the Dev Team room](docs/images/agent-office-team-summary.png)
 
-The window opens at 1280x800 and can be resized; the office is fitted to the window at start. Name pills and bubbles grow slightly when you zoom out so they stay readable. The coloured ring at each agent's feet shows its state: grey for IDLE, green for WORKING, yellow for THINKING and purple for COLLAB.
+The window opens at 1280x800 (larger on a HiDPI screen) and can be resized; the camera starts on the main building at a comfortable zoom (**F** fits everything). Name pills and bubbles grow slightly when you zoom out so they stay readable. The coloured ring at each agent's feet shows its state: grey for IDLE, green for WORKING, yellow for THINKING and purple for COLLAB.
 
 ## Stores / distribution
 
@@ -323,6 +325,7 @@ There is no packaged build or store listing yet. Agentic Corporation is a **loca
 | `tests/test_ansi.gd` | Headless unit tests for the colour converter. |
 | `tests/smoke_test.gd` | Headless integration test that loads `Main.tscn` and feeds it protocol messages (legacy office and the team-room office). It also checks the iso projection round-trip, clicking people and room signs in the iso view, and the top-down toggle. |
 | `tests/fixtures/office_layout.json` | The `OFFICE_LAYOUT` the harness sends for the default `office.json`, used by the smoke test. |
+| `tests/test_ambient.py` | Python unit tests for the ambient office life on a fake clock (live mode never fakes work, chats use facing slots within a group, foosball for 2 to 4, PTC stays in its wing, a real report always wins, finish hands the agent back). |
 | `tests/test_office_mcp.py` | Python unit tests for the MCP connector (auth, tools/list, tool calls reaching a WebSocket client, unknown agents, truncation, mixed and live modes, rate limit, token file, and the inbox: queue, persist, deliver, reply, badge events, cap, escaping). |
 | `tools/test_client.py` | Python test client for the harness protocol, in mock and cli modes. |
 | `tools/funnel-mac.sh` | `on` / `off` / `status` / `url` helper for Tailscale Funnel on the MCP port. |
@@ -379,7 +382,7 @@ All messages are JSON text frames on `ws://127.0.0.1:8765`. Every server-to-clie
 
 | `type` | Fields | Client behaviour |
 |---|---|---|
-| `OFFICE_LAYOUT` | `office{name, rooms[{id,name,color,theme,desks,isolated,members[{agent_id,name,role,color,desk}],break_spots,meeting_target}], shared{break_room,meeting_room}}` | Sent on connect, before the `SNAPSHOT`, when the harness has an office config (and in reply to `REQUEST_LAYOUT`). The client rebuilds the floor plan if it changed. Without it the client uses the legacy 3-desk office. |
+| `OFFICE_LAYOUT` | `office{name, rooms[{id,name,color,theme,desks,isolated,members[{agent_id,name,role,color,desk}],break_spots,chat_spots,meeting_target}], shared{break_room,meeting_room}}` | Sent on connect, before the `SNAPSHOT`, when the harness has an office config (and in reply to `REQUEST_LAYOUT`). The client rebuilds the floor plan if it changed. Without it the client uses the legacy 3-desk office. |
 | `SNAPSHOT` | `server{name,version,mode,tempo,office}`, `agents[{agent_id,name,role,room,desk,color,state,target,text,busy,queued,live,unread,logs[]}]` | Sent when a client connects and in reply to `REQUEST_SNAPSHOT`. The client spawns, updates and removes agents to match (new agents appear directly at their spot), and restores their logs. |
 | `STATE_CHANGE` | `agent_id`, `state` (`IDLE`, `WORKING`, `THINKING`, `COLLAB`, `ERROR`), optional `target`, optional `text` | Sets the animation state, walks to `target` if given, and shows `text` as a bubble (a thought bubble when `THINKING`). |
 | `LOG_ENTRY` | `agent_id`, `log` (raw text, may contain ANSI codes), `stream` (`stdout` or `stderr`) | Appends to the agent's log, and to the drawer if it's open. |
@@ -387,6 +390,7 @@ All messages are JSON text frames on `ws://127.0.0.1:8765`. Every server-to-clie
 | `ACK` | `action`, `agent_id`, `prompt`, `queued`; for inbox prompts also `inbox: true`, `message_id`, `unread` | Sent only to the client that sent a valid `DISPATCH_PROMPT`. |
 | `INBOX` | `agent_id`, `unread` | The agent's unread message count changed: shows or clears the envelope badge. |
 | `ERROR` | `message`, optional `action`, `agent_id` | Sent for bad JSON, an unknown action or agent, an empty prompt, or a full inbox. |
+| `AMBIENT` | `agent_id`, `action` (`phone`), `seconds` | Idle-life cue with no work meaning: the agent looks at its phone for a few seconds (no ping, no log line). |
 | `PONG` | none | Reply to `PING`. |
 
 Example:
@@ -432,13 +436,13 @@ python3 agent_harness.py --speed 10 --port 8770 &
 python3 tools/tempo_check.py --url ws://127.0.0.1:8770 --speed 10 --seconds 120
 kill %1
 
-# MCP connector unit tests (needs requirements.txt installed; starts its own harness on free ports)
+# MCP connector and ambient-life unit tests (needs requirements.txt installed; starts its own harness on free ports)
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 
 # Godot tests. Import once so the class cache exists, then run headless.
 godot --headless --path . --import
 godot --headless --path . --script res://tests/test_ansi.gd     # colour converter unit tests
-godot --headless --path . --script res://tests/smoke_test.gd    # layouts, spawning, seating, meetings, foosball, phone, PTC wall, drawer, iso view + picking
+godot --headless --path . --script res://tests/smoke_test.gd    # layouts, spawning, seating, meetings, foosball, chat spots, phone, PTC wall, drawer, iso view + picking
 ```
 
 `smoke_test.gd` needs no harness: it feeds messages straight into `Main`. Each script exits with code 0 on success and 1 on failure. If you change `office.json`, regenerate the fixture with `python3 -c "import json, agent_harness as h; json.dump({'type': 'OFFICE_LAYOUT', 'office': h.load_office(None)}, open('tests/fixtures/office_layout.json', 'w'), indent=1)"`.

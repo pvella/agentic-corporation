@@ -18,11 +18,12 @@
 ##   --screenshot-every=S --screenshot-count=N
 ##                                 take N shots S seconds apart (path gets _001, _002 ...)
 ##   --open-drawer=AGENT_ID        open that agent's terminal once it spawns
-##   --open-team=ROOM_ID           open a room's team summary once agents spawn
+##   --open-team=ROOM_ID           jump to a room and open its team summary once agents spawn
 ##   --dispatch=AGENT_ID:prompt    send a prompt once connected
 ##   --zoom=1.5 --focus=x,y        start the camera zoomed in on a world point
 ##   --focus-agent=AGENT_ID        ...or on an agent (followed until the screenshot)
 ##   --view=iso|top                start in the isometric or the classic top-down view
+##   --fit                         open with the whole office fitted (default: main building, close up)
 ##
 ## Views: the simulation (layout, navigation, agents' bodies and paths) always
 ## runs in flat top-down "world" coordinates. What you see is a projection of
@@ -44,6 +45,10 @@ const SETTINGS_PATH := "user://agent_office.cfg"
 ## Iso: long furniture / walls are split into slices this long (world px) so
 ## each slice sorts correctly against people.
 const SLICE_PROP := 60.0
+## Camera zoom the office opens at (centred on the main building). With
+## Iso.SCALE / PEOPLE_SCALE this makes people about 60 px tall on screen.
+const DEFAULT_ZOOM := 0.7
+const BASE_SIZE := Vector2i(1280, 800)
 const SLICE_WALL := 24.0
 ## Offsets used when several agents share one standing spot (index = slot).
 const SPOT_OFFSETS: Array[Vector2] = [Vector2.ZERO, Vector2(-30, 10), Vector2(30, 10), Vector2(0, 34), Vector2(-32, 42), Vector2(32, 42), Vector2(-56, 24), Vector2(56, 24)]
@@ -78,6 +83,7 @@ var _spawn_index := 0
 var _sign_tags: Array[Node2D] = []
 var _view_button: Button = null
 var _view_arg := ""
+var _start_fit := false
 
 # user-arg options
 var _screenshot_path: String = ""
@@ -110,6 +116,7 @@ var bodies_root: Node2D
 
 func _ready() -> void:
 	get_viewport().physics_object_picking = true
+	_setup_hidpi()
 	bodies_root = Node2D.new()
 	bodies_root.name = "Bodies"
 	bodies_root.visible = false
@@ -135,7 +142,7 @@ func _process(delta: float) -> void:
 	_poll_socket(delta)
 	_update_foosball()
 	if _follow_agent != "" and agents.has(_follow_agent):
-		camera.position = Iso.to_screen((agents[_follow_agent] as Agent).global_position) + Vector2(0, -30)
+		camera.position = Iso.to_screen((agents[_follow_agent] as Agent).global_position) + Vector2(0, -30 * Iso.PEOPLE_SCALE)
 
 
 func _unhandled_key_input(event: InputEvent) -> void:
@@ -182,9 +189,13 @@ func build_layout(cfg: Dictionary, legacy: bool = false) -> void:
 		waypoints[str(wp.name)] = m
 	_build_visuals()
 	_build_room_buttons()
-	camera.set_bounds(_camera_bounds(), true)
+	camera.set_bounds(_camera_bounds(), false)
 	if _start_zoom > 0.0:
 		camera.focus_on(Iso.to_screen(_start_focus) if _start_focus != Vector2.INF else _camera_bounds().get_center(), _start_zoom)
+	elif _start_fit:
+		camera.fit_all()
+	else:
+		default_view()
 	_apply_ui_scale(camera.zoom.x)
 	print("[AgentOffice] layout '%s': %d rooms, %d waypoints, %d props (%s view)" % [office.layout_name, office.rooms.size(), waypoints.size(), office.props.size(), "iso" if Iso.enabled else "top-down"])
 
@@ -192,7 +203,7 @@ func build_layout(cfg: Dictionary, legacy: bool = false) -> void:
 ## Camera limits in screen (projected) space.
 func _camera_bounds() -> Rect2:
 	if not Iso.enabled:
-		return office.bounds
+		return Rect2(office.bounds.position * Iso.SCALE, office.bounds.size * Iso.SCALE)
 	return Iso.screen_aabb(office.bounds.grow(-12), Office.WALL_H_BACK + 40.0)
 
 
@@ -300,9 +311,9 @@ func _build_signs() -> void:
 		area.collision_layer = 8
 		var shape := CollisionShape2D.new()
 		var rect_shape := RectangleShape2D.new()
-		rect_shape.size = (s.rect as Rect2).size
+		rect_shape.size = (s.rect as Rect2).size * Iso.SCALE
 		shape.shape = rect_shape
-		area.position = (s.rect as Rect2).get_center()
+		area.position = Iso.to_screen((s.rect as Rect2).get_center())
 		area.add_child(shape)
 		var room_id := str(s.room_id)
 		area.input_event.connect(func(_vp: Node, ev: InputEvent, _i: int) -> void:
@@ -351,6 +362,26 @@ func _fit_zoom() -> float:
 	var view := get_viewport_rect().size - Vector2(0, float(camera.get("top_margin")))
 	var b: Rect2 = camera.get("world_bounds")
 	return clampf(minf(view.x / b.size.x, view.y / b.size.y) * 0.98, float(camera.get("min_zoom")), float(camera.get("max_zoom")))
+
+
+## HiDPI (e.g. a MacBook's retina screen): the window opens at the base size
+## in *points*, and canvas_items stretching renders text and art at the full
+## pixel density, so nothing is drawn tiny or blurry.
+func _setup_hidpi() -> void:
+	if DisplayServer.get_name() == "headless":
+		return
+	var screen := DisplayServer.window_get_current_screen()
+	var dpi := DisplayServer.screen_get_scale(screen)
+	if dpi <= 1.01:
+		return
+	var win := get_window()
+	var want := Vector2i(Vector2(BASE_SIZE) * dpi)
+	var usable := DisplayServer.screen_get_usable_rect(screen).size
+	want = Vector2i(mini(want.x, int(usable.x * 0.94)), mini(want.y, int(usable.y * 0.94)))
+	if win.mode == Window.MODE_WINDOWED and win.size.x < int(want.x * 0.8):
+		win.size = want
+		win.move_to_center()
+	print("[AgentOffice] HiDPI screen (scale %.1f): window %s px" % [dpi, win.size])
 
 
 func _add_view_button() -> void:
@@ -412,9 +443,32 @@ func _build_room_buttons() -> void:
 		b.add_theme_color_override("font_color", Color.from_string(str(r.get("color", "#ffffff")), Color.WHITE).lightened(0.2))
 		b.tooltip_text = "Team summary"
 		var rid := str(r.id)
-		b.pressed.connect(func() -> void: open_team(rid))
+		b.tooltip_text = "Jump to the room and show the team summary"
+		b.pressed.connect(func() -> void:
+			focus_room(rid)
+			open_team(rid))
 		roster.add_child(b)
 		_room_buttons.append(b)
+
+
+## Opening view: the main building at a comfortable zoom (F fits everything).
+func default_view() -> void:
+	var main_rect: Rect2 = office.outer_frames[0].rect if not office.outer_frames.is_empty() else office.bounds
+	# Centre on the upper half (the team rooms and the break room) rather than
+	# the corridor in the middle.
+	var focus := main_rect.position + main_rect.size * Vector2(0.5, 0.3)
+	camera.focus_on(Iso.to_screen(focus) + Vector2(0, -20), DEFAULT_ZOOM)
+
+
+## Moves the camera onto a room (left of where the drawer opens).
+func focus_room(room_id: String) -> void:
+	for a: Dictionary in office.areas:
+		if str(a.get("id", "")) == room_id:
+			var box := Iso.screen_aabb(a.rect, Office.WALL_H_BACK)
+			var view := get_viewport_rect().size - Vector2(drawer.panel_width + 40.0, float(camera.get("top_margin")) + 30.0)
+			var z := clampf(minf(view.x / box.size.x, view.y / box.size.y), 0.45, 1.1)
+			camera.focus_on(box.get_center() + Vector2((drawer.panel_width * 0.5) / z, -12.0 / z), z)
+			return
 
 
 ## Opens the team summary for a room in the drawer.
@@ -540,6 +594,11 @@ func handle_message(msg: Dictionary) -> void:
 			push_warning("Harness error: %s" % str(msg.get("message", "")))
 			if drawer.agent:
 				drawer.append_system("harness error: %s" % str(msg.get("message", "")), "#e06c75")
+		"AMBIENT":
+			# Idle-life cue from the harness (no log line, nothing to do with work).
+			var agent: Agent = agents.get(str(msg.get("agent_id", "")))
+			if agent and str(msg.get("action", "")) == "phone":
+				agent.glance_phone(float(msg.get("seconds", 4.0)), false)
 		"PONG":
 			pass
 		var other:
@@ -584,6 +643,7 @@ func _apply_snapshot(msg: Dictionary) -> void:
 		_on_agent_clicked(agents[_open_drawer_for])
 		_open_drawer_for = ""
 	if _open_team_for != "":
+		focus_room(_open_team_for)  # same as the header room button
 		open_team(_open_team_for)
 		_open_team_for = ""
 	if not _pending_dispatch.is_empty():
@@ -654,6 +714,7 @@ func _spawn_agent(data: Dictionary) -> Agent:
 	var view := Node2D.new()
 	view.set_script(AgentViewScript)
 	view.agent = agent
+	view.scale = Vector2.ONE * Iso.PEOPLE_SCALE
 	agents_root.add_child(view)
 	agent.attach_view(view)
 	var entrance_name := "%s_Entrance" % agent.room_id if waypoints.has("%s_Entrance" % agent.room_id) else "Entrance"
@@ -662,7 +723,7 @@ func _spawn_agent(data: Dictionary) -> Agent:
 		agent.global_position = entrance.global_position
 	agent.sync_view()
 	agent.clicked.connect(_on_agent_clicked)
-	agent.set_ui_scale(_ui_scale_for(camera.zoom.x))
+	agent.set_ui_scale(_ui_scale_for(camera.zoom.x) / Iso.PEOPLE_SCALE)
 	agents[id] = agent
 	if _desk_props.has(id):
 		_desk_props[id].owner_agent = agent
@@ -803,19 +864,25 @@ func _update_counts() -> void:
 		c[a.state] = int(c.get(a.state, 0)) + 1
 	counts_label.text = "%d agents · %d working · %d thinking · %d meeting · %d idle" % [
 		agents.size(), c.get("WORKING", 0), c.get("THINKING", 0), c.get("COLLAB", 0), c.get("IDLE", 0)]
+	if str(_server_info.get("mode", "")) == "live":
+		# Live mode: only real reports make anyone work; everyone else is ambient.
+		counts_label.text = "LIVE · %d agents · %d working · %d thinking · %d idle (ambient)" % [
+			agents.size(), c.get("WORKING", 0), c.get("THINKING", 0), int(c.get("IDLE", 0)) + int(c.get("COLLAB", 0))]
 	if int(c.get("ERROR", 0)) > 0:
 		counts_label.text += " · %d error" % int(c.get("ERROR", 0))
 
 
-## Name pills and bubbles grow a little when zoomed out so they stay legible.
+## Name pills, bubbles and signs grow when zoomed out so they stay legible:
+## about 1.05x their design size on screen at the default zoom, never below
+## ~0.8x when zoomed right out.
 func _ui_scale_for(z: float) -> float:
-	return clampf(0.85 / z, 1.0, 1.8)
+	return clampf(1.05 / z, 1.0, 3.2)
 
 
 func _apply_ui_scale(z: float) -> void:
 	var s := _ui_scale_for(z)
 	for a: Agent in agents.values():
-		a.set_ui_scale(s)
+		a.set_ui_scale(s / Iso.PEOPLE_SCALE)
 	for t in _sign_tags:
 		if is_instance_valid(t):
 			t.scale = Vector2.ONE * s
@@ -862,6 +929,8 @@ func _parse_user_args() -> void:
 				_follow_agent = value
 			"--view":
 				_view_arg = value
+			"--fit":
+				_start_fit = true
 			"--dispatch":
 				var parts := value.split(":", true, 1)
 				if parts.size() == 2:

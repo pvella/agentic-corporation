@@ -23,15 +23,20 @@ Two runner modes:
                 process start/exit to WORKING/IDLE. Agents without a command fall
                 back to the mock runner.
 
-  --mode live   No simulation at all: agents only move on real status reports
-                (the MCP tool below) and on CLI runs bound with --agent-cmd.
+  --mode live   No fake work: agents only work on real status reports (the
+                MCP tool below) and on CLI runs bound with --agent-cmd. Agents
+                that aren't busy with a real report live an idle office life
+                (coffee, water, vending machine, sofa, foosball, small talk,
+                phone) unless --no-ambient is given; screens stay dark and no
+                log lines are invented, so real work stands out.
 
 Live status over MCP: unless --no-mcp is given, office_mcp.py serves a remote
 MCP connector (Streamable HTTP) at http://127.0.0.1:8766/mcp with one tool,
 report_office_status(agent, action, detail). Every request needs
 "Authorization: Bearer <token>" (env OFFICE_MCP_TOKEN, or the token generated
-into .office_token on first run). In mock mode an agent that reports for real
-is left alone by the simulation for --live-hold seconds (default 600).
+into .office_token on first run). In mock and live mode an agent that reports
+for real is left alone by the simulation for --live-hold seconds (default
+600) or until it reports "finish".
 
 Examples:
   python3 agent_harness.py
@@ -78,7 +83,8 @@ __version__ = "0.2.0"
 log = logging.getLogger("agent_harness")
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(\x07|\x1b\\)")
-SHARED_BREAK_SPOTS = ("Coffee_Machine", "Water_Cooler", "Sofa_1", "Sofa_2")
+SHARED_BREAK_SPOTS = ("Coffee_Machine", "Water_Cooler", "Vending_Machine", "Sofa_1", "Sofa_2")
+SHARED_CHAT_SPOTS = ("Chat_Break", "Chat_Corridor")  # + Chat_<room id> per team room
 IDLE_SPOTS = SHARED_BREAK_SPOTS  # backwards-compatible name
 MEETING_TARGET = "Meeting_Room"
 FOOSBALL_SPOTS = ("Foosball_1", "Foosball_2", "Foosball_3", "Foosball_4")
@@ -240,6 +246,8 @@ class Agent:
     break_spots: tuple[str, ...] = SHARED_BREAK_SPOTS
     meeting_target: str = MEETING_TARGET
     group: str = SHARED_GROUP  # agents only meet / play with their own group
+    # Small-talk spots (client waypoints <spot>_1.._3, facing each other).
+    chat_spots: tuple[str, ...] = SHARED_CHAT_SPOTS
     state: str = "IDLE"
     target: str | None = None
     text: str = ""
@@ -301,6 +309,9 @@ class Hub:
         self.inbox = Inbox(None)
         # Decides whether a dashboard prompt goes to the agent's inbox (set by Harness).
         self.inbox_for: Callable[[Agent], bool] = lambda agent: False
+        # Called when a real report hands an agent back to the ambient life
+        # (action "finish"); set by Harness when a director runs.
+        self.on_release: Callable[[Agent], None] | None = None
 
     # -- registry ----------------------------------------------------------
     def register(self, agent_id: str, name: str, desk: str, color: str, role: str = "", **extra: Any) -> Agent:
@@ -413,6 +424,10 @@ class Hub:
             spot = random.choice(agent.break_spots)
             self.state(aid, "IDLE", target=spot, text="Done! Coffee time." if "Coffee" in spot else "Done!")
             agent.activity = "break"
+            # Finished: the agent goes straight back to the ambient office life.
+            agent.live_until = 0.0
+            if self.on_release:
+                self.on_release(agent)
         elif action == "error":
             text = detail or "Something went wrong"
             self.log_line(aid, f"\x1b[1;31m\u2716 Error:\x1b[0m {text}", stream="stderr")
@@ -446,7 +461,7 @@ class Hub:
             ids = ", ".join("#" + i["id"] for i in items)
             self.log_line(agent.agent_id, f"\x1b[32mdelivered to {agent.name}\x1b[0m \x1b[2m({ids})\x1b[0m")
             self.inbox_event(agent.agent_id)
-            self.touch_live(agent)
+            self.touch_live(agent, hold=False)
         return items
 
     def post_reply(self, agent: Agent, reply: str, message_id: str = "", bubble: bool = True) -> None:
@@ -464,10 +479,15 @@ class Hub:
             self.log_line(agent.agent_id, pad + line)
         if bubble:
             self.state(agent.agent_id, agent.state, text=clean_line(" ".join(lines), 60))
-        self.touch_live(agent)
+        self.touch_live(agent, hold=False)
 
-    def touch_live(self, agent: Agent) -> None:
-        agent.live_until = time.monotonic() + self.live_hold
+    def touch_live(self, agent: Agent, hold: bool = True) -> None:
+        """Marks the agent as a real bot. Status reports (hold=True) keep the
+        simulation off it for live_hold seconds; inbox traffic only extends a
+        hold that is already running (a bot reading its messages after
+        "finish" keeps its ambient life)."""
+        if hold or agent.is_live():
+            agent.live_until = time.monotonic() + self.live_hold
         agent.live_reports += 1
 
     # -- connection handling ----------------------------------------------
@@ -600,18 +620,23 @@ class Tempo:
     walk_slot: float                   # assumed walk time; only one ambient walk starts per slot
     foosball_every: tuple[float, float] = (300, 600)  # gap between foosball games (shared break room)
     foosball_time: tuple[float, float] = (40, 80)     # length of a game
+    chat_group_every: tuple[float, float] = (90, 180)  # gap between small-talk groups
+    chat_time: tuple[float, float] = (30, 60)         # how long a chat lasts
 
 
 TEMPOS: dict[str, Tempo] = {
     "calm": Tempo(work=(20, 60), log_every=(5, 12), think_chance=0.15, think=(4, 8), break_chance=0.25,
                   break_time=(15, 30), collab_every=(180, 360), collab_time=(25, 45), chat_every=(7, 12),
-                  walk_slot=6, foosball_every=(300, 600), foosball_time=(40, 80)),
+                  walk_slot=6, foosball_every=(300, 600), foosball_time=(40, 80), chat_group_every=(60, 150),
+                  chat_time=(30, 60)),
     "normal": Tempo(work=(12, 30), log_every=(3, 7), think_chance=0.2, think=(3, 6), break_chance=0.4,
                     break_time=(10, 20), collab_every=(60, 120), collab_time=(15, 30), chat_every=(5, 9),
-                    walk_slot=4, foosball_every=(120, 240), foosball_time=(25, 45)),
+                    walk_slot=4, foosball_every=(120, 240), foosball_time=(25, 45), chat_group_every=(40, 90),
+                    chat_time=(20, 40)),
     "busy": Tempo(work=(4, 10), log_every=(1, 3), think_chance=0.25, think=(1.5, 3), break_chance=0.6,
                   break_time=(4, 8), collab_every=(15, 30), collab_time=(8, 15), chat_every=(2, 4),
-                  walk_slot=1.5, foosball_every=(30, 60), foosball_time=(10, 20)),
+                  walk_slot=1.5, foosball_every=(30, 60), foosball_time=(10, 20), chat_group_every=(10, 25),
+                  chat_time=(10, 20)),
 }
 
 @dataclass(frozen=True)
@@ -730,6 +755,31 @@ BREAK_CHATTER = ["Anyone seen the CI logs?", "This coffee is compiling...", "Nee
 FOOSBALL_CHATTER = ["Goal!", "GOAL!", "Spin it!", "Rematch?", "Nice save!", "Best of five?"]
 MEETING_CHATTER = ["Agreed.", "What about edge cases?", "Let's split the PR.", "I'll write the tests.",
                    "Can we cache that?", "Ship behind a flag?", "Who owns the migration?"]
+# Office small talk: (opener, reply) pairs, then a few follow-ups. Kept light,
+# varied and work-neutral so it never reads like a status update.
+SMALL_TALK: list[tuple[str, str]] = [
+    ("Good weekend?", "Too short. Yours?"),
+    ("Is the coffee machine behaving?", "Give it a thump first."),
+    ("Lunch at the noodle place?", "Only if we beat the queue."),
+    ("See the footy last night?", "Don't. Still recovering."),
+    ("Who keeps taking my mug?", "Not me. Probably."),
+    ("Rain's coming this arvo.", "Brought an umbrella for once."),
+    ("Any plans for the weekend?", "Garden, then a long nap."),
+    ("These new chairs are comfy.", "Mine squeaks. Want to swap?"),
+    ("There's cake in the kitchen!", "Whose birthday is it?"),
+    ("Tea or coffee today?", "Coffee. Definitely coffee."),
+    ("How's the new place?", "Still living out of boxes."),
+    ("Tried the new vending snacks?", "The salt and vinegar ones, yes."),
+    ("Trams were packed this morning.", "I walked. Took forever."),
+    ("Watching anything good?", "Halfway through a crime series."),
+    ("Is it Friday yet?", "Feels like Thursday again."),
+    ("Nice jacket!", "Op shop find. Ten bucks."),
+    ("Bring your dog in again?", "She'd love that."),
+    ("Heading to the gym later?", "That's the plan, anyway."),
+]
+SMALL_TALK_MORE = ["Ha, fair enough.", "Same here.", "Classic.", "Oh, nice.", "Tell me about it.",
+                   "Count me in.", "Good shout.", "No way!", "True, true.", "Right?"]
+SOLO_BREAK = ["Ah, that's better.", "Mmm, coffee.", "Just a quick stretch.", "Back in five."]
 # Notifications that reach an agent while it is away from its desk; the Godot
 # client shows the agent pulling out its phone for each LOG_ENTRY it gets.
 AWAY_PINGS = ["background job finished: {w}", "new message about {w}", "reminder: {w}",
@@ -739,28 +789,41 @@ AWAY_PINGS = ["background job finished: {w}", "new message about {w}", "reminder
 class AmbientDirector:
     """Keeps the office alive without constant running around.
 
-    Each agent mostly sits at its desk in long, randomised work sessions with
-    role-flavoured log lines trickling in and the odd THINKING pause (no
-    movement). After a session there is a small chance of a break-room visit;
-    every few minutes 2-3 desk-bound agents of the same group hold a meeting,
-    and now and then two agents play foosball in the shared break room.
+    Mock mode: each agent mostly sits at its desk in long, randomised work
+    sessions with role-flavoured log lines trickling in and the odd THINKING
+    pause (no movement). After a session there is a small chance of a
+    break-room visit; every few minutes 2-3 desk-bound agents of the same
+    group hold a meeting, two to four play foosball, and small groups stop for
+    a chat.
+
+    Idle-only (live mode): no fake work at all. Agents that aren't busy with a
+    real report sit at their desk with the screen dark, wander to the coffee
+    machine, water cooler, vending machine or sofa, play foosball, gather in
+    pairs or threes for small talk and glance at their phones (AMBIENT events,
+    no log lines). A real report always wins: the agent is skipped while the
+    report's hold runs, and "finish" hands it straight back (Hub.on_release).
 
     Ambient walks are rate-limited by a single global "walk slot", so normally
-    only one agent starts walking at a time (a meeting or game moves its
+    only one agent starts walking at a time (a meeting, chat or game moves its
     players together). Agents in an isolated room (e.g. the PTC wing) only use
-    their own wing's amenities and only meet each other. Agents busy with a
-    user prompt (lock held or prompt queued) are left alone.
+    their own wing's amenities and only meet / chat with each other. Agents
+    busy with a user prompt (lock held or prompt queued) are left alone.
     """
 
-    def __init__(self, hub: Hub, tempo: Tempo, speed: float, agent_filter: Callable[[Agent], bool]) -> None:
+    def __init__(self, hub: Hub, tempo: Tempo, speed: float, agent_filter: Callable[[Agent], bool],
+                 idle_only: bool = False) -> None:
         self.hub = hub
         self.tempo = tempo
         self.speed = max(0.05, speed)
         self.agent_filter = agent_filter
+        self.idle_only = idle_only
         self.t0 = time.monotonic()
         self.walk_free_at = 0.0
         self.next_collab_at = self.rand(tempo.collab_every) * 0.5
-        self.next_foosball_at = self.rand(tempo.foosball_every) * 0.5
+        self.next_foosball_at = self.rand(tempo.foosball_every) * (0.15 if idle_only else 0.5)
+        self.next_chat_at = self.rand(tempo.chat_group_every) * 0.3
+        # spot name -> {"members": [Agent], "until", "next_at", "turn", "topic"}
+        self.chats: dict[str, dict[str, Any]] = {}
 
     def now(self) -> float:
         """Simulated seconds since start."""
@@ -776,20 +839,28 @@ class AmbientDirector:
     def reserve_walk(self, factor: float = 1.0) -> None:
         self.walk_free_at = self.now() + self.tempo.walk_slot * factor
 
+    def desk_span(self) -> tuple[float, float]:
+        """Time at the desk between ambient activities."""
+        t = self.tempo.work
+        return (t[0] * 1.5, t[1] * 1.5) if self.idle_only else t
+
     def place_initial(self, agent: Agent) -> None:
         """Agents start seated at their desks (staggered session ends)."""
-        agent.state, agent.target, agent.activity = "WORKING", agent.desk, "desk"
+        agent.state, agent.target, agent.activity = ("IDLE" if self.idle_only else "WORKING"), agent.desk, "desk"
         agent.text = ""
-        agent.activity_until = self.rand(self.tempo.work)
+        agent.activity_until = self.rand(self.desk_span()) * (random.uniform(0.1, 1.0) if self.idle_only else 1.0)
         agent.next_event_at = self.rand(self.tempo.log_every) + random.uniform(0, 6)
 
     def after_prompt(self, agent: Agent) -> None:
-        """A prompt run ended at a break spot: linger there, then return to the desk."""
+        """A prompt run (or a real "finish") ended at a break spot: linger
+        there, then return to the desk."""
         now = self.now()
         agent.activity = "break"
         agent.thinking_until = 0.0
         agent.activity_until = now + self.rand(self.tempo.break_time)
         agent.next_event_at = now + self.rand(self.tempo.chat_every)
+
+    after_finish = after_prompt
 
     def free(self, agent: Agent) -> bool:
         if agent.live_until:
@@ -806,10 +877,14 @@ class AmbientDirector:
         agent.thinking_until = 0.0
         if agent.activity not in ("desk", "break"):
             agent.activity = "desk"
-        span = self.tempo.break_time if agent.activity == "break" else self.tempo.work
+        span = self.tempo.break_time if agent.activity == "break" else self.desk_span()
         agent.activity_until = now + self.rand(span) * 0.5
         agent.next_event_at = now + self.rand(self.tempo.log_every)
-        if agent.state == "ERROR":
+        if self.idle_only:
+            # A bot that went quiet without "finish": stop showing it as busy.
+            if agent.state != "IDLE":
+                self.hub.state(agent.agent_id, "IDLE", target=agent.desk if agent.activity == "desk" else None)
+        elif agent.state == "ERROR":
             self.hub.state(agent.agent_id, "WORKING", text="Back to it.")
 
     async def run(self) -> None:
@@ -823,17 +898,54 @@ class AmbientDirector:
         random.shuffle(agents)  # no agent always gets the walk slot first
         for agent in agents:
             if agent.activity == "desk":
-                self._desk(agent, now)
+                (self._idle_desk if self.idle_only else self._desk)(agent, now)
             elif agent.activity == "break":
-                self._away(agent, now, BREAK_CHATTER, chat_chance=0.3, state="IDLE")
+                self._away(agent, now, SOLO_BREAK if self.idle_only else BREAK_CHATTER,
+                           chat_chance=0.12 if self.idle_only else 0.3, state="IDLE")
             elif agent.activity == "meeting":
                 self._away(agent, now, MEETING_CHATTER, chat_chance=0.7, state="COLLAB")
             elif agent.activity == "foosball":
                 self._away(agent, now, FOOSBALL_CHATTER, chat_chance=0.6, state="IDLE")
-        self._maybe_meeting(now, agents)
+        self._chat_tick(now)
+        if not self.idle_only:
+            self._maybe_meeting(now, agents)
         self._maybe_foosball(now, agents)
+        self._maybe_chat(now, agents)
 
     # -- per-activity behaviour ----------------------------------------------
+    def _back_to_desk(self, agent: Agent, now: float) -> None:
+        agent.activity = "desk"
+        agent.activity_until = now + self.rand(self.desk_span())
+        agent.next_event_at = now + self.rand(self.tempo.log_every)
+        if self.idle_only:
+            self.hub.state(agent.agent_id, "IDLE", target=agent.desk)
+        else:
+            self.hub.state(agent.agent_id, "WORKING", target=agent.desk, text=random.choice(role_profile(agent).topics)[1])
+
+    def _phone(self, agent: Agent) -> None:
+        """Idle phone glance: a visual cue only (no log line, no state change)."""
+        self.hub.emit({"type": "AMBIENT", "agent_id": agent.agent_id, "action": "phone",
+                       "seconds": round(random.uniform(3.0, 6.0), 1)})
+
+    def _idle_desk(self, agent: Agent, now: float) -> None:
+        """Idle-only desk time: seated, screen dark, the odd phone glance, then
+        maybe a wander to a break spot."""
+        t = self.tempo
+        if now >= agent.activity_until:
+            if random.random() < 0.55 and self.can_walk():
+                self.reserve_walk()
+                agent.activity = "break"
+                agent.activity_until = now + self.rand(t.break_time) * 1.5
+                agent.next_event_at = now + self.rand(t.chat_every)
+                spot = random.choice(agent.break_spots)
+                self.hub.state(agent.agent_id, "IDLE", target=spot)
+                return
+            agent.activity_until = now + self.rand(self.desk_span()) * 0.5
+        if now >= agent.next_event_at:
+            agent.next_event_at = now + self.rand(t.log_every) * 6.0
+            if random.random() < 0.35:
+                self._phone(agent)
+
     def _desk(self, agent: Agent, now: float) -> None:
         hub, aid, t = self.hub, agent.agent_id, self.tempo
         profile = role_profile(agent)
@@ -847,7 +959,8 @@ class AmbientDirector:
                 agent.activity_until = now + self.rand(t.break_time)
                 agent.next_event_at = now + self.rand(t.chat_every)
                 spot = random.choice(agent.break_spots)
-                text = {"Coffee": "Coffee time.", "Water": "Grabbing some water.", "Sofa": "Quick breather."}
+                text = {"Coffee": "Coffee time.", "Water": "Grabbing some water.", "Sofa": "Quick breather.",
+                        "Vending": "Snack run."}
                 hub.state(aid, "IDLE", target=spot,
                           text=next((v for k, v in text.items() if k in spot), "Short break."))
                 return
@@ -868,22 +981,31 @@ class AmbientDirector:
         if now >= agent.activity_until:
             if self.can_walk():
                 self.reserve_walk()
-                agent.activity = "desk"
-                agent.activity_until = now + self.rand(t.work)
-                agent.next_event_at = now + self.rand(t.log_every)
-                hub.state(aid, "WORKING", target=agent.desk, text=random.choice(role_profile(agent).topics)[1])
+                self._back_to_desk(agent, now)
             return
         if now >= agent.next_event_at:
-            agent.next_event_at = now + self.rand(t.chat_every)
+            calm = 2.0 if self.idle_only and agent.activity == "break" else 1.0
+            agent.next_event_at = now + self.rand(t.chat_every) * calm
             roll = random.random()
             if roll < chat_chance:
                 hub.state(aid, state, text=random.choice(chatter))
-            elif roll < chat_chance + 0.3:
-                topic = random.choice(role_profile(agent).topics)[1].rstrip(".").lower()
-                hub.log_line(aid, "\x1b[36m[notify]\x1b[0m " + random.choice(AWAY_PINGS).format(w=topic))
+            elif roll < chat_chance + (0.2 if self.idle_only else 0.3):
+                if self.idle_only:
+                    self._phone(agent)
+                else:
+                    topic = random.choice(role_profile(agent).topics)[1].rstrip(".").lower()
+                    hub.log_line(aid, "\x1b[36m[notify]\x1b[0m " + random.choice(AWAY_PINGS).format(w=topic))
 
     def _desk_bound(self, agents: list[Agent]) -> list[Agent]:
         return [a for a in agents if a.activity == "desk" and not a.thinking_until]
+
+    def _pick_group(self, pool: list[Agent], max_extra: int) -> list[Agent]:
+        """An anchor plus 1..max_extra colleagues, preferably from its own room."""
+        anchor = random.choice(pool)
+        same_room = [a for a in pool if a.room == anchor.room and a is not anchor]
+        others = same_room if same_room and random.random() < 0.7 else [a for a in pool if a is not anchor]
+        size = min(len(others), 1 if random.random() < 0.6 else max_extra)
+        return [anchor, *random.sample(others, size)]
 
     def _maybe_meeting(self, now: float, free_agents: list[Agent]) -> None:
         if now < self.next_collab_at or not self.can_walk():
@@ -894,13 +1016,8 @@ class AmbientDirector:
         candidates = [g for g in by_group.values() if len(g) >= 2]
         if not candidates:
             return  # try again on a later tick
-        pool = random.choice(candidates)
-        # Prefer colleagues from the same room (cross-team meetings still happen).
-        anchor = random.choice(pool)
-        same_room = [a for a in pool if a.room == anchor.room and a is not anchor]
-        others = same_room if same_room and random.random() < 0.7 else [a for a in pool if a is not anchor]
-        size = min(len(others), 1 if random.random() < 0.6 else 2)
-        group = [anchor, *random.sample(others, size)]
+        group = self._pick_group(random.choice(candidates), 2)
+        anchor = group[0]
         self.next_collab_at = now + self.rand(self.tempo.collab_every)
         self.reserve_walk(1.5)
         until = now + self.rand(self.tempo.collab_time)
@@ -917,19 +1034,79 @@ class AmbientDirector:
         if now < self.next_foosball_at or not self.can_walk():
             return
         # Only the shared break room has a foosball table (isolated wings don't).
+        busy = {a.agent_id for a in self.hub.agents.values() if a.activity == "foosball"}
+        if busy:
+            return  # one game at a time
         pool = [a for a in self._desk_bound(free_agents) if a.group == SHARED_GROUP]
         if len(pool) < 2:
             return
-        self.next_foosball_at = now + self.rand(self.tempo.foosball_every)
+        gap = self.rand(self.tempo.foosball_every)
+        self.next_foosball_at = now + (gap * 0.5 if self.idle_only else gap)
         self.reserve_walk(1.5)
-        players = random.sample(pool, 2)
-        until = now + self.rand(self.tempo.foosball_time)
-        for spot, a in zip(FOOSBALL_SPOTS, players):
+        n = min(len(pool), random.choice((2, 2, 3, 4)))
+        players = random.sample(pool, n)
+        until = now + self.rand(self.tempo.foosball_time) * (1.5 if self.idle_only else 1.0)
+        for i, (spot, a) in enumerate(zip(FOOSBALL_SPOTS, players)):  # 1 and 2 are opposite ends
             a.activity = "foosball"
             a.activity_until = until + random.uniform(0, 5)
-            a.next_event_at = now + self.rand(self.tempo.chat_every)
-            other = players[1] if a is players[0] else players[0]
-            self.hub.state(a.agent_id, "IDLE", target=spot, text=f"Foosball, {other.name}?" if a is players[0] else "You're on!")
+            a.next_event_at = now + self.rand(self.tempo.chat_every) + 4.0
+            text = f"Foosball, {players[1].name}?" if i == 0 else ("You're on!" if i == 1 else "I'm in!")
+            self.hub.state(a.agent_id, "IDLE", target=spot, text=text)
+
+    # -- small talk -------------------------------------------------------------
+    def _maybe_chat(self, now: float, free_agents: list[Agent]) -> None:
+        if now < self.next_chat_at or not self.can_walk():
+            return
+        by_group: dict[str, list[Agent]] = {}
+        for a in self._desk_bound(free_agents):
+            by_group.setdefault(a.group, []).append(a)
+        candidates = [g for g in by_group.values() if len(g) >= 2]
+        if not candidates:
+            return
+        group = self._pick_group(random.choice(candidates), 2)
+        anchor = group[0]
+        spots = [s for s in anchor.chat_spots if s not in self.chats]
+        if not spots:
+            return
+        # Prefer the chat spot in the anchor's own room when there is one.
+        own = f"Chat_{anchor.room}"
+        spot = own if own in spots and random.random() < 0.5 else random.choice(spots)
+        self.next_chat_at = now + self.rand(self.tempo.chat_group_every)
+        self.reserve_walk(1.5)
+        until = now + self.rand(self.tempo.chat_time)
+        for i, a in enumerate(group):
+            a.activity = "chat"
+            a.activity_until = until
+            self.hub.state(a.agent_id, "IDLE", target=f"{spot}_{i + 1}")
+        # First line once they've had time to walk over (~8 s of real time).
+        self.chats[spot] = {"members": group, "until": until, "next_at": now + 8.0 * self.speed,
+                            "turn": 0, "topic": random.choice(SMALL_TALK)}
+
+    def _chat_tick(self, now: float) -> None:
+        for spot, chat in list(self.chats.items()):
+            # A real report (or a prompt) can pull anyone out at any moment.
+            members = [a for a in chat["members"] if a.activity == "chat" and self.free(a)]
+            chat["members"] = members
+            if now >= chat["until"] or len(members) < 2:
+                for a in members:
+                    self._back_to_desk(a, now)
+                del self.chats[spot]
+                continue
+            if now >= chat["next_at"]:
+                chat["next_at"] = now + self.rand(self.tempo.chat_every)
+                turn = chat["turn"]
+                speaker = members[turn % len(members)]
+                if turn == 0:
+                    line = chat["topic"][0]
+                elif turn == 1:
+                    line = chat["topic"][1]
+                elif random.random() < 0.35:
+                    chat["topic"] = random.choice(SMALL_TALK)
+                    line = chat["topic"][0]
+                else:
+                    line = random.choice(SMALL_TALK_MORE)
+                chat["turn"] = turn + 1
+                self.hub.state(speaker.agent_id, "IDLE", text=line)
 
 
 class CliRunner:
@@ -1117,7 +1294,9 @@ def normalise_office(raw: Any, source: str = "office.json") -> dict[str, Any]:
             "isolated": isolated,
             "desks": desks,
             "members": members,
-            "break_spots": [f"{rid}_Coffee", f"{rid}_Water"] if isolated else list(SHARED_BREAK_SPOTS),
+            "break_spots": ([f"{rid}_Coffee", f"{rid}_Water", f"{rid}_Sofa_1", f"{rid}_Sofa_2"] if isolated
+                            else list(SHARED_BREAK_SPOTS)),
+            "chat_spots": [f"{rid}_Chat"] if isolated else [*SHARED_CHAT_SPOTS, f"Chat_{rid}"],
             "meeting_target": f"{rid}_Meeting_Room" if isolated else MEETING_TARGET,
         })
     shared = raw.get("shared") if isinstance(raw.get("shared"), dict) else {}
@@ -1140,6 +1319,7 @@ def register_office(hub: Hub, office: dict[str, Any]) -> None:
         for m in room["members"]:
             hub.register(m["agent_id"], m["name"], m["desk"], m["color"], role=m["role"], room=room["id"],
                          break_spots=tuple(room["break_spots"]), meeting_target=room["meeting_target"],
+                         chat_spots=tuple(room["chat_spots"]),
                          group=room["id"] if room["isolated"] else SHARED_GROUP)
 
 
@@ -1150,7 +1330,7 @@ class Harness:
         self.hub = Hub(args.mode, args.tempo, office)
         if office is None:
             for spec in DEFAULT_AGENTS:  # legacy fixed office: coder / qa / architect
-                self.hub.register(**spec, room="team")
+                self.hub.register(**spec, room="team", chat_spots=(*SHARED_CHAT_SPOTS, "Chat_team"))
         else:
             register_office(self.hub, office)
         self.mock = MockRunner(self.hub, speed=args.speed)
@@ -1173,12 +1353,15 @@ class Harness:
         if args.mode == "live":
             for agent in self.hub.agents.values():  # seated, screens off, until a real report
                 agent.state, agent.target, agent.activity = "IDLE", agent.desk, "desk"
-        ambient_on = (args.mode == "mock" and not args.no_ambient) or (args.mode == "cli" and args.ambient)
+        ambient_on = ((args.mode in ("mock", "live") and not args.no_ambient)
+                      or (args.mode == "cli" and args.ambient))
         self.director: AmbientDirector | None = None
         if ambient_on:
             self.director = AmbientDirector(
                 self.hub, self.tempo, args.speed,
-                agent_filter=lambda a: not (self.cli and self.cli.handles(a.agent_id)))
+                agent_filter=lambda a: not (self.cli and self.cli.handles(a.agent_id)),
+                idle_only=args.mode == "live")
+            self.hub.on_release = self.director.after_finish
             for agent in self.hub.agents.values():
                 if self.director.agent_filter(agent):
                     self.director.place_initial(agent)
@@ -1302,7 +1485,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--mode", choices=("mock", "cli", "live"), default="mock",
                    help="mock: simulated office (real MCP reports override it per agent); cli: real commands; "
-                        "live: no simulation, agents only move on real reports / CLI runs")
+                        "live: no fake work, agents work only on real reports / CLI runs and otherwise "
+                        "live an idle office life (see --no-ambient)")
     p.add_argument("--agent-cmd", action="append", type=parse_agent_cmd, metavar="AGENT_ID='CMD'",
                    help="bind a shell command to an agent (cli mode); repeatable. Use {prompt} as a placeholder")
     p.add_argument("--prompt-mode", choices=("arg", "stdin", "none"), default="arg",
@@ -1315,7 +1499,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tempo", choices=tuple(TEMPOS), default="calm",
                    help="ambient pace: calm (default, long desk sessions, rare breaks/meetings), normal, busy")
     p.add_argument("--speed", type=float, default=1.0, help="time multiplier for ambient tempo and mock prompt runs (2 = twice as fast)")
-    p.add_argument("--no-ambient", action="store_true", help="mock mode: disable ambient simulation")
+    p.add_argument("--no-ambient", action="store_true", help="mock / live mode: disable the ambient simulation (live mode: agents then only move on real reports)")
     p.add_argument("--ambient", action="store_true", help="cli mode: simulate agents that have no command")
     p.add_argument("--mcp-port", type=int, default=8766,
                    help="port for the MCP connector at /mcp (default 8766; 0 = off)")

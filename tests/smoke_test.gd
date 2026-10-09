@@ -71,6 +71,10 @@ func _legacy() -> void:
 
 	await _wait(16.0)
 	_check(_dist(coder, "Desk_Coder") < 4.0, "coder walked to Desk_Coder (dist %.1f)" % _dist(coder, "Desk_Coder"))
+	for i in 20:  # the sit-down animation finishes just after arrival
+		if coder.is_seated_at_desk():
+			break
+		await _wait(0.1)
 	_check(coder.is_seated_at_desk(), "coder is seated at the desk facing the monitor")
 	_check(qa.state == "COLLAB" and arch.state == "COLLAB", "COLLABORATE sets COLLAB state")
 	_check(qa.current_waypoint.begins_with("Meeting_Table") and arch.current_waypoint.begins_with("Meeting_Table")
@@ -165,6 +169,31 @@ func _office() -> void:
 	var to2: Vector2 = main.waypoints["ptc_Coffee"].global_position
 	var path2 := NavigationServer2D.map_get_path(map, from, to2, true)
 	_check(path2.size() > 0 and to2.distance_to(path2[path2.size() - 1]) < 4.0, "PTC desks reach the wing's own kitchenette")
+	# Ambient-life spots: chat triples face each other; the wing has its own.
+	for wp in ["Vending_Machine", "Chat_Break_1", "Chat_Corridor_3", "Chat_dev_team_2", "ptc_Sofa_1", "ptc_Sofa_2", "ptc_Chat_1", "ptc_Chat_3"]:
+		_check(main.waypoints.has(wp), "waypoint %s exists" % wp)
+	for spot in ["Chat_Break", "Chat_Corridor", "Chat_dev_team", "ptc_Chat"]:
+		var w: Marker2D = main.waypoints[spot + "_1"]
+		var e: Marker2D = main.waypoints[spot + "_2"]
+		var n: Marker2D = main.waypoints[spot + "_3"]
+		var ok := w.global_position.x < e.global_position.x and n.global_position.y < w.global_position.y
+		ok = ok and w.get_meta("facing") == "right" and e.get_meta("facing") == "left" and n.get_meta("facing") == "down"
+		_check(ok, "%s: the three chat slots face each other" % spot)
+		var p1 := NavigationServer2D.map_get_path(map, w.global_position, e.global_position, true)
+		_check(p1.size() > 0 and e.global_position.distance_to(p1[p1.size() - 1]) < 4.0, "%s slots are on walkable floor" % spot)
+	var wing_rect := Rect2()
+	for a: Dictionary in main.office.areas:
+		if str(a.get("kind", "")) == "wing":
+			wing_rect = a.rect
+	for spot in ["ptc_Chat_1", "ptc_Chat_2", "ptc_Chat_3", "ptc_Sofa_1", "ptc_Sofa_2", "ptc_Coffee", "ptc_Water"]:
+		var pos: Vector2 = main.waypoints[spot].global_position
+		var inside := wing_rect.has_point(pos)
+		var p3 := NavigationServer2D.map_get_path(map, from, pos, true)
+		# Seats sit just inside the furniture: agents settle the last few px.
+		var reach := p3.size() > 0 and pos.distance_to(p3[p3.size() - 1]) < 40.0
+		var p4 := NavigationServer2D.map_get_path(map, main.waypoints["Coffee_Machine"].global_position, pos, true)
+		var leak := p4.size() > 0 and pos.distance_to(p4[p4.size() - 1]) < 100.0
+		_check(inside and reach and not leak, "%s is inside the PTC wing, reachable from its desks only" % spot)
 
 	# An update while away and without a target: phone glance.
 	main.handle_message({"type": "STATE_CHANGE", "agent_id": "ea", "state": "THINKING", "text": "hmm"})
@@ -264,12 +293,13 @@ func _views(android: Agent) -> void:
 	# Toggle to the classic view and back.
 	main.set_view_mode(false, false)
 	await process_frame
-	_check(not Iso.enabled and android.view.position.distance_to(android.global_position) < 1.0, "top-down view: sprite at the body position")
+	_check(not Iso.enabled and android.view.position.distance_to(android.global_position * Iso.SCALE) < 1.0, "top-down view: sprite at the (scaled) body position")
 	_check(main.props_root.get_child_count() == main.office.props.size(), "top-down view: one prop per piece of furniture, no wall slices")
+	_check(main._camera_bounds().size.is_equal_approx(main.office.bounds.size * Iso.SCALE), "top-down view: camera bounds cover the scaled office")
 	_check(main._desk_props["android_dev"].owner_agent == android, "desk monitor stays linked across the toggle")
 	await physics_frame
 	q.collision_mask = 4
-	q.position = android.global_position + Vector2(0, -30)
+	q.position = android.view.to_global(Vector2(0, -30))
 	_check(space.intersect_point(q, 32).map(func(h: Dictionary) -> Object: return h.collider).has(android.click_area), "top-down picking at the world position")
 	# The V key toggles back (and would save the preference: restore it after).
 	var cfg := ConfigFile.new()

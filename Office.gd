@@ -11,8 +11,12 @@
 ##
 ## Waypoint naming (shared with agent_harness.py):
 ##   Desk_<agent_id> (or the member's "desk"), Coffee_Machine, Water_Cooler,
-##   Sofa_1/2, Foosball_1..4, Meeting_Table_1..N, Entrance; isolated room <id>:
-##   <id>_Coffee, <id>_Water, <id>_Meeting_1..4, <id>_Entrance.
+##   Vending_Machine, Sofa_1/2, Foosball_1..4, Meeting_Table_1..N, Entrance;
+##   isolated room <id>: <id>_Coffee, <id>_Water, <id>_Sofa_1/2,
+##   <id>_Meeting_1..4, <id>_Entrance.
+##   Chat spots (small talk, 3 slots facing each other, _1 west / _2 east /
+##   _3 north): Chat_Break, Chat_Corridor, Chat_<room id> for every team room,
+##   <id>_Chat inside an isolated wing.
 ##   Virtual targets: Meeting_Room and <id>_Meeting_Room (resolved to seats).
 extends Node2D
 
@@ -20,10 +24,10 @@ const Iso := preload("res://Iso.gd")
 const WALL := 12.0
 const EXT_WALL := 14.0
 const CORRIDOR := 96.0
-const CELL := Vector2(160, 150)   ## one desk + chair + aisle
+const CELL := Vector2(176, 162)   ## one desk + chair + aisle
 const PAD_X := 26.0
 const ROOM_TOP := 68.0            ## space above the first desk row (sign, plant)
-const ROOM_BOTTOM := 72.0         ## open floor below the last desk row
+const ROOM_BOTTOM := 84.0         ## open floor below the last desk row (chat spot)
 const DOOR := 84.0
 const WING_GAP := 34.0
 const AMENITY_W := 176.0
@@ -145,6 +149,8 @@ func build(cfg: Dictionary) -> void:
 	var b := Rect2(x0, y0, total_w, y_bot + h_bot - y0)
 
 	areas.append({"kind": "corridor", "rect": Rect2(x0, y_corr, total_w, CORRIDOR), "theme": "corridor", "name": ""})
+	# Small-talk spot in the corridor, on the wall line between the first two columns.
+	_chat("Chat_Corridor", Vector2(x0 + col_w[0] + (WALL * 0.5 if cols > 1 else -60.0), y_corr + CORRIDOR * 0.5 - 8))
 	var main_door := Rect2()
 	var x := x0
 	for c in cols:
@@ -200,11 +206,11 @@ func _team_size(r: Dictionary) -> Vector2:
 func _cell_size(cell: Dictionary) -> Vector2:
 	match str(cell.kind):
 		"team": return _team_size(cell.room)
-		"break": return Vector2(440, 440)
+		"break": return Vector2(480, 470)
 		"meeting":
 			var per_side := ceili(int(cell.seats) / 2.0)
-			return Vector2(maxf(340.0, per_side * 84.0 + 180.0), 420)
-		_: return Vector2(300, 420)
+			return Vector2(maxf(360.0, per_side * 84.0 + 190.0), 450)
+		_: return Vector2(320, 450)
 
 
 func _corridor_wall(cell: Dictionary, r: Rect2) -> void:
@@ -262,6 +268,7 @@ func _build_team(room: Dictionary, cell: Rect2, content: Rect2) -> void:
 	var origin := Vector2(cell.position.x + (cell.size.x - content.size.x) * 0.5, cell.position.y)
 	_desk_grid(room, origin)
 	_prop("plant", Rect2(cell.end.x - 44, cell.position.y + 10, 30, 30))
+	_chat("Chat_" + str(room.id), Vector2(cell.get_center().x, cell.end.y - 46))
 
 
 func _desk_grid(room: Dictionary, origin: Vector2) -> void:
@@ -295,12 +302,14 @@ func _build_break(cell: Dictionary, r: Rect2) -> void:
 	_wp("Coffee_Machine", Vector2(p.x + 56, p.y + 112), "up")
 	_prop("water", Rect2(r.end.x - 66, p.y + 44, 40, 44))
 	_prop("vending", Rect2(p.x + 264, p.y + 42, 44, 40))
+	_wp("Vending_Machine", Vector2(p.x + 286, p.y + 114), "up")
+	_chat("Chat_Break", Vector2(p.x + 190, p.y + 200))  # open floor between sofa and counter
 	_wp("Water_Cooler", Vector2(r.end.x - 46, p.y + 114), "down")
-	var sofa := Rect2(p.x + 22, p.y + 250, 156, 46)
+	var sofa := Rect2(p.x + 22, p.y + 296, 156, 46)
 	_prop("sofa", sofa)
 	_wp("Sofa_1", Vector2(sofa.position.x + 48, sofa.position.y + 26), "down", "sofa")
 	_wp("Sofa_2", Vector2(sofa.position.x + 108, sofa.position.y + 26), "down", "sofa")
-	var table := Rect2(r.end.x - 196, p.y + 238, 120, 58)
+	var table := Rect2(r.end.x - 186, p.y + 296, 120, 58)
 	_prop("foosball", table)
 	_wp("Foosball_1", Vector2(table.position.x - 22, table.position.y + 22), "right", "foosball")
 	_wp("Foosball_2", Vector2(table.end.x + 22, table.position.y + 22), "left", "foosball")
@@ -369,7 +378,11 @@ func _build_wing(room: Dictionary, wing: Rect2) -> Rect2:
 	meeting_groups[rid + "_Meeting_Room"] = seats
 	_prop("plant", Rect2(wing.position.x + 16, wing.end.y - 52, 34, 34))
 	_prop("plant", Rect2(wing.end.x - 50, wing.end.y - 52, 34, 34))
-	_prop("sofa", Rect2(wing.position.x + 80, wing.end.y - 110, 156, 46))
+	var sofa := Rect2(wing.position.x + 80, wing.end.y - 110, 156, 46)
+	_prop("sofa", sofa)
+	_wp(rid + "_Sofa_1", Vector2(sofa.position.x + 48, sofa.position.y + 26), "down", "sofa")
+	_wp(rid + "_Sofa_2", Vector2(sofa.position.x + 108, sofa.position.y + 26), "down", "sofa")
+	_chat(rid + "_Chat", Vector2(ax + 88, wing.position.y + 230))
 	_wp(rid + "_Entrance", Vector2(wing.position.x + wing.size.x * 0.5, wing.end.y - 30), "up")
 	# Own exterior door at the bottom of the wing.
 	return Rect2(wing.position.x + wing.size.x * 0.5 - 45, wing.end.y, 90, EXT_WALL)
@@ -381,6 +394,14 @@ func _prop(kind: String, r: Rect2, extra: Dictionary = {}) -> void:
 	props.append(d)
 	if kind != "chair":
 		obstacles.append(r)
+
+
+## Three standing slots around `c` that face each other: _1 west (looks
+## east), _2 east (looks west), _3 north (looks south).
+func _chat(name: String, c: Vector2) -> void:
+	_wp(name + "_1", c + Vector2(-40, 6), "right")
+	_wp(name + "_2", c + Vector2(40, 6), "left")
+	_wp(name + "_3", c + Vector2(0, -30), "down")
 
 
 func _wp(name: String, pos: Vector2, facing: String, seat: String = "") -> void:
@@ -422,6 +443,7 @@ func _draw() -> void:
 	if Iso.enabled:
 		_draw_iso()
 		return
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE * Iso.SCALE)
 	# Grass / outdoor ground around the buildings.
 	draw_rect(bounds.grow(400), Color("#7da36b"))
 	for i in 60:

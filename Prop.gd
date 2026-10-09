@@ -37,7 +37,7 @@ func setup(d: Dictionary, slice: Rect2 = Rect2()) -> void:
 	if Iso.enabled:
 		position = Iso.to_screen(iso_anchor())
 	else:
-		position = Vector2(rect.position.x, float(d.get("sort_y", rect.end.y)))
+		position = Vector2(rect.position.x, float(d.get("sort_y", rect.end.y))) * Iso.SCALE
 	set_process(kind in ["desk", "foosball", "servers", "coffee", "water", "plant", "vending"])
 
 
@@ -68,7 +68,7 @@ func _draw() -> void:
 		_draw_iso()
 		return
 	# Draw in world coordinates (the node origin is only used for y-sorting).
-	draw_set_transform(-position, 0.0, Vector2.ONE)
+	draw_set_transform(-position, 0.0, Vector2.ONE * Iso.SCALE)
 	match kind:
 		"desk": _draw_desk()
 		"chair": _draw_chair()
@@ -394,6 +394,11 @@ func _plane_east(x0: float, z_top: float) -> void:
 	draw_set_transform_matrix(Iso.east_xf(x0, z_top, -position))
 
 
+## Billboard: upright drawing at screen point `p`, scaled like the world.
+func _bb(p: Vector2) -> void:
+	draw_set_transform(p, 0, Vector2.ONE * Iso.SCALE)
+
+
 func _plane_reset() -> void:
 	draw_set_transform_matrix(Transform2D.IDENTITY)
 
@@ -511,10 +516,11 @@ func _iso_coffee() -> void:
 	draw_rect(Rect2(r.position.x + r.size.x * 0.5 - 8, 20, 16, 4), Color("#212121"))
 	draw_rect(Rect2(r.position.x + r.size.x * 0.5 - 5, h - 16, 10, 10), Color("#fafafa"))
 	_plane_reset()
-	var cup := _p(Vector2(r.position.x + r.size.x * 0.5, r.end.y), 14)
+	_bb(_p(Vector2(r.position.x + r.size.x * 0.5, r.end.y), 14))
 	for i in 2:
 		var s := fmod(_t * 12.0 + i * 8.0, 16.0)
-		draw_circle(cup + Vector2(sin(_t * 3.0 + i) * 2.0, -s), 2.0, Color(1, 1, 1, 0.35 * (1.0 - s / 16.0)))
+		draw_circle(Vector2(sin(_t * 3.0 + i) * 2.0, -s), 2.0, Color(1, 1, 1, 0.35 * (1.0 - s / 16.0)))
+	_plane_reset()
 
 
 func _iso_counter() -> void:
@@ -531,12 +537,13 @@ func _iso_counter() -> void:
 	var bowl := Vector2(r.position.x + 30, r.position.y + 14)
 	if _in_clip(bowl):
 		var bp := _p(bowl, h)
-		draw_set_transform(bp, 0, Vector2(1, 0.55))
+		draw_set_transform(bp, 0, Vector2(1, 0.55) * Iso.SCALE)
 		draw_circle(Vector2.ZERO, 9.0, Color("#ffcc80"))
-		draw_set_transform(Vector2.ZERO)
-		draw_circle(bp + Vector2(-3, -3), 3.2, Color("#e53935"))
-		draw_circle(bp + Vector2(3, -2), 3.2, Color("#fdd835"))
-		draw_circle(bp + Vector2(0, -5), 3.0, Color("#7cb342"))
+		_bb(bp)
+		draw_circle(Vector2(-3, -3), 3.2, Color("#e53935"))
+		draw_circle(Vector2(3, -2), 3.2, Color("#fdd835"))
+		draw_circle(Vector2(0, -5), 3.0, Color("#7cb342"))
+		_plane_reset()
 
 
 func _iso_water() -> void:
@@ -550,11 +557,12 @@ func _iso_water() -> void:
 	draw_circle(Vector2(base.get_center().x + 4, 20), 1.8, Color("#1e88e5"))
 	_plane_reset()
 	# Bottle (billboard).
-	var top := _p(base.get_center(), 34)
-	_rr(Rect2(top.x - 10, top.y - 30, 20, 30), 8, Color("#4fc3f7", 0.85))
-	draw_rect(Rect2(top.x - 6, top.y - 26, 3, 18), Color(1, 1, 1, 0.45))
+	_bb(_p(base.get_center(), 34))
+	_rr(Rect2(-10, -30, 20, 30), 8, Color("#4fc3f7", 0.85))
+	draw_rect(Rect2(-6, -26, 3, 18), Color(1, 1, 1, 0.45))
 	var bub := fmod(_t * 10.0, 22.0)
-	draw_circle(Vector2(top.x + 3, top.y - 4 - bub), 1.5, Color(1, 1, 1, 0.7))
+	draw_circle(Vector2(3, -4 - bub), 1.5, Color(1, 1, 1, 0.7))
+	_plane_reset()
 
 
 func _iso_vending() -> void:
@@ -614,24 +622,28 @@ func _iso_foosball() -> void:
 		ball += Vector2(sin(_t * 2.3) * field.size.x * 0.42, sin(_t * 3.7 + 1.0) * field.size.y * 0.36)
 	draw_circle(ball + Vector2(1, 1), 2.6, Color(0, 0, 0, 0.3))
 	_plane_reset()
-	draw_circle(_p(ball, h) + Vector2(0, -2.5), 2.6, Color.WHITE)
+	_bb(_p(ball, h))
+	draw_circle(Vector2(0, -2.5), 2.6, Color.WHITE)
+	_plane_reset()
+	var ks := Iso.SCALE
 	# Rods across the table (north-south) with little upright players.
 	var rods := 4
 	for i in rods:
 		var x := field.position.x + field.size.x * (i + 0.5) / rods
 		var col := Color("#e53935") if i % 2 == 0 else Color("#1e88e5")
 		var rz := h + 7.0
-		draw_line(_p(Vector2(x, r.position.y - 7), rz), _p(Vector2(x, r.end.y + 7), rz), Color("#b0bec5"), 2.0)
-		draw_circle(_p(Vector2(x, r.position.y - 8), rz), 2.5, Color("#212121"))
-		draw_circle(_p(Vector2(x, r.end.y + 8), rz), 2.8, Color("#212121"))
+		draw_line(_p(Vector2(x, r.position.y - 7), rz), _p(Vector2(x, r.end.y + 7), rz), Color("#b0bec5"), 2.0 * ks)
+		draw_circle(_p(Vector2(x, r.position.y - 8), rz), 2.5 * ks, Color("#212121"))
+		draw_circle(_p(Vector2(x, r.end.y + 8), rz), 2.8 * ks, Color("#212121"))
 		var slide := sin(_t * (5.0 + i) + i) * 6.0 if playing else 0.0
 		var spin := sin(_t * (9.0 + i * 1.7)) if playing else 1.0
 		for k in 2:
 			var py := field.position.y + field.size.y * (0.3 + 0.4 * k) + slide
-			var base := _p(Vector2(x, py), h)
+			_bb(_p(Vector2(x, py), h))
 			var len := 9.0 * spin
-			draw_rect(Rect2(base.x - 2.5, base.y - maxf(len, 0.0) - 2.0, 5, absf(len) + 3.0), col)
-			draw_circle(Vector2(base.x, base.y - 7.0), 2.0, col.lightened(0.35))
+			draw_rect(Rect2(-2.5, -maxf(len, 0.0) - 2.0, 5, absf(len) + 3.0), col)
+			draw_circle(Vector2(0, -7.0), 2.0, col.lightened(0.35))
+			_plane_reset()
 
 
 func _iso_table() -> void:
@@ -666,13 +678,14 @@ func _iso_plant() -> void:
 	_plane_top(16)
 	draw_rect(Rect2(c - Vector2(7, 7), Vector2(14, 14)), Color("#4e342e"))
 	_plane_reset()
-	var b := _p(c, 16)
+	_bb(_p(c, 16))
 	var sway := sin(_t * 1.2 + r.position.x) * 1.0
-	draw_circle(b + Vector2(-8 + sway, -9), 10, Color("#2e7d32"))
-	draw_circle(b + Vector2(8 + sway, -11), 10, Color("#388e3c"))
-	draw_circle(b + Vector2(sway, -21), 11, Color("#43a047"))
-	draw_circle(b + Vector2(-4 + sway, -25), 4.5, Color("#66bb6a"))
-	draw_circle(b + Vector2(6 + sway, -17), 3.5, Color("#66bb6a"))
+	draw_circle(Vector2(-8 + sway, -9), 10, Color("#2e7d32"))
+	draw_circle(Vector2(8 + sway, -11), 10, Color("#388e3c"))
+	draw_circle(Vector2(sway, -21), 11, Color("#43a047"))
+	draw_circle(Vector2(-4 + sway, -25), 4.5, Color("#66bb6a"))
+	draw_circle(Vector2(6 + sway, -17), 3.5, Color("#66bb6a"))
+	_plane_reset()
 
 
 func _iso_reception() -> void:
@@ -686,7 +699,9 @@ func _iso_reception() -> void:
 		_plane_reset()
 	var bell := Vector2(r.position.x + 20, r.position.y + 12)
 	if _in_clip(bell):
-		draw_circle(_p(bell, h) + Vector2(0, -3), 4.5, Color("#ffca28"))
+		_bb(_p(bell, h))
+		draw_circle(Vector2(0, -3), 4.5, Color("#ffca28"))
+		_plane_reset()
 
 
 func _iso_bench() -> void:
