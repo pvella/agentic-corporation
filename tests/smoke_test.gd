@@ -122,6 +122,7 @@ func _office() -> void:
 		elif d.agent_id == "ptc_odoo":
 			d.state = "IDLE"
 			d.target = "ptc_Coffee"
+			d.unread = 3
 	main.handle_message({"type": "SNAPSHOT", "server": {"mode": "mock", "tempo": "calm", "office": layout.office.name}, "agents": agents})
 	await _wait(1.0)
 	_check(main.agents.size() == 23, "23 agents spawned (%d)" % main.agents.size())
@@ -130,6 +131,7 @@ func _office() -> void:
 	_check(android.is_seated_at_desk() and _dist(android, "Desk_android_dev") < 2.0, "agents start seated at their own desks")
 	_check(main._desk_props["android_dev"].owner_agent == android, "desk monitor is linked to its owner")
 	_check(ios.is_away_from_desk() and _dist(ios, "Sofa_1") < 2.0, "ios_dev starts on the break-room sofa")
+	_check(main.agents["ptc_odoo"].unread == 3, "snapshot restores the unread badge")
 
 	main.handle_message({"type": "LOG_ENTRY", "agent_id": "ios_dev", "log": "[notify] build finished"})
 	_check(ios.is_phone_out(), "LOG_ENTRY while away: agent pulls out the phone")
@@ -171,6 +173,21 @@ func _office() -> void:
 	_check(main.counts_label.text.contains("1 error"), "HUD counts the error (%s)" % main.counts_label.text)
 	main.handle_message({"type": "STATE_CHANGE", "agent_id": "android_dev", "state": "WORKING", "text": "retrying"})
 	_check(android.state == "WORKING", "ERROR clears on the next report")
+
+	# Inbox for real bots: envelope badge, ACK text, delivery, plain-text replies.
+	main.handle_message({"type": "INBOX", "agent_id": "ea", "unread": 2})
+	_check(ea.unread == 2, "INBOX event sets the envelope badge count")
+	main._on_agent_clicked(ea)
+	await _wait(0.3)
+	main.handle_message({"type": "ACK", "action": "DISPATCH_PROMPT", "agent_id": "ea", "inbox": true, "unread": 2, "queued": 0})
+	_check(main.drawer.log_view.get_parsed_text().contains("in EA's inbox (2 unread)"), "inbox ACK shown in the terminal")
+	main.handle_message({"type": "LOG_ENTRY", "agent_id": "ea", "log": "\u001b[1;32mEA>\u001b[0m [b]not bold[/b] [url=x]y[/url] [color=red]z"})
+	var shown: String = main.drawer.log_view.get_parsed_text()
+	_check(shown.contains("EA> [b]not bold[/b] [url=x]y[/url] [color=red]z"), "bot replies render as plain text (no BBCode injection)")
+	main.handle_message({"type": "INBOX", "agent_id": "ea", "unread": 0})
+	_check(ea.unread == 0, "delivery clears the badge")
+	main.drawer.close()
+	await _wait(0.3)
 
 	# Team summary from a room sign.
 	main.open_team("dev_team")

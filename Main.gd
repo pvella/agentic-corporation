@@ -322,7 +322,15 @@ func handle_message(msg: Dictionary) -> void:
 			_apply_collaborate(msg)
 		"ACK":
 			if drawer.agent and drawer.agent.agent_id == str(msg.get("agent_id", "")):
-				drawer.append_system("prompt accepted by harness (queue: %d)" % int(msg.get("queued", 0)), "#56b6c2")
+				if msg.get("inbox", false):
+					drawer.append_system("in %s's inbox (%d unread)" % [drawer.agent.display_name, int(msg.get("unread", 0))], "#e5c07b")
+				else:
+					drawer.append_system("prompt accepted by harness (queue: %d)" % int(msg.get("queued", 0)), "#56b6c2")
+		"INBOX":
+			var agent := _get_or_spawn(str(msg.get("agent_id", "")))
+			if agent:
+				agent.unread = maxi(0, int(msg.get("unread", 0)))
+				agent.queue_redraw()
 		"ERROR":
 			push_warning("Harness error: %s" % str(msg.get("message", "")))
 			if drawer.agent:
@@ -351,6 +359,7 @@ func _apply_snapshot(msg: Dictionary) -> void:
 		if fresh:
 			agent = _spawn_agent(data)
 		agent.set_logs(data.get("logs", []))
+		agent.unread = maxi(0, int(data.get("unread", 0)))
 		var state := str(data.get("state", "IDLE"))
 		var target := _str_or_empty(data.get("target"))
 		if target.is_empty() or not (waypoints.has(target) or office.meeting_groups.has(target)):

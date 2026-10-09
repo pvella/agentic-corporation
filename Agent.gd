@@ -66,6 +66,8 @@ var role: String = ""
 var room_id: String = ""
 var state: String = "IDLE"
 var last_text: String = ""
+## Unread dashboard messages waiting in this (real) bot's inbox: envelope badge.
+var unread: int = 0
 var current_waypoint: String = ""
 var log_lines: PackedStringArray = []
 ## name -> Marker2D (meta: facing, seat), injected by Main.
@@ -877,6 +879,19 @@ func _draw_overlays(drop: float) -> void:
 		for i in 3:
 			var a := 0.3 + 0.7 * clampf(sin(t * 5.0 - i * 0.9), 0.0, 1.0)
 			draw_circle(top + Vector2(4 + i * 7, -5.5), 2.0, Color(0.25, 0.25, 0.3, a))
+	if unread > 0:
+		# Envelope: messages waiting for this bot to check in.
+		var bob := sin(t * 2.5) * 1.5
+		var e := Vector2(-24, _head_top() - 8 + bob)
+		draw_set_transform(e, 0.0, Vector2.ONE * _ui_scale)
+		_rrect(Rect2(-10, -7, 20, 14), 2.5, OUTLINE)
+		_rrect(Rect2(-9, -6, 18, 12), 2, Color("#fff8e1"))
+		draw_polyline(PackedVector2Array([Vector2(-8.5, -5.5), Vector2(0, 1), Vector2(8.5, -5.5)]), Color("#8d6e63"), 1.4)
+		if unread > 1:
+			draw_circle(Vector2(9, -7), 6.0, Color("#e53935"))
+			draw_string(ThemeDB.fallback_font, Vector2(5.5 if unread < 10 else 3.0, -3.0), str(mini(unread, 99)),
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color.WHITE)
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	if state == "ERROR":
 		# A pulsing red "!" badge (a real bot reported a failure).
 		var p := Vector2(16, _head_top() - 10)

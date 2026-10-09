@@ -96,6 +96,7 @@ python3 agent_harness.py --mode cli --prompt-mode none \
 | `--mcp-host` | `127.0.0.1` | MCP bind address. Leave it on localhost; Tailscale Funnel proxies to it. |
 | `--mcp-token-file PATH` | `.office_token` next to the script | Where the generated bearer token is kept. `OFFICE_MCP_TOKEN` in the environment wins. |
 | `--mcp-rate N` | `60` | Max MCP requests per minute per token (bursts of up to 20); extra calls get HTTP 429. |
+| `--inbox-file PATH\|none` | `.office_inbox.json` next to the script | Where dashboard messages for real bots are kept (`none` = memory only). |
 | `--live-hold SECONDS` | `600` | After a real report, the simulation leaves that agent alone this long. |
 | `-v` | | Debug logging. |
 
@@ -157,7 +158,7 @@ If you switch the same checkout between Godot 4.3 and 4.4+, run `godot --headles
 
 ## Live status from Grok Bot (MCP)
 
-Your real bots can drive their own characters. The harness also serves a small **remote MCP connector** (Streamable HTTP, built on the official `mcp` Python SDK) with one tool, `report_office_status`. A cloud-hosted bot calls it over the internet through **Tailscale Funnel** on your Mac, and its character reacts straight away.
+Your real bots can drive their own characters, and you can message them from the dashboard. The harness also serves a small **remote MCP connector** (Streamable HTTP, built on the official `mcp` Python SDK) with three tools: `report_office_status`, `check_office_inbox` and `reply_office_message`. A cloud-hosted bot calls it over the internet through **Tailscale Funnel** on your Mac, and its character reacts straight away.
 
 ```
 Grok Bot (cloud) --HTTPS--> https://<mac>.<tailnet>.ts.net/mcp --Funnel--> 127.0.0.1:8766/mcp --> harness --WebSocket :8765--> Godot
@@ -171,7 +172,7 @@ Grok Bot (cloud) --HTTPS--> https://<mac>.<tailnet>.ts.net/mcp --Funnel--> 127.0
 | Token | `OFFICE_MCP_TOKEN` from the environment, or generated on first run into `.office_token` (chmod 600, git-ignored) and printed once. Read it again with `cat .office_token`; delete the file and restart to rotate it. |
 | Transport | MCP Streamable HTTP, stateless, JSON responses (protocol 2025-03-26 and later). `GET` and `DELETE` return 405 because there are no server-push streams or sessions. |
 
-### The tool
+### Reporting status
 
 `report_office_status(agent, action, detail)`
 
@@ -187,12 +188,25 @@ Grok Bot (cloud) --HTTPS--> https://<mac>.<tailnet>.ts.net/mcp --Funnel--> 127.0
 | `finish` | Logs `✔ Done`, then heads off for a break (its room's break spots: the shared break room, or the PTC wing's own kitchenette). |
 | `error` | Stays at the desk with a red monitor, a pulsing red `!` and a red ring (`ERROR`); the HUD counts errors. The next report clears it. |
 
-The result is just `ok`.
+The result is `ok`, or `ok (N unread messages: call check_office_inbox)` when you've left that bot messages, so bots discover them as they report.
+
+### Messages from the dashboard (two-way)
+
+Type a prompt into a real bot's terminal and it goes into that bot's **inbox** instead of being run:
+
+- The terminal shows `queued for <agent>: they'll pick it up next time they check in`, and the character gets an **envelope badge** (with a count when there's more than one).
+- `check_office_inbox(agent)` returns the pending messages (`id`, age and text) and marks them delivered: the badge clears and the terminal shows `delivered to <agent>`. With nothing waiting it returns `no messages`.
+- `reply_office_message(agent, reply, message_id="", show_bubble=true)` prints the reply in the agent's terminal as `<agent>> ...` (with `re #id` when it answers a message) and, by default, the start of it as a speech bubble. Leave `message_id` empty for an unsolicited note. An unknown `message_id` is a tool error.
+- Replies are plain text: up to 2000 characters and 40 lines, escape and control characters stripped, and anything that looks like markup (`[b]`, `[url]`) is shown literally.
+- The inbox is saved to `.office_inbox.json` next to the harness (git-ignored, chmod 600; `--inbox-file` moves it, `none` keeps it in memory), so a restart doesn't lose messages. Each agent holds up to 20 unread messages; past that the dashboard says the inbox is full.
+- **Which agents use the inbox:** in `--mode live`, every agent without a bound `--agent-cmd`. In mock/cli mode, only agents that have reported for real (or already have inbox history); simulated agents still play the scripted run.
+
+**Latency:** the office can't push to a cloud bot. A bot only sees your message the next time it calls one of the tools, so how quickly it answers depends on how often it checks in. Have each bot call `check_office_inbox` at the start of every task and on a routine, e.g. every 15–30 minutes or on its daily check-in.
 
 ### Mixed and live modes
 
 - **Mock mode (default):** everyone is simulated, but as soon as a bot reports for real the simulation leaves **that** agent alone for 10 minutes after its latest report (`--live-hold`), so real status is never overwritten. Everyone else keeps the calm simulation. When the hold runs out, the simulation picks up again from where the bot left off.
-- **Live mode (`--mode live`):** no simulation at all. Everyone starts seated with their screens off and only moves on real reports (or on CLI runs bound with `--agent-cmd`). Prompts typed into the dashboard for agents without a command are logged, not run.
+- **Live mode (`--mode live`):** no simulation at all. Everyone starts seated with their screens off and only moves on real reports (or on CLI runs bound with `--agent-cmd`). Prompts typed into the dashboard for agents without a command go to their inbox (see above).
 
 ```bash
 python3 agent_harness.py                    # simulated office + live overrides, MCP on :8766
@@ -200,7 +214,7 @@ python3 agent_harness.py --mode live        # only real reports move people
 python3 agent_harness.py --no-mcp           # no connector
 ```
 
-If the harness (or the Mac, or Funnel) is down, the bots' calls simply fail. Nothing is queued, and the instruction below tells the bots to ignore the failure and carry on.
+If the harness (or the Mac, or Funnel) is down, the bots' calls simply fail. Status reports aren't queued (messages you typed stay in the inbox file), and the instruction below tells the bots to ignore the failure and carry on.
 
 ### Expose it with Tailscale Funnel
 
@@ -235,6 +249,8 @@ Add a remote MCP connector in Grok Bot with:
 Then add this to each bot's instructions, with its own name:
 
 > Whenever you start a task, make real progress, or finish/fail a job, call report_office_status with agent="<your name>" and a one-sentence detail. If the call fails, ignore it and carry on.
+>
+> At the start of each task, on every routine check-in, and whenever report_office_status says you have unread messages, call check_office_inbox with agent="<your name>". Treat each message as a request from Paul: do it (or say why you can't), then answer with reply_office_message, passing its message_id and a short plain-text reply. If there are no messages, carry on.
 
 Test it from a terminal first:
 
@@ -280,7 +296,7 @@ There is no packaged build or store listing yet. Agentic Corporation is a **loca
 |---|---|
 | `agent_harness.py` | WebSocket server. Holds the agent registry and broadcasts every event. Loads `office.json`, includes `MockRunner` (role-flavoured scripted runs), `AmbientDirector` (the tempo-driven background simulation), `CliRunner` (wraps a real process and streams its output) and a per-agent prompt queue. |
 | `office.json` | Rooms, members and shared spaces (see "Editing office.json"). |
-| `office_mcp.py` | The MCP connector: `report_office_status` tool, bearer-token check, rate limits, token file. Started by the harness. |
+| `office_mcp.py` | The MCP connector: the `report_office_status`, `check_office_inbox` and `reply_office_message` tools, bearer-token check, rate limits, token file. Started by the harness. The inbox itself (`Inbox`, persisted to `.office_inbox.json`) lives in `agent_harness.py`. |
 | `requirements.txt` | Python dependencies (`websockets>=13`, `mcp>=2.3,<3`). |
 | `project.godot` | Godot project settings: 1280x800, resizable (stretch `canvas_items`, aspect `expand`), GL Compatibility, main scene `Main.tscn`. |
 | `Main.tscn` / `Main.gd` | The office scene. Builds the office from `OFFICE_LAYOUT` (or the legacy layout), creates the waypoints, furniture, room signs and navigation, runs the `WebSocketPeer` client with automatic retry, routes messages, assigns seats and spreads agents at shared spots, and drives the HUD. |
@@ -295,7 +311,7 @@ There is no packaged build or store listing yet. Agentic Corporation is a **loca
 | `tests/test_ansi.gd` | Headless unit tests for the colour converter. |
 | `tests/smoke_test.gd` | Headless integration test that loads `Main.tscn` and feeds it protocol messages (legacy office and the team-room office). |
 | `tests/fixtures/office_layout.json` | The `OFFICE_LAYOUT` the harness sends for the default `office.json`, used by the smoke test. |
-| `tests/test_office_mcp.py` | Python unit tests for the MCP connector (auth, tools/list, tool calls reaching a WebSocket client, unknown agents, truncation, mixed and live modes, rate limit, token file). |
+| `tests/test_office_mcp.py` | Python unit tests for the MCP connector (auth, tools/list, tool calls reaching a WebSocket client, unknown agents, truncation, mixed and live modes, rate limit, token file, and the inbox: queue, persist, deliver, reply, badge events, cap, escaping). |
 | `tools/test_client.py` | Python test client for the harness protocol, in mock and cli modes. |
 | `tools/funnel-mac.sh` | `on` / `off` / `status` / `url` helper for Tailscale Funnel on the MCP port. |
 | `tools/tempo_check.py` | Watches the harness and reports walks per minute, dwell times and how many agents walk at once. |
@@ -352,12 +368,13 @@ All messages are JSON text frames on `ws://127.0.0.1:8765`. Every server-to-clie
 | `type` | Fields | Client behaviour |
 |---|---|---|
 | `OFFICE_LAYOUT` | `office{name, rooms[{id,name,color,theme,desks,isolated,members[{agent_id,name,role,color,desk}],break_spots,meeting_target}], shared{break_room,meeting_room}}` | Sent on connect, before the `SNAPSHOT`, when the harness has an office config (and in reply to `REQUEST_LAYOUT`). The client rebuilds the floor plan if it changed. Without it the client uses the legacy 3-desk office. |
-| `SNAPSHOT` | `server{name,version,mode,tempo,office}`, `agents[{agent_id,name,role,room,desk,color,state,target,text,busy,queued,live,logs[]}]` | Sent when a client connects and in reply to `REQUEST_SNAPSHOT`. The client spawns, updates and removes agents to match (new agents appear directly at their spot), and restores their logs. |
+| `SNAPSHOT` | `server{name,version,mode,tempo,office}`, `agents[{agent_id,name,role,room,desk,color,state,target,text,busy,queued,live,unread,logs[]}]` | Sent when a client connects and in reply to `REQUEST_SNAPSHOT`. The client spawns, updates and removes agents to match (new agents appear directly at their spot), and restores their logs. |
 | `STATE_CHANGE` | `agent_id`, `state` (`IDLE`, `WORKING`, `THINKING`, `COLLAB`, `ERROR`), optional `target`, optional `text` | Sets the animation state, walks to `target` if given, and shows `text` as a bubble (a thought bubble when `THINKING`). |
 | `LOG_ENTRY` | `agent_id`, `log` (raw text, may contain ANSI codes), `stream` (`stdout` or `stderr`) | Appends to the agent's log, and to the drawer if it's open. |
 | `COLLABORATE` | `agents[]`, `target` (`Meeting_Room` or a waypoint), optional `text` | Every listed agent switches to `COLLAB` and takes its own seat. The first agent shows the bubble. |
-| `ACK` | `action`, `agent_id`, `prompt`, `queued` | Sent only to the client that sent a valid `DISPATCH_PROMPT`. |
-| `ERROR` | `message`, optional `action`, `agent_id` | Sent for bad JSON, an unknown action or agent, or an empty prompt. |
+| `ACK` | `action`, `agent_id`, `prompt`, `queued`; for inbox prompts also `inbox: true`, `message_id`, `unread` | Sent only to the client that sent a valid `DISPATCH_PROMPT`. |
+| `INBOX` | `agent_id`, `unread` | The agent's unread message count changed: shows or clears the envelope badge. |
+| `ERROR` | `message`, optional `action`, `agent_id` | Sent for bad JSON, an unknown action or agent, an empty prompt, or a full inbox. |
 | `PONG` | none | Reply to `PING`. |
 
 Example:
@@ -417,7 +434,7 @@ godot --headless --path . --script res://tests/smoke_test.gd    # layouts, spawn
 ## Security
 
 - The WebSocket listens on **127.0.0.1 only** and has **no authentication**. Any local process can connect and send prompts.
-- The **MCP connector** also binds to 127.0.0.1 and is the only part meant to be exposed (through Tailscale Funnel). Every request needs the bearer token (compared in constant time); bad tokens get 401 and are throttled per client, valid traffic is rate-limited (`--mcp-rate`), request bodies are capped at 64 KB, and `detail` is cleaned and capped at 200 characters. The tool can only move characters and add log lines: it can't run commands or send prompts. Keep `.office_token` private (it's git-ignored and chmod 600) and rotate it by deleting the file and restarting.
+- The **MCP connector** also binds to 127.0.0.1 and is the only part meant to be exposed (through Tailscale Funnel). Every request needs the bearer token (compared in constant time); bad tokens get 401 and are throttled per client, valid traffic is rate-limited (`--mcp-rate`), request bodies are capped at 64 KB, and `detail` is cleaned and capped at 200 characters. The tools can only move characters, add log lines and hand over the messages you typed for that bot: they can't run commands or send prompts. Bot replies are shown as plain text. `.office_inbox.json` holds your messages in plain text (chmod 600, git-ignored); note that any bot holding the token can read any agent's inbox by name. Keep `.office_token` private (it's git-ignored and chmod 600) and rotate it by deleting the file and restarting.
 - In **cli mode, a prompt runs a real command** on your machine with your user's permissions, in `--cwd`. Only bind commands you trust, and point `--cwd` at a working copy you're happy for an agent to change.
 - Don't expose the WebSocket port (8765) beyond localhost (`--host 0.0.0.0`, port forwarding, tunnels).
 

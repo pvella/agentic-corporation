@@ -4,13 +4,20 @@ office_mcp.py - Remote MCP connector for Agent Office live status.
 Started by agent_harness.py (unless --no-mcp). Serves the MCP Streamable HTTP
 transport at http://127.0.0.1:8766/mcp using the official `mcp` Python SDK
 (MCPServer, stateless, JSON responses), so a cloud-hosted bot (e.g. a Grok Bot
-connector) can call one tool:
+connector) can call three tools:
 
   report_office_status(agent, action, detail)
       agent   the bot's name as in office.json ("Android Dev"); case-insensitive,
               the agent_id ("android_dev") works too
       action  start_task | thinking | run_tool | finish | error
       detail  one short sentence (control characters stripped, max 200 chars)
+      -> "ok", or "ok (N unread messages: call check_office_inbox)"
+  check_office_inbox(agent)
+      -> the prompts Paul typed into that agent's terminal (id, age, text),
+         now marked delivered; or "no messages"
+  reply_office_message(agent, reply, message_id="", show_bubble=true)
+      prints the reply in the agent's terminal ("<name>> ..."), plain text,
+      max 2000 chars / 40 lines; message_id empty = unsolicited note
 
 Security:
   * Every HTTP request needs "Authorization: Bearer <token>" or gets 401.
@@ -22,8 +29,8 @@ Security:
     DNS-rebinding Host checks are off because Funnel forwards the public
     *.ts.net Host header; the bearer token is what guards the endpoint.
 
-If the harness is not running, the bots' calls simply fail; the office does
-not queue anything.
+If the harness is not running, the bots' calls simply fail; status reports are
+not queued. Dashboard messages for the bots are kept in .office_inbox.json.
 """
 from __future__ import annotations
 
@@ -42,6 +49,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
+from agent_harness import age_text
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
@@ -61,8 +69,22 @@ TOOL_DESCRIPTION = (
     "Call it when you start a task (start_task), are working something out (thinking), "
     "run a tool or command (run_tool), finish (finish) or fail (error). "
     "'agent' is your bot name exactly as in the office, e.g. \"Android Dev\". "
-    "'detail' is one short sentence. Returns \"ok\". If the call fails, ignore it and carry on."
+    "'detail' is one short sentence. Returns \"ok\", plus a note when Paul has left you messages. "
+    "After reporting, if there might be messages for you (or the result mentions unread messages), "
+    "call check_office_inbox. If the call fails, ignore it and carry on."
 )
+INBOX_DESCRIPTION = (
+    "Fetch messages Paul typed into your terminal in the Agent Office dashboard. Returns each pending "
+    "message with its id, text and age, then marks them delivered; returns \"no messages\" if there are none. "
+    "Answer with reply_office_message (pass the message_id). 'agent' is your bot name as in the office."
+)
+REPLY_DESCRIPTION = (
+    "Post a reply in your terminal in the Agent Office dashboard (shown as \"<your name>> ...\"), "
+    "optionally with a short speech bubble over your character. Pass message_id to answer a message from "
+    "check_office_inbox, or leave it empty for an unsolicited note. Plain text, up to 2000 characters."
+)
+AgentName = Annotated[str, Field(description="Your bot name as in the office, e.g. \"Android Dev\" "
+                                             "(case-insensitive; the agent id also works).")]
 
 
 # ---------------------------------------------------------------------------
@@ -191,30 +213,73 @@ def build_mcp(hub: Any) -> MCPServer:
         title="Agent Office",
         version="0.3.0",
         instructions="Live status for the Agent Office dashboard. Call report_office_status when you start a "
-                     "task, make progress, run a tool, finish or fail. Failures are harmless: carry on.",
+                     "task, make progress, run a tool, finish or fail. When it mentions unread messages (or when "
+                     "you check in on a routine), call check_office_inbox and answer with reply_office_message. "
+                     "Failures are harmless: carry on.",
     )
 
     @server.tool(name="report_office_status", title="Report office status", description=TOOL_DESCRIPTION,
                  structured_output=False)
     def report_office_status(
-        agent: Annotated[str, Field(description="Your bot name as in the office, e.g. \"Android Dev\" "
-                                                "(case-insensitive; the agent id also works).")],
+        agent: AgentName,
         action: Annotated[Literal["start_task", "thinking", "run_tool", "finish", "error"],
                           Field(description="start_task, thinking, run_tool, finish or error.")],
         detail: Annotated[str, Field(description="One short sentence about what is happening "
                                                  f"(max {MAX_DETAIL} characters).")] = "",
     ) -> str:
-        name = clean_text(agent, MAX_AGENT)
-        target = hub.find_agent(name)
-        if target is None:
-            names = ", ".join(hub.agent_names())
-            raise ToolError(f"Unknown agent {name!r}. Use your name exactly as in the office. Valid names: {names}")
+        target = _agent(hub, agent)
         if action not in ACTIONS:  # the schema already enforces this
             raise ToolError(f"Unknown action {action!r}. Use one of: {', '.join(ACTIONS)}")
         hub.apply_report(target, action, clean_text(detail, MAX_DETAIL))
+        unread = hub.inbox.unread(target.agent_id)
+        if unread:
+            return f"ok ({unread} unread message{'s' if unread != 1 else ''}: call check_office_inbox)"
+        return "ok"
+
+    @server.tool(name="check_office_inbox", title="Check office inbox", description=INBOX_DESCRIPTION,
+                 structured_output=False)
+    def check_office_inbox(agent: AgentName) -> str:
+        target = _agent(hub, agent)
+        items = hub.deliver_messages(target)
+        if not items:
+            return "no messages"
+        now = time.time()
+        out = [f"{len(items)} message{'s' if len(items) != 1 else ''} from Paul (now marked delivered; "
+               "answer with reply_office_message):"]
+        for item in items:
+            out.append(f"- id {item['id']} ({age_text(now - item['created'])}): {item['text']}")
+        return "\n".join(out)
+
+    @server.tool(name="reply_office_message", title="Reply in the office", description=REPLY_DESCRIPTION,
+                 structured_output=False)
+    def reply_office_message(
+        agent: AgentName,
+        reply: Annotated[str, Field(description="Your reply, plain text (max 2000 characters).")],
+        message_id: Annotated[str, Field(description="The id from check_office_inbox, or empty for an "
+                                                     "unsolicited note.")] = "",
+        show_bubble: Annotated[bool, Field(description="Also show the start of the reply as a speech "
+                                                       "bubble over your character.")] = True,
+    ) -> str:
+        target = _agent(hub, agent)
+        mid = clean_text(message_id, 32).lstrip("#")
+        if mid and hub.inbox.find(target.agent_id, mid) is None:
+            raise ToolError(f"Unknown message_id {mid!r} for {target.name}. Use an id from check_office_inbox, "
+                            "or leave message_id empty for a note.")
+        if not clean_text(reply, 10):
+            raise ToolError("reply is empty")
+        hub.post_reply(target, reply, mid, bubble=show_bubble)
         return "ok"
 
     return server
+
+
+def _agent(hub: Any, agent: str) -> Any:
+    name = clean_text(agent, MAX_AGENT)
+    target = hub.find_agent(name)
+    if target is None:
+        names = ", ".join(hub.agent_names())
+        raise ToolError(f"Unknown agent {name!r}. Use your name exactly as in the office. Valid names: {names}")
+    return target
 
 
 class OfficeMCP:
