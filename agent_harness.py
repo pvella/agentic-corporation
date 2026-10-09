@@ -9,9 +9,11 @@ client. Godot (or any client) can send commands back, e.g. DISPATCH_PROMPT.
 
 Two runner modes:
 
-  --mode mock   Simulated agents. An "ambient" loop makes idle agents pick up
-                fake tasks, chat at the coffee machine and hold meetings, and
-                DISPATCH_PROMPT plays a scripted THINKING -> WORKING -> IDLE run.
+  --mode mock   Simulated agents. An ambient director keeps them mostly at
+                their desks in long work sessions (logs trickle in), with the
+                odd break-room visit and an occasional meeting; pace is set by
+                --tempo calm|normal|busy (default calm). DISPATCH_PROMPT plays a
+                scripted THINKING -> WORKING -> IDLE run straight away.
 
   --mode cli    Real processes. Each agent can be bound to a shell command with
                 --agent-cmd agent_id='command ...'. A DISPATCH_PROMPT launches
@@ -60,12 +62,20 @@ except ImportError:  # pragma: no cover - websockets 12 fallback
 
 from websockets.exceptions import ConnectionClosed
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 log = logging.getLogger("agent_harness")
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(\x07|\x1b\\)")
-IDLE_SPOTS = ("Coffee_Machine", "Water_Cooler")
+SHARED_BREAK_SPOTS = ("Coffee_Machine", "Water_Cooler", "Sofa_1", "Sofa_2")
+IDLE_SPOTS = SHARED_BREAK_SPOTS  # backwards-compatible name
 MEETING_TARGET = "Meeting_Room"
+FOOSBALL_SPOTS = ("Foosball_1", "Foosball_2", "Foosball_3", "Foosball_4")
+SHARED_GROUP = "shared"
+SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
+DEFAULT_OFFICE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "office.json")
+PALETTE = ("#4fc3f7", "#81c784", "#ffb74d", "#f06292", "#ba68c8", "#4db6ac", "#ffd54f", "#7986cb",
+           "#a1887f", "#e57373", "#64b5f6", "#aed581", "#ff8a65", "#9575cd", "#4dd0e1", "#dce775",
+           "#f48fb1", "#90a4ae", "#ffcc80", "#80cbc4", "#b39ddb", "#c5e1a5", "#ef9a9a", "#80deea")
 
 
 def strip_ansi(text: str) -> str:
@@ -88,19 +98,29 @@ class Agent:
     desk: str
     color: str
     role: str = ""
+    room: str = ""
+    # Where this agent takes breaks / holds meetings (depends on its room).
+    break_spots: tuple[str, ...] = SHARED_BREAK_SPOTS
+    meeting_target: str = MEETING_TARGET
+    group: str = SHARED_GROUP  # agents only meet / play with their own group
     state: str = "IDLE"
     target: str | None = None
     text: str = ""
     logs: deque[str] = field(default_factory=lambda: deque(maxlen=200))
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     queue: asyncio.Queue[str] = field(default_factory=asyncio.Queue, repr=False)
-    ambient_task: asyncio.Task[None] | None = field(default=None, repr=False)
+    # Ambient-simulation bookkeeping (simulated seconds, see AmbientDirector).
+    activity: str = "desk"  # desk | break | meeting
+    activity_until: float = 0.0
+    next_event_at: float = 0.0
+    thinking_until: float = 0.0
 
     def to_json(self, include_logs: bool = True) -> dict[str, Any]:
         data: dict[str, Any] = {
             "agent_id": self.agent_id,
             "name": self.name,
             "role": self.role,
+            "room": self.room,
             "desk": self.desk,
             "color": self.color,
             "state": self.state,
@@ -124,22 +144,30 @@ DEFAULT_AGENTS: tuple[dict[str, str], ...] = (
 class Hub:
     """Owns the registry and the set of connected clients."""
 
-    def __init__(self, mode: str) -> None:
+    def __init__(self, mode: str, tempo: str = "calm", office: dict[str, Any] | None = None) -> None:
         self.mode = mode
+        self.tempo = tempo
+        self.office = office  # None = legacy fixed office (client uses its built-in layout)
         self.agents: dict[str, Agent] = {}
         self.clients: set[ServerConnection] = set()
         self.dispatcher: Callable[[str, str], Awaitable[None]] | None = None
 
     # -- registry ----------------------------------------------------------
-    def register(self, agent_id: str, name: str, desk: str, color: str, role: str = "") -> Agent:
-        agent = Agent(agent_id=agent_id, name=name, desk=desk, color=color, role=role)
+    def register(self, agent_id: str, name: str, desk: str, color: str, role: str = "", **extra: Any) -> Agent:
+        agent = Agent(agent_id=agent_id, name=name, desk=desk, color=color, role=role, **extra)
         self.agents[agent_id] = agent
         return agent
+
+    def layout_message(self) -> dict[str, Any] | None:
+        if self.office is None:
+            return None
+        return {"type": "OFFICE_LAYOUT", "office": self.office, "ts": now_ms()}
 
     def snapshot(self) -> dict[str, Any]:
         return {
             "type": "SNAPSHOT",
-            "server": {"name": "agent_harness", "version": __version__, "mode": self.mode},
+            "server": {"name": "agent_harness", "version": __version__, "mode": self.mode, "tempo": self.tempo,
+                       "office": self.office.get("name") if self.office else None},
             "agents": [a.to_json() for a in self.agents.values()],
             "ts": now_ms(),
         }
@@ -196,6 +224,9 @@ class Hub:
         self.clients.add(ws)
         log.info("client connected %s (%d total)", peer, len(self.clients))
         try:
+            layout = self.layout_message()
+            if layout:  # layout first, so the client can build rooms before spawning agents
+                await ws.send(json.dumps(layout, ensure_ascii=False))
             await ws.send(json.dumps(self.snapshot(), ensure_ascii=False))
             async for raw in ws:
                 await self.on_message(ws, raw)
@@ -234,14 +265,17 @@ class Hub:
                 return
             log.info("DISPATCH_PROMPT -> %s: %s", agent_id, prompt)
             agent = self.agents[agent_id]
-            # A user prompt pre-empts any ambient (simulated) activity.
-            if agent.ambient_task and not agent.ambient_task.done():
-                agent.ambient_task.cancel()
+            # The ambient director never holds an agent's lock across an await,
+            # so the worker picks this up immediately and the director then
+            # leaves the agent alone until the run finishes.
             await agent.queue.put(prompt)
             await self.reply(ws, {"type": "ACK", "action": action, "agent_id": agent_id,
                                   "prompt": prompt, "queued": agent.queue.qsize()})
         elif action in ("REQUEST_SNAPSHOT", "GET_REGISTRY"):
             await self.reply(ws, self.snapshot())
+        elif action == "REQUEST_LAYOUT":
+            await self.reply(ws, self.layout_message() or {"type": "ERROR", "action": action,
+                                                           "message": "no office layout (legacy mode)"})
         elif action == "PING":
             await self.reply(ws, {"type": "PONG", "ts": now_ms()})
         else:
@@ -252,7 +286,7 @@ class Hub:
 # Runners
 # ---------------------------------------------------------------------------
 class MockRunner:
-    """Scripted, fake agent work. Also drives the ambient office simulation."""
+    """Scripted, fake agent work for DISPATCH_PROMPT in mock mode."""
 
     def __init__(self, hub: Hub, speed: float = 1.0) -> None:
         self.hub = hub
@@ -263,82 +297,359 @@ class MockRunner:
 
     async def run_prompt(self, agent: Agent, prompt: str) -> None:
         hub, aid = self.hub, agent.agent_id
+        profile = role_profile(agent)
         short = prompt if len(prompt) <= 40 else prompt[:37] + "..."
-        files = re.findall(r"[\w./-]+\.(?:py|ts|js|go|rs|gd|md|json)", prompt) or ["main.py"]
-        target_file = files[0]
+        files = re.findall(r"[\w./-]+\.(?:py|ts|js|go|rs|gd|md|json|kt|swift|tf)", prompt)
+        task = f"Editing {files[0]}" if files else random.choice(profile.topics)[1]
 
         hub.log_line(aid, f"\x1b[1;36m> {prompt}\x1b[0m")
         hub.state(aid, "THINKING", text=f"Reading: {short}")
         await self.sleep(1.5)
-        hub.log_line(aid, "\x1b[2mLoading repository context (42 files)...\x1b[0m")
-        hub.state(aid, "THINKING", text="Analyzing AST...")
+        hub.log_line(aid, "\x1b[2mLoading context...\x1b[0m")
+        hub.state(aid, "THINKING", text=random.choice(profile.topics)[0])
         await self.sleep(1.5)
-        hub.state(aid, "WORKING", target=agent.desk, text=f"Editing {target_file}")
+        hub.state(aid, "WORKING", target=agent.desk, text=task)
         await self.sleep(2.0)
-        hub.log_line(aid, f"\x1b[33mEdit\x1b[0m {target_file}: +12 -4")
-        await self.sleep(1.2)
-        hub.log_line(aid, "\x1b[2m$ pytest -q\x1b[0m")
-        await self.sleep(1.2)
-        passed = random.randint(8, 24)
-        hub.log_line(aid, f"\x1b[32mRunning tests: {passed} passed, 0 failed.\x1b[0m")
-        await self.sleep(0.8)
+        for line in random.sample(profile.logs, k=min(3, len(profile.logs))):
+            hub.log_line(aid, profile.fill(line))
+            await self.sleep(1.2)
         hub.log_line(aid, f"\x1b[1;32m\u2714 Done:\x1b[0m {prompt}")
-        hub.state(aid, "IDLE", target=random.choice(IDLE_SPOTS), text="Done! Coffee time.")
+        spot = random.choice(agent.break_spots)
+        hub.state(aid, "IDLE", target=spot, text="Done! Coffee time." if "Coffee" in spot else "Done!")
 
-    # -- ambient simulation --------------------------------------------------
-    SOLO_TASKS: dict[str, list[tuple[str, str]]] = {
-        "coder_agent": [("Analyzing AST...", "Editing main.py"), ("Reading stack trace...", "Patching auth.py"),
-                        ("Planning refactor...", "Refactoring utils.py")],
-        "qa_agent": [("Reviewing diff...", "Writing test_auth.py"), ("Triaging flaky test...", "Running pytest")],
-        "architect_agent": [("Weighing trade-offs...", "Drafting ADR-007.md"),
-                            ("Mapping dependencies...", "Updating diagram.md")],
-    }
-    CHATTER = ["Anyone seen the CI logs?", "This coffee is compiling...", "Need a refactor break.",
-               "Ship it!", "Who broke main?", "Tabs or spaces?"]
 
-    async def ambient_solo(self, agent: Agent) -> None:
-        hub, aid = self.hub, agent.agent_id
-        think, work = random.choice(self.SOLO_TASKS.get(aid, [("Thinking...", "Working")]))
-        try:
-            hub.state(aid, "THINKING", text=think)
-            await self.sleep(2.0)
-            hub.state(aid, "WORKING", target=agent.desk, text=work)
-            await self.sleep(3.0)
-            for line in self._fake_logs(aid, work):
-                hub.log_line(aid, line)
-                await self.sleep(random.uniform(0.6, 1.4))
-            hub.state(aid, "IDLE", target=random.choice(IDLE_SPOTS),
-                      text=random.choice(self.CHATTER) if random.random() < 0.6 else "")
-        except asyncio.CancelledError:
-            hub.log_line(aid, "\x1b[2m(ambient task interrupted by user prompt)\x1b[0m")
-            raise
+# ---------------------------------------------------------------------------
+# Ambient simulation
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class Tempo:
+    """Timing profile for the ambient simulation. All values are simulated
+    seconds (divided by --speed for wall-clock time); tuples are (min, max)."""
 
-    async def ambient_collab(self, agents: list[Agent]) -> None:
-        hub = self.hub
-        ids = [a.agent_id for a in agents]
-        names = " & ".join(a.name for a in agents)
-        hub.collaborate(ids, MEETING_TARGET, text=f"Sync: {names}")
-        await self.sleep(4.0)
-        for a in agents:
-            hub.log_line(a.agent_id, f"\x1b[35m[meeting]\x1b[0m Discussing API contract with {names}")
-        for a in agents:
-            hub.state(a.agent_id, "COLLAB", text=random.choice(["Agreed.", "What about edge cases?",
-                                                                 "Let's split the PR.", "I'll write the tests."]))
-            await self.sleep(1.5)
-        await self.sleep(2.0)
-        for a in agents:
-            hub.state(a.agent_id, "IDLE", target=random.choice(IDLE_SPOTS), text="Good meeting.")
+    work: tuple[float, float]          # length of one focused desk session
+    log_every: tuple[float, float]     # gap between trickled log lines while working
+    think_chance: float                # chance a log tick becomes a short THINKING pause
+    think: tuple[float, float]         # length of a THINKING pause (agent stays seated)
+    break_chance: float                # chance a finished session ends in a break-room visit
+    break_time: tuple[float, float]    # time spent at the coffee machine / water cooler
+    collab_every: tuple[float, float]  # gap between ambient meetings
+    collab_time: tuple[float, float]   # meeting length
+    chat_every: tuple[float, float]    # gap between meeting / break-room speech bubbles
+    walk_slot: float                   # assumed walk time; only one ambient walk starts per slot
+    foosball_every: tuple[float, float] = (300, 600)  # gap between foosball games (shared break room)
+    foosball_time: tuple[float, float] = (40, 80)     # length of a game
 
-    def _fake_logs(self, agent_id: str, work: str) -> list[str]:
-        if agent_id == "qa_agent":
-            n = random.randint(10, 30)
-            fails = random.choice([0, 0, 0, 1])
-            colour = "32" if fails == 0 else "31"
-            return ["\x1b[2m$ pytest -q --color=yes\x1b[0m",
-                    f"\x1b[{colour}mRunning tests: {n - fails} passed, {fails} failed.\x1b[0m"]
-        if agent_id == "architect_agent":
-            return [f"\x1b[34m[design]\x1b[0m {work}", "\x1b[2mUpdated 3 sections, 1 diagram\x1b[0m"]
-        return [f"\x1b[33m{work}\x1b[0m", "\x1b[2m$ ruff check .\x1b[0m", "\x1b[32mAll checks passed!\x1b[0m"]
+
+TEMPOS: dict[str, Tempo] = {
+    "calm": Tempo(work=(20, 60), log_every=(5, 12), think_chance=0.15, think=(4, 8), break_chance=0.25,
+                  break_time=(15, 30), collab_every=(180, 360), collab_time=(25, 45), chat_every=(7, 12),
+                  walk_slot=6, foosball_every=(300, 600), foosball_time=(40, 80)),
+    "normal": Tempo(work=(12, 30), log_every=(3, 7), think_chance=0.2, think=(3, 6), break_chance=0.4,
+                    break_time=(10, 20), collab_every=(60, 120), collab_time=(15, 30), chat_every=(5, 9),
+                    walk_slot=4, foosball_every=(120, 240), foosball_time=(25, 45)),
+    "busy": Tempo(work=(4, 10), log_every=(1, 3), think_chance=0.25, think=(1.5, 3), break_chance=0.6,
+                  break_time=(4, 8), collab_every=(15, 30), collab_time=(8, 15), chat_every=(2, 4),
+                  walk_slot=1.5, foosball_every=(30, 60), foosball_time=(10, 20)),
+}
+
+@dataclass(frozen=True)
+class RoleProfile:
+    """Believable (entirely made-up) activity for one kind of agent."""
+
+    topics: list[tuple[str, str]]  # (thinking bubble, working bubble)
+    logs: list[str]                # log line templates: {file} {a} {b} {c} {n}
+
+    def fill(self, line: str) -> str:
+        return line.format(file=random.choice(["main.py", "auth.py", "utils.py", "api.ts"]),
+                           a=random.randint(2, 40), b=random.randint(0, 9), c=random.randint(12, 98),
+                           n=random.randint(3, 30))
+
+
+D, G, Y, B, M, C, R0 = "\x1b[2m", "\x1b[32m", "\x1b[33m", "\x1b[34m", "\x1b[35m", "\x1b[36m", "\x1b[0m"
+
+# Matched against "<agent_id> <role>" in order; first keyword hit wins.
+ROLE_PROFILES: list[tuple[tuple[str, ...], RoleProfile]] = [
+    (("ios",), RoleProfile(
+        [("Checking provisioning...", "xcodebuild archive"), ("SwiftUI layout bug?", "Editing ContentView.swift"),
+         ("Reading crash log...", "Running XCTest")],
+        [f"{D}$ xcodebuild -scheme App -configuration Release archive{R0}", f"{G}** ARCHIVE SUCCEEDED **{R0}",
+         f"{Y}warning:{R0} 'UIScreen.main' is deprecated", f"{D}$ xcodebuild test -destination 'platform=iOS Simulator'{R0}",
+         f"{G}Test Suite 'All tests' passed ({{c}} tests){R0}"])),
+    (("android",), RoleProfile(
+        [("Gradle sync...", "./gradlew assembleRelease"), ("Compose recomposition?", "Editing MainActivity.kt"),
+         ("Reading ANR trace...", "Running instrumented tests")],
+        [f"{D}$ ./gradlew assembleRelease{R0}", f"{G}BUILD SUCCESSFUL in {{a}}s{R0}",
+         f"{Y}w:{R0} Parameter 'savedInstanceState' is never used", f"{D}> Task :app:lintVitalRelease{R0}",
+         f"{G}{{c}} tests completed, 0 failed{R0}"])),
+    (("devops", "aws"), RoleProfile(
+        [("Reviewing IAM policy...", "terraform plan"), ("Why is CI slow?", "Tuning the pipeline"),
+         ("Checking alarms...", "Rotating log groups")],
+        [f"{D}$ terraform plan -out tfplan{R0}", f"{G}Plan: {{b}} to add, {{b}} to change, 0 to destroy.{R0}",
+         f"{C}cdk{R0} diff: no differences", f"{D}$ aws cloudwatch describe-alarms --state-value ALARM{R0}",
+         f"{G}All alarms OK{R0}", f"{Y}pipeline{R0} build #{{c}} queued"])),
+    (("diagram",), RoleProfile(
+        [("Where do the arrows go?", "Rendering diagram.mmd"), ("Simplify this view...", "Updating C4 context")],
+        [f"{D}$ mmdc -i system.mmd -o system.svg{R0}", f"{G}Generating single mermaid chart{R0}",
+         f"{B}[diagram]{R0} Added {{b}} components, {{a}} edges", f"{D}Exported context.png ({{c}} KB){R0}"])),
+    (("architect",), RoleProfile(
+        [("Weighing trade-offs...", "Drafting ADR"), ("Mapping dependencies...", "Reviewing module boundaries")],
+        [f"{B}[design]{R0} Updated section {{a}} of the ADR", f"{D}Reviewing module boundaries ({{c}} deps){R0}",
+         f"{B}[design]{R0} Proposed interface: Provider.verify()"])),
+    (("product", "manager"), RoleProfile(
+        [("Prioritising backlog...", "Grooming the roadmap"), ("What do users need?", "Writing release notes")],
+        [f"{C}[roadmap]{R0} Moved {{b}} items to Next", f"{D}Reviewing {{n}} open tickets{R0}",
+         f"{G}Release notes drafted{R0}"])),
+    (("finance",), RoleProfile(
+        [("Matching transactions...", "Reconciling Betashares..."), ("Checking categories...", "Preparing monthly summary")],
+        [f"{D}Reconciling statement lines ({{n}} pending){R0}", f"{G}Matched {{c}} transactions{R0}",
+         f"{Y}review:{R0} {{b}} items need a category", f"{D}Building cash-flow summary...{R0}"])),
+    (("retirement",), RoleProfile(
+        [("Stress-testing assumptions...", "Projecting scenarios"), ("Reviewing drawdown...", "Updating the plan")],
+        [f"{D}Running {{c}}0 Monte Carlo paths{R0}", f"{G}Scenario set updated{R0}",
+         f"{Y}note:{R0} assumptions due for review"])),
+    (("travel",), RoleProfile(
+        [("Comparing routes...", "Searching flights"), ("Checking visas...", "Drafting itinerary")],
+        [f"{D}Comparing {{n}} fare options{R0}", f"{G}Itinerary draft ready{R0}", f"{Y}heads-up:{R0} tight connection"])),
+    (("support",), RoleProfile(
+        [("Reading ticket...", "Triaging tickets"), ("Reproducing issue...", "Drafting a reply")],
+        [f"{D}Inbox: {{n}} open tickets{R0}", f"{G}Resolved ticket #{{c}}{{a}}{R0}",
+         f"{Y}escalate?{R0} needs a human look", f"{D}Updating help-centre article{R0}"])),
+    (("odoo",), RoleProfile(
+        [("Checking sync...", "Syncing Odoo records"), ("Which module?", "Updating Odoo tasks")],
+        [f"{D}odoo: fetched {{n}} tasks{R0}", f"{G}odoo: {{b}} records updated{R0}", f"{D}Running scheduled actions...{R0}"])),
+    (("powerbrain",), RoleProfile(
+        [("Linking sources...", "Indexing knowledge base"), ("Summarising...", "Answering a question")],
+        [f"{D}Indexed {{c}} documents{R0}", f"{G}Embeddings refreshed{R0}", f"{C}[kb]{R0} {{b}} new links"])),
+    (("chief", "staff"), RoleProfile(
+        [("Who should own this?", "Routing tasks"), ("Reviewing priorities...", "Writing the daily brief")],
+        [f"{C}[brief]{R0} {{n}} items for today", f"{D}Delegated {{b}} tasks{R0}", f"{G}Status board updated{R0}"])),
+    (("ea",), RoleProfile(
+        [("Checking the calendar...", "Scheduling meetings"), ("Drafting...", "Preparing reminders")],
+        [f"{D}Calendar: {{b}} conflicts checked{R0}", f"{G}Reminders queued{R0}", f"{D}Inbox triage: {{n}} items{R0}"])),
+    (("graphic", "artist"), RoleProfile(
+        [("Picking a palette...", "Rendering artwork"), ("Hmm, contrast...", "Exporting assets")],
+        [f"{D}Rendering 1024x1024 ...{R0}", f"{G}Exported {{b}} variants{R0}", f"{M}[art]{R0} new colour palette"])),
+    (("seo", "aeo"), RoleProfile(
+        [("Which queries?", "Crawling sitemap"), ("Answer-engine angle...", "Writing structured data")],
+        [f"{D}Crawled {{c}} URLs{R0}", f"{Y}warn:{R0} {{b}} pages missing meta descriptions", f"{G}JSON-LD validated{R0}"])),
+    (("outbound", "prospect"), RoleProfile(
+        [("Who's a good fit?", "Researching prospects"), ("Tone check...", "Drafting outreach")],
+        [f"{D}Shortlisted {{b}} prospects{R0}", f"{G}{{b}} drafts ready for review{R0}", f"{D}Enriching company notes...{R0}"])),
+    (("eggbot", "designer"), RoleProfile(
+        [("What should this bot do?", "Designing a bot"), ("Testing prompts...", "Writing bot instructions")],
+        [f"{M}[bot]{R0} Drafted persona + tools", f"{D}Running {{b}} test conversations{R0}", f"{G}Bot spec ready{R0}"])),
+    (("research",), RoleProfile(
+        [("Reading papers...", "Running experiments"), ("Is this significant?", "Writing findings")],
+        [f"{D}Reading {{b}} papers{R0}", f"{C}[exp]{R0} run {{c}} finished", f"{G}Notes updated{R0}"])),
+    (("coder",), RoleProfile(
+        [("Analyzing AST...", "Editing main.py"), ("Reading stack trace...", "Patching auth.py"),
+         ("Planning refactor...", "Refactoring utils.py")],
+        [f"{Y}Edit{R0} {{file}}: +{{a}} -{{b}}", f"{D}$ ruff check .{R0}", f"{G}All checks passed!{R0}",
+         f"{C}tool{R0} grep -n \"def login\" -r src/"])),
+    (("qa", "test"), RoleProfile(
+        [("Reviewing diff...", "Writing test_auth.py"), ("Triaging flaky test...", "Running pytest")],
+        [f"{D}$ pytest -q --color=yes{R0}", f"{G}Running tests: {{c}} passed, 0 failed.{R0}",
+         f"{Y}flaky?{R0} test_session_timeout took {{a}}.{{b}}s", f"{D}coverage: {{c}}%{R0}"])),
+]
+DEFAULT_PROFILE = RoleProfile([("Thinking...", "Working")], [f"{D}working...{R0}", f"{G}step done{R0}"])
+
+
+def role_profile(agent: Agent) -> RoleProfile:
+    key = f"{agent.agent_id} {agent.role} {agent.name}".lower()
+    words = set(re.split(r"[^a-z0-9]+", key))
+    for keywords, profile in ROLE_PROFILES:
+        if any((k in words) if len(k) <= 3 else (k in key) for k in keywords):
+            return profile
+    return DEFAULT_PROFILE
+
+
+BREAK_CHATTER = ["Anyone seen the CI logs?", "This coffee is compiling...", "Need a refactor break.",
+                 "Ship it!", "Who broke main?", "Tabs or spaces?", "Nice weather for a deploy."]
+FOOSBALL_CHATTER = ["Goal!", "GOAL!", "Spin it!", "Rematch?", "Nice save!", "Best of five?"]
+MEETING_CHATTER = ["Agreed.", "What about edge cases?", "Let's split the PR.", "I'll write the tests.",
+                   "Can we cache that?", "Ship behind a flag?", "Who owns the migration?"]
+# Notifications that reach an agent while it is away from its desk; the Godot
+# client shows the agent pulling out its phone for each LOG_ENTRY it gets.
+AWAY_PINGS = ["background job finished: {w}", "new message about {w}", "reminder: {w}",
+              "review requested: {w}", "queue update: {w}"]
+
+
+class AmbientDirector:
+    """Keeps the office alive without constant running around.
+
+    Each agent mostly sits at its desk in long, randomised work sessions with
+    role-flavoured log lines trickling in and the odd THINKING pause (no
+    movement). After a session there is a small chance of a break-room visit;
+    every few minutes 2-3 desk-bound agents of the same group hold a meeting,
+    and now and then two agents play foosball in the shared break room.
+
+    Ambient walks are rate-limited by a single global "walk slot", so normally
+    only one agent starts walking at a time (a meeting or game moves its
+    players together). Agents in an isolated room (e.g. the PTC wing) only use
+    their own wing's amenities and only meet each other. Agents busy with a
+    user prompt (lock held or prompt queued) are left alone.
+    """
+
+    def __init__(self, hub: Hub, tempo: Tempo, speed: float, agent_filter: Callable[[Agent], bool]) -> None:
+        self.hub = hub
+        self.tempo = tempo
+        self.speed = max(0.05, speed)
+        self.agent_filter = agent_filter
+        self.t0 = time.monotonic()
+        self.walk_free_at = 0.0
+        self.next_collab_at = self.rand(tempo.collab_every) * 0.5
+        self.next_foosball_at = self.rand(tempo.foosball_every) * 0.5
+
+    def now(self) -> float:
+        """Simulated seconds since start."""
+        return (time.monotonic() - self.t0) * self.speed
+
+    @staticmethod
+    def rand(span: tuple[float, float]) -> float:
+        return random.uniform(*span)
+
+    def can_walk(self) -> bool:
+        return self.now() >= self.walk_free_at
+
+    def reserve_walk(self, factor: float = 1.0) -> None:
+        self.walk_free_at = self.now() + self.tempo.walk_slot * factor
+
+    def place_initial(self, agent: Agent) -> None:
+        """Agents start seated at their desks (staggered session ends)."""
+        agent.state, agent.target, agent.activity = "WORKING", agent.desk, "desk"
+        agent.text = ""
+        agent.activity_until = self.rand(self.tempo.work)
+        agent.next_event_at = self.rand(self.tempo.log_every) + random.uniform(0, 6)
+
+    def after_prompt(self, agent: Agent) -> None:
+        """A prompt run ended at a break spot: linger there, then return to the desk."""
+        now = self.now()
+        agent.activity = "break"
+        agent.thinking_until = 0.0
+        agent.activity_until = now + self.rand(self.tempo.break_time)
+        agent.next_event_at = now + self.rand(self.tempo.chat_every)
+
+    def free(self, agent: Agent) -> bool:
+        return self.agent_filter(agent) and not agent.lock.locked() and agent.queue.empty()
+
+    async def run(self) -> None:
+        while True:
+            self.tick()
+            await asyncio.sleep(0.5)
+
+    def tick(self) -> None:
+        now = self.now()
+        agents = [a for a in self.hub.agents.values() if self.free(a)]
+        random.shuffle(agents)  # no agent always gets the walk slot first
+        for agent in agents:
+            if agent.activity == "desk":
+                self._desk(agent, now)
+            elif agent.activity == "break":
+                self._away(agent, now, BREAK_CHATTER, chat_chance=0.3, state="IDLE")
+            elif agent.activity == "meeting":
+                self._away(agent, now, MEETING_CHATTER, chat_chance=0.7, state="COLLAB")
+            elif agent.activity == "foosball":
+                self._away(agent, now, FOOSBALL_CHATTER, chat_chance=0.6, state="IDLE")
+        self._maybe_meeting(now, agents)
+        self._maybe_foosball(now, agents)
+
+    # -- per-activity behaviour ----------------------------------------------
+    def _desk(self, agent: Agent, now: float) -> None:
+        hub, aid, t = self.hub, agent.agent_id, self.tempo
+        profile = role_profile(agent)
+        if agent.thinking_until and now >= agent.thinking_until:
+            agent.thinking_until = 0.0
+            hub.state(aid, "WORKING", text=random.choice(profile.topics)[1])
+        if now >= agent.activity_until and not agent.thinking_until:
+            if random.random() < t.break_chance and self.can_walk():
+                self.reserve_walk()
+                agent.activity = "break"
+                agent.activity_until = now + self.rand(t.break_time)
+                agent.next_event_at = now + self.rand(t.chat_every)
+                spot = random.choice(agent.break_spots)
+                text = {"Coffee": "Coffee time.", "Water": "Grabbing some water.", "Sofa": "Quick breather."}
+                hub.state(aid, "IDLE", target=spot,
+                          text=next((v for k, v in text.items() if k in spot), "Short break."))
+                return
+            # Keep working: start a fresh session in place (no walking).
+            agent.activity_until = now + self.rand(t.work)
+        if now >= agent.next_event_at and not agent.thinking_until:
+            agent.next_event_at = now + self.rand(t.log_every)
+            if random.random() < t.think_chance:
+                agent.thinking_until = now + self.rand(t.think)
+                hub.state(aid, "THINKING", text=random.choice(profile.topics)[0])
+            else:
+                hub.log_line(aid, profile.fill(random.choice(profile.logs)))
+                if agent.state != "WORKING":
+                    hub.state(aid, "WORKING")
+
+    def _away(self, agent: Agent, now: float, chatter: list[str], chat_chance: float, state: str) -> None:
+        hub, aid, t = self.hub, agent.agent_id, self.tempo
+        if now >= agent.activity_until:
+            if self.can_walk():
+                self.reserve_walk()
+                agent.activity = "desk"
+                agent.activity_until = now + self.rand(t.work)
+                agent.next_event_at = now + self.rand(t.log_every)
+                hub.state(aid, "WORKING", target=agent.desk, text=random.choice(role_profile(agent).topics)[1])
+            return
+        if now >= agent.next_event_at:
+            agent.next_event_at = now + self.rand(t.chat_every)
+            roll = random.random()
+            if roll < chat_chance:
+                hub.state(aid, state, text=random.choice(chatter))
+            elif roll < chat_chance + 0.3:
+                topic = random.choice(role_profile(agent).topics)[1].rstrip(".").lower()
+                hub.log_line(aid, "\x1b[36m[notify]\x1b[0m " + random.choice(AWAY_PINGS).format(w=topic))
+
+    def _desk_bound(self, agents: list[Agent]) -> list[Agent]:
+        return [a for a in agents if a.activity == "desk" and not a.thinking_until]
+
+    def _maybe_meeting(self, now: float, free_agents: list[Agent]) -> None:
+        if now < self.next_collab_at or not self.can_walk():
+            return
+        by_group: dict[str, list[Agent]] = {}
+        for a in self._desk_bound(free_agents):
+            by_group.setdefault(a.group, []).append(a)
+        candidates = [g for g in by_group.values() if len(g) >= 2]
+        if not candidates:
+            return  # try again on a later tick
+        pool = random.choice(candidates)
+        # Prefer colleagues from the same room (cross-team meetings still happen).
+        anchor = random.choice(pool)
+        same_room = [a for a in pool if a.room == anchor.room and a is not anchor]
+        others = same_room if same_room and random.random() < 0.7 else [a for a in pool if a is not anchor]
+        size = min(len(others), 1 if random.random() < 0.6 else 2)
+        group = [anchor, *random.sample(others, size)]
+        self.next_collab_at = now + self.rand(self.tempo.collab_every)
+        self.reserve_walk(1.5)
+        until = now + self.rand(self.tempo.collab_time)
+        for a in group:
+            a.activity = "meeting"
+            a.activity_until = until + random.uniform(0, 6)  # they drift back one at a time
+            a.next_event_at = now + self.rand(self.tempo.chat_every)
+        names = " & ".join(a.name for a in group)
+        self.hub.collaborate([a.agent_id for a in group], anchor.meeting_target, text=f"Sync: {names}")
+        for a in group:
+            self.hub.log_line(a.agent_id, f"\x1b[35m[meeting]\x1b[0m Syncing with {names}")
+
+    def _maybe_foosball(self, now: float, free_agents: list[Agent]) -> None:
+        if now < self.next_foosball_at or not self.can_walk():
+            return
+        # Only the shared break room has a foosball table (isolated wings don't).
+        pool = [a for a in self._desk_bound(free_agents) if a.group == SHARED_GROUP]
+        if len(pool) < 2:
+            return
+        self.next_foosball_at = now + self.rand(self.tempo.foosball_every)
+        self.reserve_walk(1.5)
+        players = random.sample(pool, 2)
+        until = now + self.rand(self.tempo.foosball_time)
+        for spot, a in zip(FOOSBALL_SPOTS, players):
+            a.activity = "foosball"
+            a.activity_until = until + random.uniform(0, 5)
+            a.next_event_at = now + self.rand(self.tempo.chat_every)
+            other = players[1] if a is players[0] else players[0]
+            self.hub.state(a.agent_id, "IDLE", target=spot, text=f"Foosball, {other.name}?" if a is players[0] else "You're on!")
 
 
 class CliRunner:
@@ -386,7 +697,7 @@ class CliRunner:
             )
         except (OSError, ValueError) as exc:
             hub.log_line(aid, f"\x1b[31mFailed to start: {exc}\x1b[0m", stream="stderr")
-            hub.state(aid, "IDLE", target=random.choice(IDLE_SPOTS), text="Failed to start")
+            hub.state(aid, "IDLE", target=random.choice(agent.break_spots), text="Failed to start")
             return
 
         self.procs.add(proc)
@@ -434,7 +745,7 @@ class CliRunner:
         ok = code == 0
         colour = "32" if ok else "31"
         hub.log_line(aid, f"\x1b[{colour}mProcess exited with code {code}\x1b[0m")
-        hub.state(aid, "IDLE", target=random.choice(IDLE_SPOTS),
+        hub.state(aid, "IDLE", target=random.choice(agent.break_spots),
                   text="Done!" if ok else f"Failed (exit {code})")
 
     async def terminate(self, proc: asyncio.subprocess.Process) -> None:
@@ -459,12 +770,109 @@ class CliRunner:
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Office configuration (office.json)
+# ---------------------------------------------------------------------------
+def load_office(path: str | None) -> dict[str, Any] | None:
+    """Loads and validates office.json. Returns None for the legacy fixed office.
+
+    path None means "office.json next to this script, if it exists"; the
+    string "none" forces the legacy office.
+    """
+    if path is not None and path.lower() == "none":
+        return None
+    if path is None:
+        if not os.path.exists(DEFAULT_OFFICE_FILE):
+            log.info("no office.json found: using the legacy 3-agent office")
+            return None
+        path = DEFAULT_OFFICE_FILE
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"could not read office config {path}: {exc}")
+    return normalise_office(raw, source=path)
+
+
+def normalise_office(raw: Any, source: str = "office.json") -> dict[str, Any]:
+    """Validates the config and returns a clean copy (the OFFICE_LAYOUT payload).
+
+    Each room gets derived fields the client and the director both rely on:
+    break_spots and meeting_target (shared amenities, or the room's own when
+    it is "isolated").
+    """
+    def bad(msg: str) -> SystemExit:
+        return SystemExit(f"{source}: {msg}")
+
+    if not isinstance(raw, dict) or not isinstance(raw.get("rooms"), list) or not raw["rooms"]:
+        raise bad("expected an object with a non-empty 'rooms' list")
+    seen_rooms: set[str] = set()
+    seen_agents: set[str] = set()
+    rooms: list[dict[str, Any]] = []
+    colour_i = 0
+    for r in raw["rooms"]:
+        if not isinstance(r, dict):
+            raise bad("each room must be an object")
+        rid = str(r.get("id", ""))
+        if not SLUG_RE.match(rid) or rid in seen_rooms or rid == SHARED_GROUP:
+            raise bad(f"room id '{rid}' must be a unique lowercase slug (a-z, 0-9, _)")
+        seen_rooms.add(rid)
+        members: list[dict[str, str]] = []
+        for m in r.get("members", []):
+            aid = str(m.get("agent_id", ""))
+            if not SLUG_RE.match(aid) or aid in seen_agents:
+                raise bad(f"agent_id '{aid}' in room '{rid}' must be a unique lowercase slug")
+            seen_agents.add(aid)
+            colour = str(m.get("color") or PALETTE[colour_i % len(PALETTE)])
+            colour_i += 1
+            members.append({"agent_id": aid, "name": str(m.get("name") or aid), "role": str(m.get("role", "")),
+                            "color": colour, "desk": f"Desk_{aid}"})
+        isolated = bool(r.get("isolated", False))
+        desks = max(int(r.get("desks", len(members)) or 0), len(members), 1)
+        rooms.append({
+            "id": rid,
+            "name": str(r.get("name") or rid),
+            "color": str(r.get("color", "#90a4ae")),
+            "theme": str(r.get("theme", "wood")),
+            "isolated": isolated,
+            "desks": desks,
+            "members": members,
+            "break_spots": [f"{rid}_Coffee", f"{rid}_Water"] if isolated else list(SHARED_BREAK_SPOTS),
+            "meeting_target": f"{rid}_Meeting_Room" if isolated else MEETING_TARGET,
+        })
+    shared = raw.get("shared") if isinstance(raw.get("shared"), dict) else {}
+    br = shared.get("break_room") if isinstance(shared.get("break_room"), dict) else {}
+    mr = shared.get("meeting_room") if isinstance(shared.get("meeting_room"), dict) else {}
+    return {
+        "name": str(raw.get("name", "Agentic Corporation")),
+        "rooms": rooms,
+        "shared": {
+            "break_room": {"name": str(br.get("name", "Break Room")), "spots": list(SHARED_BREAK_SPOTS),
+                           "foosball": list(FOOSBALL_SPOTS)},
+            "meeting_room": {"name": str(mr.get("name", "Meeting Room")),
+                             "seats": max(2, min(8, int(mr.get("seats", 6)))), "target": MEETING_TARGET},
+        },
+    }
+
+
+def register_office(hub: Hub, office: dict[str, Any]) -> None:
+    for room in office["rooms"]:
+        for m in room["members"]:
+            hub.register(m["agent_id"], m["name"], m["desk"], m["color"], role=m["role"], room=room["id"],
+                         break_spots=tuple(room["break_spots"]), meeting_target=room["meeting_target"],
+                         group=room["id"] if room["isolated"] else SHARED_GROUP)
+
+
 class Harness:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
-        self.hub = Hub(args.mode)
-        for spec in DEFAULT_AGENTS:
-            self.hub.register(**spec)
+        office = load_office(args.office)
+        self.hub = Hub(args.mode, args.tempo, office)
+        if office is None:
+            for spec in DEFAULT_AGENTS:  # legacy fixed office: coder / qa / architect
+                self.hub.register(**spec, room="team")
+        else:
+            register_office(self.hub, office)
         self.mock = MockRunner(self.hub, speed=args.speed)
         commands = dict(args.agent_cmd or [])
         unknown = set(commands) - set(self.hub.agents)
@@ -475,7 +883,16 @@ class Harness:
         if self.cli is not None and not commands:
             log.warning("--mode cli without any --agent-cmd: every agent uses the mock runner")
         self.tasks: list[asyncio.Task[Any]] = []
-        self.ambient_tasks: set[asyncio.Task[None]] = set()
+        self.tempo = TEMPOS[args.tempo]
+        ambient_on = (args.mode == "mock" and not args.no_ambient) or (args.mode == "cli" and args.ambient)
+        self.director: AmbientDirector | None = None
+        if ambient_on:
+            self.director = AmbientDirector(
+                self.hub, self.tempo, args.speed,
+                agent_filter=lambda a: not (self.cli and self.cli.handles(a.agent_id)))
+            for agent in self.hub.agents.values():
+                if self.director.agent_filter(agent):
+                    self.director.place_initial(agent)
 
     async def worker(self, agent: Agent) -> None:
         """Serially executes prompts queued for one agent."""
@@ -493,41 +910,8 @@ class Harness:
                     self.hub.state(agent.agent_id, "IDLE", text="Runner error")
                 finally:
                     agent.queue.task_done()
-
-    def _free_agents(self) -> list[Agent]:
-        return [a for a in self.hub.agents.values() if not a.lock.locked() and a.queue.empty()]
-
-    async def _run_ambient(self, agents: list[Agent], coro: Awaitable[None]) -> None:
-        for a in agents:  # all free (checked synchronously), so acquire() won't suspend
-            await a.lock.acquire()
-        try:
-            await coro
-        except asyncio.CancelledError:
-            pass
-        finally:
-            for a in agents:
-                a.ambient_task = None
-                a.lock.release()
-
-    async def ambient_loop(self) -> None:
-        """Keeps the office lively by giving idle agents things to do."""
-        await asyncio.sleep(1.0)
-        while True:
-            free = self._free_agents()
-            if self.args.mode == "cli" and self.cli:  # don't fake activity for real CLI agents
-                free = [a for a in free if not self.cli.handles(a.agent_id)]
-            if free:
-                if len(free) >= 2 and random.random() < 0.3:
-                    group = random.sample(free, 2)
-                    task = asyncio.create_task(self._run_ambient(group, self.mock.ambient_collab(group)))
-                else:
-                    group = [random.choice(free)]
-                    task = asyncio.create_task(self._run_ambient(group, self.mock.ambient_solo(group[0])))
-                for a in group:
-                    a.ambient_task = task
-                self.ambient_tasks.add(task)
-                task.add_done_callback(self.ambient_tasks.discard)
-            await asyncio.sleep(random.uniform(0.6, 1.4) * self.args.tick / self.args.speed)
+                    if self.director and agent.queue.empty() and self.director.agent_filter(agent):
+                        self.director.after_prompt(agent)
 
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
@@ -546,20 +930,22 @@ class Harness:
 
         for agent in self.hub.agents.values():
             self.tasks.append(asyncio.create_task(self.worker(agent), name=f"worker-{agent.agent_id}"))
-        if self.args.mode == "mock" and not self.args.no_ambient:
-            self.tasks.append(asyncio.create_task(self.ambient_loop(), name="ambient"))
-        elif self.args.mode == "cli" and self.args.ambient:
-            self.tasks.append(asyncio.create_task(self.ambient_loop(), name="ambient"))
+        if self.director:
+            self.tasks.append(asyncio.create_task(self.director.run(), name="ambient"))
 
         async with serve(self.hub.handler, self.args.host, self.args.port, max_size=2 ** 22) as server:
-            log.info("agent_harness %s (%s mode, websockets %s API) listening on ws://%s:%d",
-                     __version__, self.args.mode, "legacy" if _WS_LEGACY else "asyncio",
+            log.info("agent_harness %s (%s mode, %s tempo, websockets %s API) listening on ws://%s:%d",
+                     __version__, self.args.mode, self.args.tempo, "legacy" if _WS_LEGACY else "asyncio",
                      self.args.host, self.args.port)
-            log.info("agents: %s", ", ".join(self.hub.agents))
+            if self.hub.office:
+                log.info("office '%s': %d rooms, %d agents", self.hub.office["name"],
+                         len(self.hub.office["rooms"]), len(self.hub.agents))
+            else:
+                log.info("legacy office, agents: %s", ", ".join(self.hub.agents))
             await stop
             server.close()
         # Cleanup
-        pending = [*self.tasks, *self.ambient_tasks]
+        pending = list(self.tasks)
         for t in pending:
             t.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
@@ -591,8 +977,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="how the prompt reaches the command when {prompt} is not used (default: arg)")
     p.add_argument("--cwd", default=None, help="working directory for CLI commands")
     p.add_argument("--cmd-timeout", type=float, default=0.0, help="kill CLI runs after N seconds (0 = never)")
-    p.add_argument("--tick", type=float, default=5.0, help="mean seconds between ambient events")
-    p.add_argument("--speed", type=float, default=1.0, help="mock time multiplier (2 = twice as fast)")
+    p.add_argument("--office", default=None, metavar="PATH",
+                   help="office layout config (default: office.json next to this script if present; "
+                        "'none' = legacy 3-agent office)")
+    p.add_argument("--tempo", choices=tuple(TEMPOS), default="calm",
+                   help="ambient pace: calm (default, long desk sessions, rare breaks/meetings), normal, busy")
+    p.add_argument("--speed", type=float, default=1.0, help="time multiplier for ambient tempo and mock prompt runs (2 = twice as fast)")
     p.add_argument("--no-ambient", action="store_true", help="mock mode: disable ambient simulation")
     p.add_argument("--ambient", action="store_true", help="cli mode: simulate agents that have no command")
     p.add_argument("-v", "--verbose", action="store_true")
