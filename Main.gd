@@ -144,6 +144,8 @@ func _ready() -> void:
 	# Cap FPS: uncapped GL Compatibility + iso office pegged MBP ~90% CPU
 	# and made the window feel dead / unresponsive.
 	Engine.max_fps = 30
+	# Never show navmesh / agent path debug overlays in the office window.
+	NavigationServer2D.set_debug_enabled(false)
 	get_viewport().physics_object_picking = true
 	_setup_hidpi()
 	bodies_root = Node2D.new()

@@ -182,12 +182,14 @@ func build(cfg: Dictionary) -> void:
 				sat_specs.remove_at(i)
 
 	# --- Build hub zones (Break | Canteen | Rec), open to each other ----------
-	var pad := 18.0
+	# Inset so zone rects stay inside the inscribed hex (avoid corner spill).
+	var pad := 56.0
 	var zone_w := (hub_size.x - pad * 4.0) / 3.0
-	var zone_h := hub_size.y - pad * 2.0
-	var break_r := Rect2(hub.position.x + pad, hub.position.y + pad, zone_w, zone_h)
-	var canteen_r := Rect2(break_r.end.x + pad, hub.position.y + pad, zone_w, zone_h)
-	var rec_r := Rect2(canteen_r.end.x + pad, hub.position.y + pad, zone_w, zone_h)
+	var zone_h := hub_size.y * 0.70
+	var zone_y := hub.position.y + (hub_size.y - zone_h) * 0.5
+	var break_r := Rect2(hub.position.x + pad, zone_y, zone_w, zone_h)
+	var canteen_r := Rect2(break_r.end.x + pad, zone_y, zone_w, zone_h)
+	var rec_r := Rect2(canteen_r.end.x + pad, zone_y, zone_w, zone_h)
 	areas.append({"kind": "hub", "rect": hub, "theme": "lobby", "name": "Hub"})
 	_build_break({"kind": "break", "name": break_name}, break_r)
 	_build_canteen({"kind": "canteen", "name": canteen_name}, canteen_r)
@@ -230,7 +232,8 @@ func build(cfg: Dictionary) -> void:
 		var sat_exit := _rect_exit(sat, -dir)
 		hub_doors.append(hub_exit)
 		var corr := _spoke_rect(hub_exit, sat_exit, corridor_w)
-		areas.append({"kind": "corridor", "rect": corr, "theme": "corridor", "name": ""})
+		areas.append({"kind": "corridor", "rect": corr, "theme": "corridor", "name": "",
+			"from": hub_exit, "to": sat_exit, "width": corridor_w})
 		walk_polys.append(_outline(corr))
 		# Door gap width on satellite / hub walls.
 		var door_w := 100.0 if prominent else 88.0
@@ -846,25 +849,32 @@ func _draw() -> void:
 		var gx := bounds.position.x + fmod(i * 137.0, bounds.size.x)
 		var gy := bounds.position.y + fmod(i * 89.0, bounds.size.y)
 		draw_circle(Vector2(gx, gy), 3.0, Color("#6e955d"))
-	# Paths from the doors.
+	# Wing entrance paths only (hub/satellite doors must not paint AABB streaks).
 	for f: Dictionary in outer_frames:
+		if not bool(f.get("wing", false)):
+			continue
 		var d: Rect2 = f.door
-		if d.size.x > 0.0:
-			if d.size.x > d.size.y:
-				draw_rect(Rect2(d.position.x + 10, d.position.y, d.size.x - 20, bounds.end.y - d.position.y + 400), Color("#cdbf9f"))
-			else:
-				draw_rect(Rect2(bounds.position.x - 400, d.position.y + 8, d.position.x - bounds.position.x + 400, d.size.y - 16), Color("#cdbf9f"))
+		if d.size.x > d.size.y and d.has_area():
+			draw_rect(Rect2(d.position.x + 10, d.position.y, d.size.x - 20, minf(180.0, bounds.end.y - d.position.y + 40.0)), Color("#cdbf9f"))
 	# Floors (a base under each building first, so door gaps aren't grass).
 	for f: Dictionary in outer_frames:
+		if bool(f.get("hub", false)):
+			continue  # hub uses hex floor; rectangular base would show as corner junk
 		draw_rect(f.rect, Color("#b3aa99"))
 	for a: Dictionary in areas:
-		_draw_floor(a)
-	# Corridor runner.
-	for a: Dictionary in areas:
 		if a.kind == "corridor":
-			var r: Rect2 = a.rect
-			draw_rect(Rect2(r.position.x + 20, r.position.y + r.size.y * 0.5 - 16, r.size.x - 40, 32), Color("#9c5b4a", 0.55))
-			draw_rect(Rect2(r.position.x + 24, r.position.y + r.size.y * 0.5 - 12, r.size.x - 48, 24), Color("#b7735f", 0.45), false, 2.0)
+			_draw_spoke(a)
+			continue
+		if a.kind == "hub":
+			_draw_hub_floor(a)
+			continue
+		_draw_floor(a)
+	# Re-stroke hub hex so zone floors don't hide the outline.
+	for a: Dictionary in areas:
+		if a.kind == "hub":
+			var hex := _hub_hex(a.rect)
+			for i in hex.size():
+				draw_line(hex[i], hex[(i + 1) % hex.size()], Color("#455a64", 0.95), 3.0)
 	# Building names on the roof edge.
 	for f: Dictionary in outer_frames:
 		var r: Rect2 = f.rect
@@ -874,6 +884,8 @@ func _draw() -> void:
 	for w in walls:
 		_draw_wall(w, Color("#6b7280"))
 	for f: Dictionary in outer_frames:
+		if bool(f.get("hub", false)):
+			continue  # hub perimeter already in walls[]; frame would re-draw a solid rect
 		_draw_frame(f)
 	# Chair backs behind front-facing sitters (meeting top rows).
 	for cb: Dictionary in chair_backs:
@@ -927,12 +939,6 @@ func _draw_floor(a: Dictionary) -> void:
 					draw_line(Vector2(x, y), Vector2(x, minf(y + 20, r.end.y)), Color(c2, 0.9), 1.0)
 					x += 140.0
 				row += 1
-	if a.kind == "hub":
-		# Hexagonal hub outline (flat-top, inscribed in the hub rect).
-		var hex := _hub_hex(r)
-		draw_colored_polygon(hex, Color(c1, 0.55))
-		for i in hex.size():
-			draw_line(hex[i], hex[(i + 1) % hex.size()], Color("#455a64", 0.85), 3.0)
 	if a.kind == "rec":
 		# Soft warm calm lighting wash.
 		draw_rect(r.grow(-8), Color(1.0, 0.95, 0.7, 0.08))
@@ -951,6 +957,36 @@ func _draw_floor(a: Dictionary) -> void:
 		while x < r.end.x:
 			draw_colored_polygon(PackedVector2Array([Vector2(x, y), Vector2(x + 10, y), Vector2(x + 18, y + 8), Vector2(x + 8, y + 8)]), Color("#fbc02d", 0.6))
 			x += 20.0
+
+
+
+## Hex hub floor only (no rectangular AABB fill — that left corner shading junk).
+func _draw_hub_floor(a: Dictionary) -> void:
+	var r: Rect2 = a.rect
+	var pal: Array = THEMES.get(str(a.get("theme", "lobby")), THEMES["lobby"])
+	var c1: Color = pal[0]
+	var hex := _hub_hex(r)
+	draw_colored_polygon(hex, c1)
+	for i in hex.size():
+		draw_line(hex[i], hex[(i + 1) % hex.size()], Color("#455a64", 0.9), 3.0)
+
+
+## Oriented spoke strip (AABB corridors are nav-only; do not paint their full rect).
+func _draw_spoke(a: Dictionary) -> void:
+	if not a.has("from") or not a.has("to"):
+		return
+	var a_pt: Vector2 = a["from"]
+	var b_pt: Vector2 = a["to"]
+	var w: float = float(a.get("width", 78.0))
+	var d := b_pt - a_pt
+	if d.length_squared() < 1.0:
+		return
+	var n := Vector2(-d.y, d.x).normalized() * (w * 0.42)
+	var pts := PackedVector2Array([a_pt + n, b_pt + n, b_pt - n, a_pt - n])
+	draw_colored_polygon(pts, Color("#bfb6a6"))
+	# Soft edge lines along the spoke (not the old E–W runner).
+	draw_line(a_pt + n, b_pt + n, Color("#9c5b4a", 0.35), 2.0)
+	draw_line(a_pt - n, b_pt - n, Color("#9c5b4a", 0.35), 2.0)
 
 
 func _draw_wall(w: Rect2, c: Color) -> void:
@@ -1025,6 +1061,8 @@ func iso_walls() -> Array[Dictionary]:
 	for w in walls:
 		out.append({"rect": w, "h": WALL_H_INNER, "color": Color("#8a909c")})
 	for f: Dictionary in outer_frames:
+		if bool(f.get("hub", false)):
+			continue  # hub gaps live in walls[]; a second frame would cover spoke doors
 		var r: Rect2 = f.rect
 		var c: Color = f.color
 		var o := r.grow(EXT_WALL)
@@ -1073,8 +1111,10 @@ func _draw_iso() -> void:
 		var gy := sb.position.y - 200 + fmod(i * 89.0, sb.size.y + 400)
 		draw_circle(Vector2(gx, gy), 3.0, Color("#6e955d"))
 		draw_circle(Vector2(gx + 9, gy + 2), 2.0, Color("#8db27a"))
-	# Building foundations: a slab edge under each building.
+	# Building foundations: a slab edge under each building (skip hub — hex floor).
 	for f: Dictionary in outer_frames:
+		if bool(f.get("hub", false)):
+			continue
 		var o: Rect2 = (f.rect as Rect2).grow(EXT_WALL)
 		var a := Vector2(o.position.x, o.end.y)
 		var b := o.end
@@ -1083,24 +1123,35 @@ func _draw_iso() -> void:
 		_iso_poly([[b, 0.0], [c, 0.0], [c, -9.0], [b, -9.0]], Color("#6f685c"))
 	# Everything else on the floor plane.
 	draw_set_transform_matrix(Iso.floor_xf())
+	# Wing entrance paths only — never paint campus-wide door streaks.
 	for f: Dictionary in outer_frames:
+		if not bool(f.get("wing", false)):
+			continue
 		var d: Rect2 = f.door
-		if d.size.x > d.size.y:
-			draw_rect(Rect2(d.position.x + 10, d.position.y, d.size.x - 20, bounds.end.y - d.position.y + 600), Color("#cdbf9f"))
-		elif d.has_area():
-			draw_rect(Rect2(bounds.position.x - 600, d.position.y + 8, d.position.x - bounds.position.x + 600, d.size.y - 16), Color("#cdbf9f"))
+		if d.size.x > d.size.y and d.has_area():
+			draw_rect(Rect2(d.position.x + 10, d.position.y, d.size.x - 20, 160.0), Color("#cdbf9f"))
 	for f: Dictionary in outer_frames:
+		if bool(f.get("hub", false)):
+			continue
 		var o: Rect2 = (f.rect as Rect2).grow(EXT_WALL)
 		draw_rect(o, Color("#b3aa99"))  # base under door gaps / wall feet
 	for a: Dictionary in areas:
+		if a.kind == "corridor":
+			_draw_spoke(a)
+			continue
+		if a.kind == "hub":
+			_draw_hub_floor(a)
+			continue
 		_draw_floor(a)
 	for a: Dictionary in areas:
-		if a.kind == "corridor":
-			var r: Rect2 = a.rect
-			draw_rect(Rect2(r.position.x + 20, r.position.y + r.size.y * 0.5 - 16, r.size.x - 40, 32), Color("#9c5b4a", 0.55))
-			draw_rect(Rect2(r.position.x + 24, r.position.y + r.size.y * 0.5 - 12, r.size.x - 48, 24), Color("#b7735f", 0.45), false, 2.0)
-	# Subtle 32 px tile grid so the floor reads as Habbo-style diamonds.
+		if a.kind == "hub":
+			var hex2 := _hub_hex(a.rect)
+			for i in hex2.size():
+				draw_line(hex2[i], hex2[(i + 1) % hex2.size()], Color("#455a64", 0.95), 3.0)
+	# Subtle 32 px tile grid on rooms only (not corridors / hub AABB).
 	for a: Dictionary in areas:
+		if a.kind in ["corridor", "hub"]:
+			continue
 		var r: Rect2 = a.rect
 		var gc := Color(0, 0, 0, 0.045)
 		var x := ceilf(r.position.x / 32.0) * 32.0
@@ -1111,8 +1162,10 @@ func _draw_iso() -> void:
 		while y < r.end.y:
 			draw_line(Vector2(r.position.x, y), Vector2(r.end.x, y), gc, 1.0)
 			y += 32.0
-	# Door mats.
+	# Door mats (satellites / wings only — hub has no rect frame).
 	for f: Dictionary in outer_frames:
+		if bool(f.get("hub", false)):
+			continue
 		var d: Rect2 = f.door
 		if d.has_area():
 			draw_rect(d, Color("#8d6e63"))

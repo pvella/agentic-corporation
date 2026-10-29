@@ -24,3 +24,11 @@ window/stretch/aspect="expand"
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
 environment/defaults/default_clear_color=Color(0.17, 0.18, 0.23, 1)
+
+[debug]
+
+shapes/navigation/enable_agent_debug=false
+shapes/navigation/enable_edge_connections=false
+shapes/navigation/enable_edge_lines=false
+shapes/navigation/enable_geometry_face_random_color=false
+shapes/navigation/enable_edge_lines_xray=false
