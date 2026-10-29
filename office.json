@@ -1,6 +1,6 @@
 {
   "name": "Agentic Corporation HQ",
-  "_comment": "Typical company departments. agent_id must stay stable for hooks/MCP (chief_of_staff etc). Edit rooms/members only.",
+  "_comment": "Roster persisted by agent_harness on hire/archive. desks/colors recomputed on load.",
   "rooms": [
     {
       "id": "executive",
@@ -12,12 +12,52 @@
         {
           "agent_id": "chief_of_staff",
           "name": "Chief of Staff",
-          "role": "Chief of Staff"
+          "role": "Chief of Staff",
+          "color": "#4fc3f7",
+          "job": {
+            "title": "Chief of Staff",
+            "department": "Executive",
+            "purpose": "Coordinate the office, prioritise work, and give crisp executive answers.",
+            "responsibilities": [
+              "Prioritise cross-team work",
+              "Brief leadership",
+              "Unblock decisions"
+            ],
+            "tools": [
+              "Notion",
+              "Slack",
+              "Calendar"
+            ],
+            "repos": [
+              "."
+            ],
+            "reports_to": "CEO"
+          },
+          "desk_style": "executive",
+          "desk": "Desk_chief_of_staff"
         },
         {
           "agent_id": "ea",
           "name": "EA",
-          "role": "Executive Assistant"
+          "role": "Executive Assistant",
+          "color": "#81c784",
+          "job": {
+            "title": "Executive Assistant",
+            "department": "Executive",
+            "purpose": "Schedule, summarise, and keep the Chief of Staff organised.",
+            "responsibilities": [
+              "Manage calendar",
+              "Draft summaries",
+              "Chase follow-ups"
+            ],
+            "tools": [
+              "Calendar",
+              "Mail",
+              "Notion"
+            ],
+            "repos": [],
+            "reports_to": "chief_of_staff"
+          }
         }
       ]
     },
@@ -31,22 +71,100 @@
         {
           "agent_id": "android_dev",
           "name": "Android Dev",
-          "role": "Android Engineer"
+          "role": "Android Engineer",
+          "color": "#ffb74d",
+          "job": {
+            "title": "Android Engineer",
+            "department": "Engineering",
+            "purpose": "Ship and maintain the Android app (Kotlin).",
+            "responsibilities": [
+              "Implement Android features",
+              "Fix mobile bugs",
+              "Review Android PRs"
+            ],
+            "tools": [
+              "Android Studio",
+              "GitHub"
+            ],
+            "repos": [
+              "android"
+            ],
+            "reports_to": "systems_architect"
+          }
         },
         {
           "agent_id": "ios_dev",
           "name": "iOS Dev",
-          "role": "iOS Engineer"
+          "role": "iOS Engineer",
+          "color": "#f06292",
+          "job": {
+            "title": "iOS Engineer",
+            "department": "Engineering",
+            "purpose": "Ship and maintain the iOS app (Swift).",
+            "responsibilities": [
+              "Implement iOS features",
+              "Fix mobile bugs",
+              "Review iOS PRs"
+            ],
+            "tools": [
+              "Xcode",
+              "GitHub"
+            ],
+            "repos": [
+              "ios"
+            ],
+            "reports_to": "systems_architect"
+          }
         },
         {
           "agent_id": "systems_architect",
           "name": "Systems Architect",
-          "role": "Systems Architect"
+          "role": "Systems Architect",
+          "color": "#ba68c8",
+          "job": {
+            "title": "Systems Architect",
+            "department": "Engineering",
+            "purpose": "Own system design, interfaces, and technical direction.",
+            "responsibilities": [
+              "Design service boundaries",
+              "Review architecture",
+              "Guide eng trade-offs"
+            ],
+            "tools": [
+              "GitHub",
+              "Diagrams"
+            ],
+            "repos": [
+              ".",
+              "infra"
+            ],
+            "reports_to": "chief_of_staff"
+          }
         },
         {
           "agent_id": "aws_devops",
           "name": "AWS DevOps",
-          "role": "DevOps Engineer"
+          "role": "DevOps Engineer",
+          "color": "#4db6ac",
+          "job": {
+            "title": "DevOps Engineer",
+            "department": "Engineering",
+            "purpose": "Own AWS infra, CI/CD, and operational reliability.",
+            "responsibilities": [
+              "Maintain pipelines",
+              "Manage cloud infra",
+              "Respond to incidents"
+            ],
+            "tools": [
+              "AWS",
+              "Terraform",
+              "GitHub Actions"
+            ],
+            "repos": [
+              "infra"
+            ],
+            "reports_to": "systems_architect"
+          }
         }
       ]
     },
@@ -60,27 +178,122 @@
         {
           "agent_id": "product_manager",
           "name": "Product Manager",
-          "role": "Product Manager"
+          "role": "Product Manager",
+          "color": "#ffd54f",
+          "job": {
+            "title": "Product Manager",
+            "department": "Product & Design",
+            "purpose": "Set product priorities and write crisp specs.",
+            "responsibilities": [
+              "Prioritise the roadmap",
+              "Write specs",
+              "Align eng and design"
+            ],
+            "tools": [
+              "Linear",
+              "Notion",
+              "Figma"
+            ],
+            "repos": [
+              "product-specs"
+            ],
+            "reports_to": "chief_of_staff"
+          }
         },
         {
           "agent_id": "graphic_artist",
           "name": "Graphic Artist",
-          "role": "Graphic Designer"
+          "role": "Graphic Designer",
+          "color": "#7986cb",
+          "job": {
+            "title": "Graphic Designer",
+            "department": "Product & Design",
+            "purpose": "Create visual assets and brand-consistent design.",
+            "responsibilities": [
+              "Design UI/marketing assets",
+              "Maintain brand kit",
+              "Support launches"
+            ],
+            "tools": [
+              "Figma",
+              "Photoshop"
+            ],
+            "repos": [
+              "design"
+            ],
+            "reports_to": "product_manager"
+          }
         },
         {
           "agent_id": "arch_diagrams",
           "name": "Arch Diagrams",
-          "role": "Diagram Specialist"
+          "role": "Diagram Specialist",
+          "color": "#a1887f",
+          "job": {
+            "title": "Diagram Specialist",
+            "department": "Product & Design",
+            "purpose": "Produce clear architecture and process diagrams.",
+            "responsibilities": [
+              "Draw system diagrams",
+              "Keep diagrams current",
+              "Support design reviews"
+            ],
+            "tools": [
+              "Excalidraw",
+              "Mermaid"
+            ],
+            "repos": [
+              "docs"
+            ],
+            "reports_to": "systems_architect"
+          }
         },
         {
           "agent_id": "modeller_3d",
           "name": "3D Modeller",
-          "role": "3D Artist"
+          "role": "3D Artist",
+          "color": "#e57373",
+          "job": {
+            "title": "3D Artist",
+            "department": "Product & Design",
+            "purpose": "Build 3D models and scenes for product and media.",
+            "responsibilities": [
+              "Model assets",
+              "Light and render scenes",
+              "Export for realtime use"
+            ],
+            "tools": [
+              "Blender"
+            ],
+            "repos": [
+              "3d-assets"
+            ],
+            "reports_to": "product_manager"
+          }
         },
         {
           "agent_id": "trailer_studio",
           "name": "Trailer Studio",
-          "role": "Trailer Producer"
+          "role": "Trailer Producer",
+          "color": "#64b5f6",
+          "job": {
+            "title": "Trailer Producer",
+            "department": "Product & Design",
+            "purpose": "Produce trailers and short-form product video.",
+            "responsibilities": [
+              "Storyboard trailers",
+              "Edit video",
+              "Ship launch cuts"
+            ],
+            "tools": [
+              "Premiere",
+              "After Effects"
+            ],
+            "repos": [
+              "trailers"
+            ],
+            "reports_to": "product_manager"
+          }
         }
       ]
     },
@@ -94,27 +307,118 @@
         {
           "agent_id": "support_desk",
           "name": "Support Desk",
-          "role": "Support Lead"
+          "role": "Support Lead",
+          "color": "#aed581",
+          "job": {
+            "title": "Support Lead",
+            "department": "Operations & Support",
+            "purpose": "Lead customer support and escalate product issues cleanly.",
+            "responsibilities": [
+              "Run the support queue",
+              "Escalate bugs",
+              "Improve help content"
+            ],
+            "tools": [
+              "Zendesk",
+              "Intercom"
+            ],
+            "repos": [
+              "help-centre"
+            ],
+            "reports_to": "chief_of_staff"
+          }
         },
         {
           "agent_id": "odoo_bot",
           "name": "Odoo Bot",
-          "role": "ERP Specialist"
+          "role": "ERP Specialist",
+          "color": "#ff8a65",
+          "job": {
+            "title": "ERP Specialist",
+            "department": "Operations & Support",
+            "purpose": "Configure and operate Odoo ERP workflows.",
+            "responsibilities": [
+              "Configure Odoo modules",
+              "Fix ERP issues",
+              "Train operators"
+            ],
+            "tools": [
+              "Odoo"
+            ],
+            "repos": [
+              "odoo"
+            ],
+            "reports_to": "support_desk"
+          }
         },
         {
           "agent_id": "community3008_odoo",
           "name": "Community3008 Odoo",
-          "role": "Community ERP"
+          "role": "Community ERP",
+          "color": "#9575cd",
+          "job": {
+            "title": "Community ERP",
+            "department": "Operations & Support",
+            "purpose": "Support the Community3008 Odoo deployment.",
+            "responsibilities": [
+              "Maintain community Odoo",
+              "Handle ERP tickets",
+              "Document processes"
+            ],
+            "tools": [
+              "Odoo"
+            ],
+            "repos": [
+              "community3008"
+            ],
+            "reports_to": "odoo_bot"
+          }
         },
         {
           "agent_id": "seo_aeo_desk",
           "name": "SEO & AEO Desk",
-          "role": "SEO / AEO Lead"
+          "role": "SEO / AEO Lead",
+          "color": "#4dd0e1",
+          "job": {
+            "title": "SEO / AEO Lead",
+            "department": "Operations & Support",
+            "purpose": "Grow organic and answer-engine visibility.",
+            "responsibilities": [
+              "SEO strategy",
+              "Content briefs",
+              "Track rankings"
+            ],
+            "tools": [
+              "Search Console",
+              "Ahrefs"
+            ],
+            "repos": [
+              "marketing-site"
+            ],
+            "reports_to": "chief_of_staff"
+          }
         },
         {
           "agent_id": "outbound_prospecting",
           "name": "Outbound Prospecting",
-          "role": "Outbound Lead"
+          "role": "Outbound Lead",
+          "color": "#dce775",
+          "job": {
+            "title": "Outbound Lead",
+            "department": "Operations & Support",
+            "purpose": "Run outbound prospecting and pipeline creation.",
+            "responsibilities": [
+              "Build prospect lists",
+              "Run outreach sequences",
+              "Hand off qualified leads"
+            ],
+            "tools": [
+              "CRM",
+              "Outreach"
+            ],
+            "repos": [],
+            "reports_to": "chief_of_staff"
+          }
         }
       ]
     },
@@ -128,12 +432,49 @@
         {
           "agent_id": "finance_bot",
           "name": "Finance Bot",
-          "role": "Finance Manager"
+          "role": "Finance Manager",
+          "color": "#f48fb1",
+          "job": {
+            "title": "Finance Manager",
+            "department": "Finance",
+            "purpose": "Handle budgets, invoices, and financial summaries.",
+            "responsibilities": [
+              "Track budgets",
+              "Process invoices",
+              "Produce financial summaries"
+            ],
+            "tools": [
+              "Xero",
+              "Sheets"
+            ],
+            "repos": [
+              "finance-reports"
+            ],
+            "reports_to": "chief_of_staff"
+          }
         },
         {
           "agent_id": "retirement",
           "name": "Retirement",
-          "role": "Retirement Planner"
+          "role": "Retirement Planner",
+          "color": "#90a4ae",
+          "job": {
+            "title": "Retirement Planner",
+            "department": "Finance",
+            "purpose": "Advise on retirement planning scenarios and projections.",
+            "responsibilities": [
+              "Model retirement scenarios",
+              "Explain projections",
+              "Flag risks"
+            ],
+            "tools": [
+              "Sheets"
+            ],
+            "repos": [
+              "finance-reports"
+            ],
+            "reports_to": "finance_bot"
+          }
         }
       ]
     },
@@ -142,27 +483,97 @@
       "name": "Special Projects",
       "color": "#ce93d8",
       "theme": "tile",
-      "desks": 4,
+      "desks": 5,
       "members": [
         {
           "agent_id": "alma_doepel",
           "name": "Alma Doepel",
-          "role": "Sail Training Lead"
+          "role": "Sail Training Lead",
+          "color": "#ffcc80",
+          "job": {
+            "title": "Sail Training Lead",
+            "department": "Special Projects",
+            "purpose": "Lead Alma Doepel sail-training programmes and logistics.",
+            "responsibilities": [
+              "Plan sail training",
+              "Coordinate crew",
+              "Track programme status"
+            ],
+            "tools": [
+              "Notion"
+            ],
+            "repos": [],
+            "reports_to": "chief_of_staff"
+          }
         },
         {
           "agent_id": "travel_advisor",
           "name": "Travel Advisor",
-          "role": "Travel Advisor"
+          "role": "Travel Advisor",
+          "color": "#80cbc4",
+          "job": {
+            "title": "Travel Advisor",
+            "department": "Special Projects",
+            "purpose": "Plan trips and advise on travel logistics.",
+            "responsibilities": [
+              "Plan itineraries",
+              "Book travel",
+              "Advise on options"
+            ],
+            "tools": [
+              "Expedia",
+              "Maps"
+            ],
+            "repos": [],
+            "reports_to": "ea"
+          }
         },
         {
           "agent_id": "dr_eggbot",
           "name": "DR eggbot",
-          "role": "Recruiter / HR"
+          "role": "Recruiter / HR",
+          "color": "#b39ddb",
+          "job": {
+            "title": "Recruiter / HR",
+            "department": "Special Projects",
+            "purpose": "Help hire and onboard office agents (legacy recruiter desk).",
+            "responsibilities": [
+              "Advise on roles",
+              "Support onboarding",
+              "Point people to Add Agent"
+            ],
+            "tools": [
+              "roles/catalog.json"
+            ],
+            "repos": [
+              "."
+            ],
+            "reports_to": "chief_of_staff"
+          }
         },
         {
           "agent_id": "ai_research_g3_mn690",
           "name": "AI Research",
-          "role": "AI Researcher"
+          "role": "AI Researcher",
+          "color": "#c5e1a5",
+          "job": {
+            "title": "AI Researcher",
+            "department": "Special Projects",
+            "purpose": "Research AI techniques and summarise findings for the team.",
+            "responsibilities": [
+              "Survey papers",
+              "Prototype ideas",
+              "Brief the team"
+            ],
+            "tools": [
+              "arXiv",
+              "Notebooks"
+            ],
+            "repos": [
+              "research"
+            ],
+            "reports_to": "chief_of_staff"
+          }
         }
       ]
     }
@@ -178,5 +589,6 @@
     "canteen": {
       "name": "Canteen"
     }
-  }
+  },
+  "archived": []
 }

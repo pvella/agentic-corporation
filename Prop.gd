@@ -98,6 +98,29 @@ func _shadow(r: Rect2, alpha: float = 0.18) -> void:
 
 
 # ---------------------------------------------------------------------------
+func _is_executive_desk() -> bool:
+	return str(data.get("style", "")) == "executive"
+
+
+func _is_executive_chair() -> bool:
+	return str(data.get("style", "")) == "executive"
+
+
+func _draw_exec_nameplate(r: Rect2) -> void:
+	var label := str(data.get("owner", ""))
+	if owner_agent != null and is_instance_valid(owner_agent):
+		if "display_name" in owner_agent:
+			label = str(owner_agent.display_name)
+	if label.is_empty():
+		label = "Chief of Staff"
+	if label.length() > 18:
+		label = label.substr(0, 18)
+	var plate := Rect2(r.position.x + r.size.x * 0.55 - 36, r.end.y - 10, 72, 8)
+	_rr(plate, 2, Color("#c9a227"))
+	_rr(plate.grow(-1.0), 1, Color("#3e2723"))
+	draw_string(_font, Vector2(plate.position.x + 4, plate.end.y - 2), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 7, Color("#ffe082"))
+
+
 func _draw_desk() -> void:
 	var r := rect
 	_shadow(r)
@@ -108,20 +131,40 @@ func _draw_desk() -> void:
 	_rr(Rect2(r.position, Vector2(r.size.x, r.size.y - 8)), 4, Color("#a1887f"))
 	draw_rect(Rect2(r.position.x + 3, r.position.y + 3, r.size.x - 6, 2), Color(1, 1, 1, 0.18))
 
-	# Monitor: stands on the far edge, screen facing us (the agent sits in front).
-	var mon := Rect2(r.position.x + r.size.x * 0.5 - 32, r.position.y - 40, 64, 44)
-	draw_rect(Rect2(mon.get_center().x - 4, mon.end.y - 2, 8, 9), Color("#37474f"))
-	draw_rect(Rect2(mon.get_center().x - 12, mon.end.y + 6, 24, 3), Color("#37474f"))
-	_rr(mon.grow(1.5), 4, Color("#1c2328"))
-	_rr(mon, 3, Color("#263238"))
-	_draw_screen(mon.grow(-3.5))
-	# Keyboard + mouse on the near edge, mug on the side.
-	var kb := Rect2(r.position.x + r.size.x * 0.5 - 22, r.position.y + 14, 44, 9)
-	_draw_keyboard(kb)
-	draw_rect(Rect2(r.position.x + 7, r.position.y + 10, 9, 11), Color("#fafafa"))
-	draw_rect(Rect2(r.position.x + 8, r.position.y + 11, 7, 3), Color("#6d4c41"))
-	if (owner_agent == null or not is_instance_valid(owner_agent)) and str(data.get("owner", "")) == "":
-		draw_string(_font, Vector2(r.position.x + 22, r.end.y - 11), "free desk", HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(0, 0, 0, 0.35))
+	if _is_executive_desk():
+		# L-return wing on the left (same wood as top).
+		var wing := Rect2(r.position.x, r.position.y, 40, 78)
+		_shadow(wing)
+		_rr(wing, 4, Color("#5d4037"))
+		_rr(Rect2(wing.position, Vector2(wing.size.x, wing.size.y - 8)), 4, Color("#8d6e63"))
+		# Dual monitors on the far edge.
+		for side: int in [-1, 1]:
+			var mx: float = r.position.x + r.size.x * 0.62 + float(side) * 34.0
+			var mon := Rect2(mx - 28, r.position.y - 42, 56, 40)
+			draw_rect(Rect2(mon.get_center().x - 3, mon.end.y - 2, 6, 8), Color("#37474f"))
+			draw_rect(Rect2(mon.get_center().x - 10, mon.end.y + 5, 20, 3), Color("#37474f"))
+			_rr(mon.grow(1.5), 4, Color("#1c2328"))
+			_rr(mon, 3, Color("#263238"))
+			_draw_screen(mon.grow(-3.0))
+		var kb := Rect2(r.position.x + r.size.x * 0.55 - 24, r.position.y + 16, 48, 9)
+		_draw_keyboard(kb)
+		draw_rect(Rect2(r.end.x - 18, r.position.y + 10, 9, 11), Color("#fafafa"))
+		_draw_exec_nameplate(r)
+	else:
+		# Monitor: stands on the far edge, screen facing us (the agent sits in front).
+		var mon := Rect2(r.position.x + r.size.x * 0.5 - 32, r.position.y - 40, 64, 44)
+		draw_rect(Rect2(mon.get_center().x - 4, mon.end.y - 2, 8, 9), Color("#37474f"))
+		draw_rect(Rect2(mon.get_center().x - 12, mon.end.y + 6, 24, 3), Color("#37474f"))
+		_rr(mon.grow(1.5), 4, Color("#1c2328"))
+		_rr(mon, 3, Color("#263238"))
+		_draw_screen(mon.grow(-3.5))
+		# Keyboard + mouse on the near edge, mug on the side.
+		var kb := Rect2(r.position.x + r.size.x * 0.5 - 22, r.position.y + 14, 44, 9)
+		_draw_keyboard(kb)
+		draw_rect(Rect2(r.position.x + 7, r.position.y + 10, 9, 11), Color("#fafafa"))
+		draw_rect(Rect2(r.position.x + 8, r.position.y + 11, 7, 3), Color("#6d4c41"))
+		if (owner_agent == null or not is_instance_valid(owner_agent)) and str(data.get("owner", "")) == "":
+			draw_string(_font, Vector2(r.position.x + 22, r.end.y - 11), "free desk", HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(0, 0, 0, 0.35))
 
 
 func _draw_keyboard(kb: Rect2) -> void:
@@ -183,13 +226,22 @@ func _draw_chair() -> void:
 	# Office chair seen from behind: the back covers the sitter's lower back.
 	var r := rect
 	var c := r.get_center()
-	draw_circle(Vector2(c.x, r.end.y + 1), 9.0, Color(0, 0, 0, 0.15))
-	draw_line(Vector2(c.x, r.end.y - 6), Vector2(c.x, r.end.y + 2), Color("#37474f"), 3.0)
-	for dx: float in [-8.0, 0.0, 8.0]:
-		draw_circle(Vector2(c.x + dx, r.end.y + 2), 1.8, Color("#263238"))
-	_rr(Rect2(r.position.x - 1, r.position.y + 6, r.size.x + 2, r.size.y - 10), 6, Color("#263238"))
-	_rr(Rect2(r.position.x + 2, r.position.y + 8, r.size.x - 4, r.size.y - 15), 5, Color("#455a64"))
+	var exec := _is_executive_chair()
+	var base := Color("#3e2723") if exec else Color("#263238")
+	var seat := Color("#5d4037") if exec else Color("#455a64")
+	var stem := Color("#4e342e") if exec else Color("#37474f")
+	draw_circle(Vector2(c.x, r.end.y + 1), 10.0 if exec else 9.0, Color(0, 0, 0, 0.15))
+	draw_line(Vector2(c.x, r.end.y - 6), Vector2(c.x, r.end.y + 2), stem, 3.5 if exec else 3.0)
+	for dx: float in ([-10.0, -3.0, 3.0, 10.0] if exec else [-8.0, 0.0, 8.0]):
+		draw_circle(Vector2(c.x + dx, r.end.y + 2), 1.8, base)
+	_rr(Rect2(r.position.x - 1, r.position.y + 6, r.size.x + 2, r.size.y - 10), 6, base)
+	_rr(Rect2(r.position.x + 2, r.position.y + 8, r.size.x - 4, r.size.y - 15), 5, seat)
 	draw_line(Vector2(r.position.x + 6, r.position.y + 11), Vector2(r.end.x - 6, r.position.y + 11), Color(1, 1, 1, 0.15), 1.5)
+	if exec:
+		# High back + brass rivets.
+		_rr(Rect2(r.position.x + 4, r.position.y - 4, r.size.x - 8, 12), 4, base)
+		draw_circle(Vector2(r.position.x + 8, r.position.y + 14), 1.4, Color("#c9a227"))
+		draw_circle(Vector2(r.end.x - 8, r.position.y + 14), 1.4, Color("#c9a227"))
 
 
 func _draw_coffee() -> void:
@@ -478,17 +530,36 @@ func _iso_desk() -> void:
 	_plane_reset()
 	var cx := r.get_center().x
 	_box(Rect2(r.position.x + 8, r.position.y + 10, 7, 7), DESK_H, 9, Color("#fafafa"))  # mug
-	# Monitor on the far edge, screen facing the sitter (south).
-	_box(Rect2(cx - 3, r.position.y + 5, 6, 4), DESK_H, 10, Color("#37474f"))
-	_box(Rect2(cx - 10, r.position.y + 4, 20, 8), DESK_H, 1.5, Color("#37474f"))
-	var mon := Rect2(cx - 31, r.position.y + 3, 62, 5)
-	var z0 := DESK_H + 8.0
-	var mh := 40.0
-	_box(mon, z0, mh, Color("#2b343a"), Color("#1c2328"), Color("#151b1f"))
-	_plane_south(mon.end.y, z0 + mh)
-	draw_rect(Rect2(cx - 29, 2, 58, mh - 4), Color("#263238"))
-	_draw_screen(Rect2(cx - 27.5, 3.5, 55, mh - 7))
-	_plane_reset()
+	if _is_executive_desk():
+		# L-return wing (left) + dual monitors (executive dual iso).
+		var wing := Rect2(r.position.x, r.position.y, 40, 78)
+		_box(wing, DESK_H - 4.0, 4.0, Color("#8d6e63"), Color("#6d4c41"), Color("#5d4037"))
+		var z0 := DESK_H + 8.0
+		var mh := 38.0
+		for side: int in [-1, 1]:
+			var mx: float = cx + 12.0 + float(side) * 30.0
+			_box(Rect2(mx - 2, r.position.y + 5, 4, 4), DESK_H, 10, Color("#37474f"))
+			var mon := Rect2(mx - 26, r.position.y + 3, 52, 5)
+			_box(mon, z0, mh, Color("#2b343a"), Color("#1c2328"), Color("#151b1f"))
+			_plane_south(mon.end.y, z0 + mh)
+			draw_rect(Rect2(mx - 24, 2, 48, mh - 4), Color("#263238"))
+			_draw_screen(Rect2(mx - 22.5, 3.5, 45, mh - 7))
+			_plane_reset()
+		_plane_top(DESK_H)
+		_draw_exec_nameplate(r)
+		_plane_reset()
+	else:
+		# Monitor on the far edge, screen facing the sitter (south).
+		_box(Rect2(cx - 3, r.position.y + 5, 6, 4), DESK_H, 10, Color("#37474f"))
+		_box(Rect2(cx - 10, r.position.y + 4, 20, 8), DESK_H, 1.5, Color("#37474f"))
+		var mon := Rect2(cx - 31, r.position.y + 3, 62, 5)
+		var z0 := DESK_H + 8.0
+		var mh := 40.0
+		_box(mon, z0, mh, Color("#2b343a"), Color("#1c2328"), Color("#151b1f"))
+		_plane_south(mon.end.y, z0 + mh)
+		draw_rect(Rect2(cx - 29, 2, 58, mh - 4), Color("#263238"))
+		_draw_screen(Rect2(cx - 27.5, 3.5, 55, mh - 7))
+		_plane_reset()
 
 
 func _iso_chair() -> void:

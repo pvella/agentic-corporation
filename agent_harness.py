@@ -255,6 +255,66 @@ class Inbox:
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
+
+def format_job_system_prompt(job: dict | None, name: str = "", role: str = "") -> str:
+    """Turn a member job{} into the Claude --append-system-prompt text."""
+    job = job or {}
+    title = str(job.get("title") or role or name or "Agent").strip() or "Agent"
+    dept = str(job.get("department") or "the office").strip() or "the office"
+    purpose = str(job.get("purpose") or "").strip()
+    resp = job.get("responsibilities") or []
+    tools = job.get("tools") or []
+    repos = job.get("repos") or []
+    reports = str(job.get("reports_to") or "").strip()
+    lines = [
+        f"You are {title} in the {dept} department of the Agentic Corporation office simulation.",
+    ]
+    if purpose:
+        lines.append(f"Purpose: {purpose}")
+    if resp:
+        lines.append("Responsibilities: " + "; ".join(str(x) for x in resp))
+    if tools:
+        lines.append("Tools: " + ", ".join(str(x) for x in tools))
+    if repos:
+        lines.append("Repos / areas: " + ", ".join(str(x) for x in repos))
+    if reports:
+        lines.append(f"Reports to: {reports}")
+    lines.append(
+        "Reply in character, briefly (2–6 sentences unless asked for more). "
+        "No tool-use narration, no markdown fences unless needed for code."
+    )
+    return "\n".join(lines)
+
+
+def format_job_plain(job: dict | None, name: str = "", role: str = "") -> str:
+    """Human-readable job description for the terminal /jd panel."""
+    job = job or {}
+    title = str(job.get("title") or role or name or "Agent").strip() or "Agent"
+    dept = str(job.get("department") or "").strip()
+    lines = [f"Job description — {title}"]
+    if dept:
+        lines.append(f"Department: {dept}")
+    purpose = str(job.get("purpose") or "").strip()
+    if purpose:
+        lines.append(f"Purpose: {purpose}")
+    resp = job.get("responsibilities") or []
+    if resp:
+        lines.append("Responsibilities:")
+        for x in resp:
+            lines.append(f"  • {x}")
+    tools = job.get("tools") or []
+    if tools:
+        lines.append("Tools: " + ", ".join(str(x) for x in tools))
+    repos = job.get("repos") or []
+    if repos:
+        lines.append("Repos: " + ", ".join(str(x) for x in repos))
+    reports = str(job.get("reports_to") or "").strip()
+    if reports:
+        lines.append(f"Reports to: {reports}")
+    if len(lines) == 1:
+        lines.append("(no job description yet — edit office.json job{} or roles/catalog.json)")
+    return "\n".join(lines)
+
 @dataclass
 class Agent:
     """One agent in the office. Mutated only through Hub.emit()."""
@@ -265,6 +325,7 @@ class Agent:
     color: str
     role: str = ""
     room: str = ""
+    job: dict = field(default_factory=dict)
     # Where this agent takes breaks / holds meetings (depends on its room).
     break_spots: tuple[str, ...] = SHARED_BREAK_SPOTS
     meeting_target: str = MEETING_TARGET
@@ -298,6 +359,7 @@ class Agent:
             "room": self.room,
             "desk": self.desk,
             "color": self.color,
+            "job": dict(self.job or {}),
             "state": self.state,
             "target": self.target,
             "text": self.text,
@@ -354,8 +416,11 @@ class Hub:
 
     def hire(self, agent_id: str, name: str, desk: str, color: str, role: str = "", **extra: Any) -> Agent:
         agent = self.register(agent_id, name, desk, color, role=role, **extra)
-        self.emit({"type": "AGENT_HIRE", "agent_id": agent_id, "name": agent.name, "role": agent.role,
-                   "desk": agent.desk, "room": agent.room, "color": agent.color})
+        payload = {"type": "AGENT_HIRE", "agent_id": agent_id, "name": agent.name, "role": agent.role,
+                   "desk": agent.desk, "room": agent.room, "color": agent.color}
+        if agent.job:
+            payload["job"] = dict(agent.job)
+        self.emit(payload)
         return agent
 
     def register(self, agent_id: str, name: str, desk: str, color: str, role: str = "", **extra: Any) -> Agent:
@@ -633,19 +698,23 @@ class Hub:
             return
         payload = {
             "name": self.office.get("name", "Agentic Corporation"),
-            "_comment": "Roster persisted by agent_harness on hire/archive. desks/colors recomputed on load.",
+            "_comment": "Roster persisted by agent_harness on hire/archive. desks/colors recomputed on load. job{} is the Claude system prompt source.",
             "rooms": [],
             "shared": {},
+            "archived": list(self.office.get("archived") or []),
         }
         for room in self.office.get("rooms", []):
             members = []
             for m in room.get("members", []):
-                members.append({
+                entry = {
                     "agent_id": m["agent_id"],
                     "name": m.get("name", m["agent_id"]),
                     "role": m.get("role", ""),
                     **({"color": m["color"]} if m.get("color") else {}),
-                })
+                }
+                if m.get("job"):
+                    entry["job"] = m["job"]
+                members.append(entry)
             payload["rooms"].append({
                 "id": room["id"],
                 "name": room.get("name", room["id"]),
@@ -687,15 +756,15 @@ class Hub:
                 data = {}
             if agent_id in data:
                 return
-            role_bit = role or agent_id.replace("_", " ").title()
+            # Prefer an explicit job dict from the live agent if present.
+            job = {}
+            live = self.agents.get(agent_id)
+            if live is not None and getattr(live, "job", None):
+                job = dict(live.job)
             data[agent_id] = {
                 "cmd": "claude -p --output-format text {prompt}",
                 "cwd": ".",
-                "system": (
-                    f"You are {role_bit} in the Agentic Corporation office simulation. "
-                    "Reply in character, briefly (2–6 sentences unless asked for more). "
-                    "No tool-use narration, no markdown fences unless needed for code."
-                ),
+                "system": format_job_system_prompt(job, name=agent_id, role=role),
             }
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, indent=2, ensure_ascii=False)
@@ -712,6 +781,13 @@ class Hub:
         color = str(msg.get("color", "")).strip() or "#5c6bc0"
         role = str(msg.get("role", "")).strip() or "New Hire"
         room = str(msg.get("room", "")).strip()
+        job_raw = msg.get("job") if isinstance(msg.get("job"), dict) else {}
+        job: dict[str, Any] = dict(job_raw)
+        if not job.get("title"):
+            job["title"] = role
+        if not job.get("department") and room:
+            # department filled later from room name when known
+            pass
         if not agent_id:
             await self.reply(ws, {"type": "ERROR", "action": "HIRE_AGENT", "message": "agent_id required"})
             return
@@ -750,6 +826,9 @@ class Hub:
             extra["chat_spots"] = tuple(room_meta.get("chat_spots") or SHARED_CHAT_SPOTS)
             extra["meeting_target"] = room_meta.get("meeting_target") or MEETING_TARGET
             extra["group"] = room if room_meta.get("isolated") else SHARED_GROUP
+        if room_meta and not job.get("department"):
+            job["department"] = str(room_meta.get("name") or room)
+        extra["job"] = job
         agent = self.hire(agent_id, name, desk, color, role=role, **extra)
         # Persist into office.json roster.
         if self.office:
@@ -762,6 +841,7 @@ class Hub:
             if target is not None:
                 target.setdefault("members", []).append({
                     "agent_id": agent_id, "name": name, "role": role, "color": color, "desk": desk,
+                    "job": job,
                 })
                 target["desks"] = max(int(target.get("desks", 0) or 0), len(target["members"]))
             self.save_office()
@@ -789,9 +869,30 @@ class Hub:
             return
         agent = self.unregister(agent_id)
         if self.office:
+            archived_member = None
             for r in self.office.get("rooms", []):
                 members = r.get("members") or []
-                r["members"] = [m for m in members if m.get("agent_id") != agent_id]
+                keep = []
+                for m in members:
+                    if m.get("agent_id") == agent_id:
+                        archived_member = dict(m)
+                        archived_member["archived_at"] = now_ms()
+                        archived_member["archived_from_room"] = r.get("id")
+                    else:
+                        keep.append(m)
+                r["members"] = keep
+            if archived_member is None and agent is not None:
+                archived_member = {
+                    "agent_id": agent_id,
+                    "name": agent.name,
+                    "role": agent.role,
+                    "color": agent.color,
+                    "job": dict(agent.job or {}),
+                    "archived_at": now_ms(),
+                    "archived_from_room": agent.room,
+                }
+            if archived_member is not None:
+                self.office.setdefault("archived", []).append(archived_member)
             self.save_office()
         if self.on_fired:
             try:
@@ -1746,8 +1847,25 @@ def normalise_office(raw: Any, source: str = "office.json") -> dict[str, Any]:
             seen_agents.add(aid)
             colour = str(m.get("color") or PALETTE[colour_i % len(PALETTE)])
             colour_i += 1
-            members.append({"agent_id": aid, "name": str(m.get("name") or aid), "role": str(m.get("role", "")),
-                            "color": colour, "desk": f"Desk_{aid}"})
+            entry = {"agent_id": aid, "name": str(m.get("name") or aid), "role": str(m.get("role", "")),
+                     "color": colour, "desk": f"Desk_{aid}"}
+            raw_job = m.get("job") if isinstance(m.get("job"), dict) else None
+            if raw_job:
+                entry["job"] = dict(raw_job)
+                if not entry["role"] and raw_job.get("title"):
+                    entry["role"] = str(raw_job["title"])
+            else:
+                # Minimal stub so every agent has a job shape.
+                entry["job"] = {
+                    "title": entry["role"] or entry["name"],
+                    "department": str(r.get("name") or rid),
+                    "purpose": f"Act as {entry['role'] or entry['name']}.",
+                    "responsibilities": [],
+                    "tools": [],
+                    "repos": [],
+                    "reports_to": "",
+                }
+            members.append(entry)
         isolated = bool(r.get("isolated", False))
         desks = max(int(r.get("desks", len(members)) or 0), len(members), 1)
         rooms.append({
@@ -1766,9 +1884,15 @@ def normalise_office(raw: Any, source: str = "office.json") -> dict[str, Any]:
     shared = raw.get("shared") if isinstance(raw.get("shared"), dict) else {}
     br = shared.get("break_room") if isinstance(shared.get("break_room"), dict) else {}
     mr = shared.get("meeting_room") if isinstance(shared.get("meeting_room"), dict) else {}
+    archived_raw = raw.get("archived") if isinstance(raw.get("archived"), list) else []
+    archived: list[dict[str, Any]] = []
+    for a in archived_raw:
+        if isinstance(a, dict) and a.get("agent_id"):
+            archived.append(dict(a))
     return {
         "name": str(raw.get("name", "Agentic Corporation")),
         "rooms": rooms,
+        "archived": archived,
         "shared": {
             "break_room": {"name": str(br.get("name", "Break Room")), "spots": list(SHARED_BREAK_SPOTS),
                            "foosball": list(FOOSBALL_SPOTS)},
@@ -1784,6 +1908,7 @@ def register_office(hub: Hub, office: dict[str, Any]) -> None:
     for room in office["rooms"]:
         for m in room["members"]:
             hub.register(m["agent_id"], m["name"], m["desk"], m["color"], role=m["role"], room=room["id"],
+                         job=dict(m.get("job") or {}),
                          break_spots=tuple(room["break_spots"]), meeting_target=room["meeting_target"],
                          chat_spots=tuple(room["chat_spots"]),
                          group=room["id"] if room["isolated"] else SHARED_GROUP)
@@ -1817,6 +1942,10 @@ class Harness:
         inbox_path = None if str(args.inbox_file).lower() == "none" else (args.inbox_file or DEFAULT_INBOX_FILE)
         self.hub.inbox = Inbox(inbox_path)
         self.hub.inbox_for = self.inbox_for
+        # Prefer job{} on the roster when a cmds entry has no system prompt.
+        for aid, agent in self.hub.agents.items():
+            if aid not in cmd_systems and getattr(agent, "job", None):
+                cmd_systems[aid] = format_job_system_prompt(agent.job, name=agent.name, role=agent.role)
         self.cli = CliRunner(self.hub, commands, args.prompt_mode, args.cwd, args.cmd_timeout,
                              cwds=cmd_cwds, systems=cmd_systems) \
             if args.mode in ("cli", "live") else None
@@ -1856,13 +1985,9 @@ class Harness:
         """Start a worker and bind Claude for a mid-session hire."""
         self.tasks.append(asyncio.create_task(self.worker(agent), name=f"worker-{agent.agent_id}"))
         if self.cli is not None:
-            role = agent.role or agent.name
             self.cli.commands[agent.agent_id] = "claude -p --output-format text {prompt}"
-            self.cli.systems[agent.agent_id] = (
-                f"You are {role} in the Agentic Corporation office simulation. "
-                "Reply in character, briefly (2–6 sentences unless asked for more). "
-                "No tool-use narration, no markdown fences unless needed for code."
-            )
+            self.cli.systems[agent.agent_id] = format_job_system_prompt(
+                getattr(agent, "job", None), name=agent.name, role=agent.role)
             log.info("CLI bound for new hire %s", agent.agent_id)
         if self.director and self.director.agent_filter(agent):
             self.director.place_initial(agent)

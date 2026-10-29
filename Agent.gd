@@ -64,6 +64,10 @@ const PRESET_LOOKS := {
 @export var sprite_frames: SpriteFrames
 
 var role: String = ""
+## Job description dict.
+var job: Dictionary = {}
+## Pending DM / human-reply notes for next prompt.
+var pending_notes: Array = []
 var room_id: String = ""
 var state: String = "IDLE"
 var last_text: String = ""

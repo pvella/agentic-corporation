@@ -23,8 +23,8 @@
 ##   --preview-hire / --preview-fire / --preview-hire-fire
 ##                                 demo the hire / fire pageantry once connected
 ## Keyboard: V toggles iso view; Shift+V toggles quiet/verbose terminal;
-##           Shift+H / Shift+F / Shift+B preview hire / fire / both
-## Terminal: /verbose /quiet; recruiter /hire Name | Role; Archive persists
+##           Shift+H preview hire; Shift+F cycles fire variants; Shift+B both
+## HUD: Add Agent / Kill Agent; Terminal: /jd /verbose /msg; knowledge drag-drop
 ##   --zoom=1.5 --focus=x,y        start the camera zoomed in on a world point
 ##   --focus-agent=AGENT_ID        ...or on an agent (followed until the screenshot)
 ##   --view=iso|top                start in the isometric or the classic top-down view
@@ -88,11 +88,22 @@ var _room_buttons: Array[Button] = []
 var _spawn_index := 0
 var _sign_tags: Array[Node2D] = []
 var _view_button: Button = null
+var _add_agent_button: Button = null
+var _kill_agent_button: Button = null
+var _role_catalog: Array = []
+var _role_categories: Array = []
+var _fire_preview_variant := ""
+var _knowledge_racks: Array = []
+var _human_queue: Array = []
+var _meeting_panel: Control = null
+var _human_dialog: Window = null
 var _view_arg := ""
 var _start_fit := false
 
 # user-arg options
 var _screenshot_path: String = ""
+var _open_hiring_board_on_start := false
+var _open_hiring_sheet_on_start := false
 var _screenshot_delay: float = 6.0
 var _quit_after_screenshot: bool = false
 var _screenshot_every: float = 0.0
@@ -131,6 +142,9 @@ func _ready() -> void:
 	_parse_user_args()
 	Iso.enabled = _load_view_setting() if _view_arg == "" else _view_arg != "top"
 	_add_view_button()
+	_load_role_catalog()
+	_add_hr_buttons()
+	_setup_files_dropped()
 	drawer.prompt_submitted.connect(_on_prompt_submitted)
 	drawer.closed.connect(_on_drawer_closed)
 	drawer.agent_requested.connect(func(id: String) -> void:
@@ -143,8 +157,7 @@ func _ready() -> void:
 		)
 	if drawer.has_signal("hire_requested"):
 		drawer.hire_requested.connect(func() -> void:
-			# Help text is shown by the drawer; real hires use /hire → hire_submit.
-			pass
+			_open_hiring_board()
 		)
 	if drawer.has_signal("hire_submit"):
 		drawer.hire_submit.connect(func(hname: String, hrole: String) -> void:
@@ -163,10 +176,21 @@ func _ready() -> void:
 		drawer.verbose_toggled.connect(func(verbose: bool) -> void:
 			send_json({"action": "SET_TERMINAL_VERBOSE", "verbose": verbose})
 		)
+	if drawer.has_signal("dm_requested"):
+		drawer.dm_requested.connect(func(to_who: String, body: String) -> void:
+			send_json({"action": "SEND_DM", "to": to_who, "text": body, "from": "paul"})
+		)
+	if drawer.has_signal("job_description_requested"):
+		drawer.job_description_requested.connect(func(_aid: String = "") -> void:
+			if drawer.agent:
+				_view_job_description_for(drawer.agent)
+		)
 	camera.zoom_changed.connect(_apply_ui_scale)
 	build_layout(Office.LEGACY_LAYOUT, true)
 	_backoff = reconnect_min
 	_connect_socket()
+	if _open_hiring_board_on_start:
+		call_deferred("_open_hiring_board")
 	if _screenshot_path != "":
 		_take_screenshot()
 
@@ -196,7 +220,9 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			send_json({"action": "PREVIEW_HIRE_FIRE", "which": "hire"})
 			get_viewport().set_input_as_handled()
 		elif k.shift_pressed and k.keycode == KEY_F:
-			send_json({"action": "PREVIEW_HIRE_FIRE", "which": "fire"})
+			_fire_preview_variant = HireFireFxScript.next_preview_variant()
+			print("[AgentOffice] preview fire variant: ", _fire_preview_variant)
+			send_json({"action": "PREVIEW_HIRE_FIRE", "which": "fire", "variant": _fire_preview_variant})
 			get_viewport().set_input_as_handled()
 		elif k.shift_pressed and k.keycode == KEY_B:
 			send_json({"action": "PREVIEW_HIRE_FIRE", "which": "both"})
@@ -433,6 +459,341 @@ func _setup_hidpi() -> void:
 	print("[AgentOffice] HiDPI screen (scale %.1f): window %s px" % [dpi, win.size])
 
 
+
+func _load_role_catalog() -> void:
+	_role_catalog = []
+	_role_categories = []
+	var path := "res://roles/catalog.json"
+	if not FileAccess.file_exists(path):
+		return
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	f.close()
+	if parsed is Dictionary and parsed.get("roles") is Array:
+		_role_catalog = parsed["roles"]
+	if parsed is Dictionary and parsed.get("categories") is Array:
+		_role_categories = parsed["categories"]
+
+
+func _add_hr_buttons() -> void:
+	var hbox := roster.get_parent()
+	_add_agent_button = Button.new()
+	_add_agent_button.focus_mode = Control.FOCUS_NONE
+	_add_agent_button.add_theme_font_size_override("font_size", 12)
+	_add_agent_button.text = "+ Add Agent"
+	_add_agent_button.tooltip_text = "Hire from roles/catalog.json or Custom"
+	_add_agent_button.pressed.connect(_on_add_agent_pressed)
+	hbox.add_child(_add_agent_button)
+	hbox.move_child(_add_agent_button, roster.get_index())
+	_kill_agent_button = Button.new()
+	_kill_agent_button.focus_mode = Control.FOCUS_NONE
+	_kill_agent_button.add_theme_font_size_override("font_size", 12)
+	_kill_agent_button.text = "Kill Agent"
+	_kill_agent_button.tooltip_text = "Archive an agent (random cartoon exit; soft-delete)"
+	_kill_agent_button.pressed.connect(_on_kill_agent_pressed)
+	hbox.add_child(_kill_agent_button)
+	hbox.move_child(_kill_agent_button, roster.get_index())
+
+
+func _setup_files_dropped() -> void:
+	get_window().files_dropped.connect(_on_files_dropped)
+
+
+func _on_files_dropped(files: PackedStringArray) -> void:
+	for path in files:
+		if not str(path).to_lower().ends_with(".md"):
+			continue
+		send_json({"action": "ADD_KNOWLEDGE", "path": str(path)})
+
+
+func _on_add_agent_pressed() -> void:
+	_open_hiring_board()
+
+
+func _catalog_categories() -> Array:
+	if _role_categories.size() > 0:
+		return _role_categories.duplicate()
+	var cats: Array = []
+	var seen := {}
+	for role in _role_catalog:
+		if not (role is Dictionary):
+			continue
+		var c := str(role.get("category", role.get("department", "")))
+		if c != "" and not seen.has(c):
+			seen[c] = true
+			cats.append(c)
+	return cats
+
+
+func _open_hiring_board() -> void:
+	var BoardScript = load("res://hiring/hiring_board.gd")
+	if BoardScript == null:
+		push_error("[AgentOffice] hiring/hiring_board.gd missing")
+		return
+	var board_node: Node = BoardScript.new()
+	add_child(board_node)
+	board_node.setup(_role_catalog, _catalog_categories())
+	board_node.hire_requested.connect(func(role: Dictionary, overrides: Dictionary) -> void:
+		var merged: Dictionary = role.duplicate(true)
+		if overrides is Dictionary:
+			merged.merge(overrides, true)
+		_hire_from_role(merged)
+	)
+	if _open_hiring_sheet_on_start and _role_catalog.size() > 0:
+		var first: Dictionary = _role_catalog[0]
+		if board_node.has_method("open_for_role"):
+			board_node.open_for_role(first)
+
+
+func _prompt_custom_hire() -> void:
+	_open_hiring_board()
+
+
+func _send_hire(hname: String, hrole: String, room: String = "special_projects", job: Dictionary = {}, colour: String = "") -> void:
+	var slug := hname.to_lower().replace(" ", "_")
+	var cleaned := ""
+	for i in slug.length():
+		var ch := slug[i]
+		if (ch >= "a" and ch <= "z") or (ch >= "0" and ch <= "9") or ch == "_":
+			cleaned += ch
+	if cleaned.is_empty():
+		cleaned = "new_hire_%d" % Time.get_ticks_msec()
+	var payload := {
+		"action": "HIRE_AGENT",
+		"agent_id": cleaned,
+		"name": hname,
+		"role": hrole,
+		"room": room if room != "" else "special_projects",
+	}
+	if not job.is_empty():
+		payload["job"] = job
+	if colour != "":
+		payload["color"] = colour
+	send_json(payload)
+
+
+func _hire_from_role(role: Dictionary) -> void:
+	var title := str(role.get("title", "New Hire"))
+	var hname := str(role.get("default_name", title))
+	var purpose := str(role.get("purpose", ""))
+	var full := str(role.get("full_description", ""))
+	if purpose == "" and full != "":
+		purpose = full.left(400)
+	var job := {
+		"title": title,
+		"department": str(role.get("department", role.get("category", ""))),
+		"purpose": purpose,
+		"responsibilities": role.get("responsibilities", []),
+		"tools": role.get("tools", []),
+		"tools_text": str(role.get("tools_text", "")),
+		"repos": role.get("repos", ["."]),
+		"reports_to": str(role.get("reports_to", "")),
+		"full_description": full,
+		"human_owner": str(role.get("human_owner", "")),
+		"outputs_and_cadence": str(role.get("outputs_and_cadence", "")),
+		"decision_rights": str(role.get("decision_rights", "")),
+		"capabilities_and_tests": str(role.get("capabilities_and_tests", "")),
+		"performance_measures": str(role.get("performance_measures", "")),
+		"handoffs_and_workflow": str(role.get("handoffs_and_workflow", "")),
+	}
+	_send_hire(hname, title, str(role.get("room", "special_projects")), job, str(role.get("color", "")))
+
+
+func _view_job_description_for(agent: Agent) -> void:
+	if agent == null:
+		return
+	var role := {
+		"title": str(agent.job.get("title", agent.role)),
+		"department": str(agent.job.get("department", "")),
+		"category": str(agent.job.get("department", "")),
+		"room": agent.room_id,
+		"color": "#90a4ae",
+		"summary": str(agent.job.get("purpose", "")).left(120),
+		"purpose": str(agent.job.get("purpose", "")),
+		"responsibilities": agent.job.get("responsibilities", []),
+		"tools_text": str(agent.job.get("tools_text", "")),
+		"reports_to": str(agent.job.get("reports_to", "")),
+		"full_description": str(agent.job.get("full_description", "")),
+		"outputs_and_cadence": str(agent.job.get("outputs_and_cadence", "")),
+		"decision_rights": str(agent.job.get("decision_rights", "")),
+		"human_owner": str(agent.job.get("human_owner", "")),
+	}
+	if agent.get("body_color") != null:
+		role["color"] = "#%s" % agent.body_color.to_html(false)
+	if str(role.get("full_description", "")) == "":
+		var lines: PackedStringArray = []
+		lines.append("### %s" % role["title"])
+		lines.append("")
+		if str(role["purpose"]) != "":
+			lines.append("**Purpose and scope** — %s" % role["purpose"])
+			lines.append("")
+		var resp: Array = role.get("responsibilities", [])
+		if resp is Array and not resp.is_empty():
+			lines.append("**Key responsibilities**")
+			for item in resp:
+				lines.append("- %s" % str(item))
+			lines.append("")
+		if str(role.get("tools_text", "")) != "":
+			lines.append("**Tools, data and access** — %s" % role["tools_text"])
+		role["full_description"] = "\n".join(lines)
+	var BoardScript = load("res://hiring/hiring_board.gd")
+	if BoardScript == null:
+		push_error("[AgentOffice] hiring/hiring_board.gd missing")
+		return
+	var board_node: Node = BoardScript.new()
+	add_child(board_node)
+	board_node.setup(_role_catalog, _catalog_categories())
+	board_node.open_for_role(role)
+
+
+func _on_kill_agent_pressed() -> void:
+	var dlg := AcceptDialog.new()
+	dlg.title = "Kill Agent"
+	dlg.min_size = Vector2(400, 300)
+	var vbox := VBoxContainer.new()
+	var hint := Label.new()
+	hint.text = "Random cartoon exit (Shift+F cycles previews). Soft-archives to office.archived."
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(hint)
+	var list := ItemList.new()
+	list.custom_minimum_size = Vector2(360, 180)
+	var ids: Array = agents.keys()
+	ids.sort()
+	var idx := 0
+	for id in ids:
+		var ag: Agent = agents[id]
+		if not is_instance_valid(ag):
+			continue
+		list.add_item("%s  (%s)" % [ag.display_name, id])
+		list.set_item_metadata(idx, id)
+		idx += 1
+	vbox.add_child(list)
+	dlg.add_child(vbox)
+	add_child(dlg)
+	dlg.confirmed.connect(func() -> void:
+		var sel := list.get_selected_items()
+		if sel.is_empty():
+			dlg.queue_free()
+			return
+		var aid := str(list.get_item_metadata(sel[0]))
+		dlg.queue_free()
+		var confirm := ConfirmationDialog.new()
+		confirm.title = "Confirm archive"
+		confirm.dialog_text = "Archive %s?" % aid
+		add_child(confirm)
+		confirm.confirmed.connect(func() -> void:
+			send_json({"action": "FIRE_AGENT", "agent_id": aid, "force": true})
+			if drawer.agent and drawer.agent.agent_id == aid:
+				drawer.close()
+			confirm.queue_free()
+		)
+		confirm.canceled.connect(func() -> void: confirm.queue_free())
+		confirm.close_requested.connect(func() -> void: confirm.queue_free())
+		confirm.popup_centered()
+	)
+	dlg.canceled.connect(func() -> void: dlg.queue_free())
+	dlg.close_requested.connect(func() -> void: dlg.queue_free())
+	dlg.popup_centered()
+
+
+func _on_knowledge_added(msg: Dictionary) -> void:
+	var title := str(msg.get("title", msg.get("filename", "doc")))
+	_set_status("Knowledge added: %s" % title, Color("#29b6f6"))
+
+
+func _on_agent_dm(msg: Dictionary) -> void:
+	var to_id := str(msg.get("to", ""))
+	var agent: Agent = agents.get(to_id)
+	if agent == null:
+		return
+	agent.pending_notes.append(msg)
+	agent.show_bubble("✉ " + str(msg.get("text", "")).left(40), false)
+
+
+func _on_ask_human(msg: Dictionary) -> void:
+	_human_queue.append(msg)
+	var aid := str(msg.get("agent_id", ""))
+	var agent: Agent = agents.get(aid)
+	if agent:
+		agent.show_bubble("We need to talk", false)
+		var meet := _meeting_target_for(agent)
+		_route(agent, meet)
+	_set_status("Agent needs you (%d waiting)" % _human_queue.size(), Color("#ffb74d"))
+	_show_next_human_prompt()
+
+
+func _show_next_human_prompt() -> void:
+	if _human_queue.is_empty():
+		return
+	if _human_dialog and is_instance_valid(_human_dialog):
+		return
+	var msg: Dictionary = _human_queue[0]
+	var win := Window.new()
+	win.title = "We need to talk — %s" % str(msg.get("agent_name", msg.get("agent_id", "agent")))
+	win.size = Vector2i(520, 360)
+	var vbox := VBoxContainer.new()
+	var body := RichTextLabel.new()
+	body.bbcode_enabled = true
+	body.fit_content = true
+	body.text = str(msg.get("prompt", msg.get("text", "")))
+	body.custom_minimum_size = Vector2(480, 160)
+	vbox.add_child(body)
+	var choices: Variant = msg.get("choices", [])
+	var reply_edit := TextEdit.new()
+	reply_edit.custom_minimum_size = Vector2(480, 80)
+	reply_edit.placeholder_text = "Your reply…"
+	if choices is Array and not choices.is_empty():
+		var hb := HBoxContainer.new()
+		for c in choices:
+			var b := Button.new()
+			b.text = str(c)
+			var choice_text := str(c)
+			b.pressed.connect(func() -> void:
+				_submit_human_reply(str(msg.get("agent_id", "")), choice_text, str(msg.get("request_id", "")))
+				win.queue_free()
+				_human_dialog = null
+			)
+			hb.add_child(b)
+		vbox.add_child(hb)
+	vbox.add_child(reply_edit)
+	var send := Button.new()
+	send.text = "Send reply"
+	send.pressed.connect(func() -> void:
+		_submit_human_reply(str(msg.get("agent_id", "")), reply_edit.text.strip_edges(), str(msg.get("request_id", "")))
+		win.queue_free()
+		_human_dialog = null
+	)
+	vbox.add_child(send)
+	win.add_child(vbox)
+	add_child(win)
+	_human_dialog = win
+	win.close_requested.connect(func() -> void:
+		win.queue_free()
+		_human_dialog = null
+	)
+	win.popup_centered()
+
+
+func _submit_human_reply(agent_id: String, text: String, request_id: String) -> void:
+	if text == "":
+		return
+	send_json({"action": "HUMAN_REPLY", "agent_id": agent_id, "text": text, "request_id": request_id})
+	if not _human_queue.is_empty():
+		_human_queue.pop_front()
+	_show_next_human_prompt()
+
+
+func _on_meeting_turn(msg: Dictionary) -> void:
+	var who := str(msg.get("agent_id", ""))
+	var text := str(msg.get("text", ""))
+	var agent: Agent = agents.get(who)
+	if agent:
+		agent.show_bubble(text.left(60), false)
+	_set_status("Meeting: %s" % text.left(50), Color("#ce93d8"))
+
+
 func _add_view_button() -> void:
 	_view_button = Button.new()
 	_view_button.focus_mode = Control.FOCUS_NONE
@@ -639,6 +1000,14 @@ func handle_message(msg: Dictionary) -> void:
 				_set_status("%s %s" % [act, str(msg.get("name", msg.get("agent_id", "")))], Color("#ffd54f"))
 				if drawer.agent:
 					drawer.append_system("%s: %s" % [act, str(msg.get("name", msg.get("agent_id", "")))], "#ffd54f")
+		"KNOWLEDGE_ADDED":
+			_on_knowledge_added(msg)
+		"AGENT_DM":
+			_on_agent_dm(msg)
+		"ASK_HUMAN":
+			_on_ask_human(msg)
+		"MEETING_TURN":
+			_on_meeting_turn(msg)
 		"AGENT_HIRE":
 			_play_hire(msg)
 		"AGENT_FIRE":
@@ -801,7 +1170,9 @@ func _play_fire(msg: Dictionary) -> void:
 				_desk_props[aid].owner_agent = null
 				_desk_props[aid].queue_redraw()
 	)
-	fx.play_fire(agent, entrance_pos)
+	var forced := str(msg.get("variant", _fire_preview_variant))
+	fx.play_fire(agent, entrance_pos, forced)
+	_fire_preview_variant = ""
 
 
 func _spawn_agent(data: Dictionary) -> Agent:
@@ -814,6 +1185,10 @@ func _spawn_agent(data: Dictionary) -> Agent:
 	_spawn_index += 1
 	agent.role = str(data.get("role", ""))
 	agent.room_id = str(data.get("room", office.agent_room.get(id, "")))
+	if data.get("job") is Dictionary:
+		agent.job = data["job"]
+	elif office != null and office.agent_job.has(id):
+		agent.job = office.agent_job[id]
 	if not waypoints.has(desk):
 		agent.desk = _break_spots_for(agent)[0]
 	bodies_root.add_child(agent)
@@ -1047,6 +1422,11 @@ func _parse_user_args() -> void:
 				_pending_dispatch = {"action": "PREVIEW_HIRE_FIRE", "which": "fire"}
 			"--preview-hire-fire":
 				_pending_dispatch = {"action": "PREVIEW_HIRE_FIRE", "which": "both"}
+			"--open-hiring-board":
+				_open_hiring_board_on_start = true
+			"--open-hiring-sheet":
+				_open_hiring_board_on_start = true
+				_open_hiring_sheet_on_start = true
 
 
 func _take_screenshot() -> void:

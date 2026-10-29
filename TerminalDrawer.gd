@@ -11,6 +11,8 @@ signal archive_requested(agent_id: String)  ## archive / fire this agent
 signal hire_requested  ## recruiter desk: show /hire help
 signal hire_submit(name: String, role: String)  ## real hire from /hire Name | Role
 signal verbose_toggled(verbose: bool)  ## /verbose or /quiet
+signal job_description_requested(agent_id: String)
+signal dm_requested(to_agent: String, text: String)
 
 const Ansi := preload("res://ansi.gd")
 const SLIDE_TIME := 0.28
@@ -41,6 +43,7 @@ var _showing_placeholder := false
 
 var archive_button: Button
 var hire_button: Button
+var jd_button: Button
 
 func _ready() -> void:
 	close_button.pressed.connect(close)
@@ -70,6 +73,17 @@ func _ready() -> void:
 		append_system("Type: /hire Name | Role   then Enter. Archive removes a bot for real.")
 		prompt_input.placeholder_text = "/hire Name | Role"
 		prompt_input.grab_focus()
+	)
+	jd_button = Button.new()
+	jd_button.text = "Job description"
+	jd_button.tooltip_text = "Show this agent's job description (/jd)"
+	jd_button.visible = false
+	close_button.get_parent().add_child(jd_button)
+	close_button.get_parent().move_child(jd_button, close_button.get_index())
+	jd_button.pressed.connect(func() -> void:
+		if agent and is_instance_valid(agent):
+			_show_job_description()
+			job_description_requested.emit(agent.agent_id)
 	)
 	# Monospace font for the terminal body.
 	var mono := SystemFont.new()
@@ -188,12 +202,14 @@ func open_for(a: Agent) -> void:
 	_render_all()
 	panel.visible = true
 	_animate_to(1.0)
-	prompt_input.placeholder_text = "Prompt for %s — /verbose for tool detail" % a.display_name
+	prompt_input.placeholder_text = "Prompt for %s — /jd · /verbose · /msg" % a.display_name
 	prompt_input.grab_focus.call_deferred()
 	if archive_button:
-		archive_button.visible = a.agent_id != "dr_eggbot"
+		archive_button.visible = false
 	if hire_button:
-		hire_button.visible = a.agent_id == "dr_eggbot"
+		hire_button.visible = false
+	if jd_button:
+		jd_button.visible = true
 
 
 func close() -> void:
@@ -278,6 +294,24 @@ func _submit() -> void:
 		verbose_toggled.emit(lower == "/verbose")
 		append_system("terminal: %s" % ("verbose (tool/queue detail)" if lower == "/verbose" else "quiet (> … reply only)"))
 		return
+	if lower == "/jd" or lower == "/job" or lower == "/jobdescription":
+		_show_job_description()
+		return
+	if lower.begins_with("/msg ") or lower.begins_with("/dm "):
+		var raw := text.strip_edges()
+		var rest := raw.substr(raw.find(" ") + 1).strip_edges()
+		var sp := rest.find(" ")
+		if sp < 0:
+			append_system("usage: /msg <agent_id_or_name> <text>")
+			return
+		var to_who := rest.substr(0, sp).strip_edges()
+		var body := rest.substr(sp + 1).strip_edges()
+		if to_who == "" or body == "":
+			append_system("usage: /msg <agent_id_or_name> <text>")
+			return
+		dm_requested.emit(to_who, body)
+		append_system("DM queued → %s: %s" % [to_who, body.left(80)])
+		return
 	if lower.begins_with("/hire"):
 		var rest := text.substr(5).strip_edges()
 		if rest.is_empty():
@@ -297,6 +331,49 @@ func _submit() -> void:
 		_showing_placeholder = false
 	log_view.append_text("[color=#61afef][b]>[/b][/color] %s\n" % Ansi.escape_bbcode(text))
 	prompt_submitted.emit(agent.agent_id, text)
+
+
+func _show_job_description() -> void:
+	if agent == null or not is_instance_valid(agent):
+		append_system("open an agent first to view their job description")
+		return
+	var job: Dictionary = agent.job if agent.job is Dictionary else {}
+	var title := str(job.get("title", agent.role if agent.role != "" else agent.display_name))
+	var lines: PackedStringArray = []
+	lines.append("—— Job description ——")
+	lines.append("Title: %s" % title)
+	var dept := str(job.get("department", ""))
+	if dept != "":
+		lines.append("Department: %s" % dept)
+	var purpose := str(job.get("purpose", ""))
+	if purpose != "":
+		lines.append("Purpose: %s" % purpose)
+	var resp: Variant = job.get("responsibilities", [])
+	if resp is Array and not resp.is_empty():
+		lines.append("Responsibilities:")
+		for item in resp:
+			lines.append("  • %s" % str(item))
+	var tools: Variant = job.get("tools", [])
+	if tools is Array and not tools.is_empty():
+		var tlist: PackedStringArray = []
+		for item in tools:
+			tlist.append(str(item))
+		lines.append("Tools: %s" % ", ".join(tlist))
+	var repos: Variant = job.get("repos", [])
+	if repos is Array and not repos.is_empty():
+		var rlist: PackedStringArray = []
+		for item in repos:
+			rlist.append(str(item))
+		lines.append("Repos: %s" % ", ".join(rlist))
+	var reports := str(job.get("reports_to", ""))
+	if reports != "":
+		lines.append("Reports to: %s" % reports)
+	if lines.size() <= 2 and purpose == "":
+		lines.append("(no job fields yet — edit office.json job{} or roles/catalog.json)")
+	lines.append("———————————————")
+	append_system("\n".join(lines))
+	if agent and is_instance_valid(agent):
+		job_description_requested.emit(agent.agent_id)
 
 
 func _animate_to(target: float) -> void:

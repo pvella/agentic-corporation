@@ -78,6 +78,7 @@ var signs: Array[Dictionary] = []    ## {room_id, name, sub, rect, color, clicka
 var rooms: Array[Dictionary] = []    ## team room configs (members ...)
 var meeting_groups: Dictionary = {}  ## virtual target -> Array[String] seat names
 var agent_room: Dictionary = {}      ## agent_id -> room id
+var agent_job: Dictionary = {}       ## agent_id -> job{}
 var room_break_spots: Dictionary = {} ## room id -> Array[String]
 var desk_of: Dictionary = {}         ## agent_id -> desk waypoint name
 var chair_backs: Array[Dictionary] = [] ## floor-drawn chair backs (behind front-facing sitters)
@@ -114,6 +115,8 @@ func build(cfg: Dictionary) -> void:
 			var aid := str(m.agent_id)
 			agent_room[aid] = str(r.id)
 			desk_of[aid] = str(m.get("desk", "Desk_" + aid))
+			if typeof(m.get("job", null)) == TYPE_DICTIONARY:
+				agent_job[aid] = m["job"]
 
 	# --- Grid of cells: top row / corridor / bottom row ----------------------
 	var top: Array = []
@@ -199,15 +202,21 @@ func build(cfg: Dictionary) -> void:
 func _reset() -> void:
 	obstacles.clear(); areas.clear(); walls.clear(); outer_frames.clear(); props.clear()
 	waypoints.clear(); signs.clear(); rooms.clear(); meeting_groups.clear(); agent_room.clear()
+	agent_job.clear()
 	room_break_spots.clear(); desk_of.clear(); chair_backs.clear()
 
 
 func _team_size(r: Dictionary) -> Vector2:
-	var desks := maxi(int(r.get("desks", 1)), (r.get("members", []) as Array).size())
+	var members: Array = r.get("members", [])
+	var desks := maxi(int(r.get("desks", 1)), members.size())
 	desks = maxi(desks, 1)
 	var cols := mini(3, desks)
 	var rows := ceili(desks / float(cols))
-	return Vector2(cols * CELL.x + PAD_X * 2.0, ROOM_TOP + rows * CELL.y + ROOM_BOTTOM)
+	var exec_extra := 0.0
+	for m in members:
+		if str(m.get("desk_style", "")) == "executive" or str(m.get("agent_id", "")) == "chief_of_staff":
+			exec_extra += CELL.x * 0.55
+	return Vector2(cols * CELL.x + PAD_X * 2.0 + exec_extra, ROOM_TOP + rows * CELL.y + ROOM_BOTTOM)
 
 
 func _cell_size(cell: Dictionary) -> Vector2:
@@ -285,23 +294,48 @@ func _desk_grid(room: Dictionary, origin: Vector2) -> void:
 	var members: Array = room.get("members", [])
 	var desks := maxi(int(room.get("desks", 1)), members.size())
 	var cols := mini(3, maxi(desks, 1))
+	# Track x per row so an executive (double-width) desk pushes neighbours aside.
+	var row_x: Dictionary = {}
 	for i in desks:
 		var c := i % cols
-		var row := i / cols
-		var cell := Vector2(origin.x + PAD_X + c * CELL.x, origin.y + ROOM_TOP + row * CELL.y)
-		var cx := cell.x + CELL.x * 0.5
-		var desk := Rect2(cx - 44, cell.y + 34, 88, 36)
+		var row := int(i / cols)
 		var owner := ""
 		var desk_name := ""
+		var color := ""
+		var is_exec := false
 		if i < members.size():
 			owner = str(members[i].agent_id)
 			desk_name = str(members[i].get("desk", "Desk_" + owner))
-		_prop("desk", desk, {"owner": owner, "color": str(members[i].get("color", "")) if i < members.size() else ""})
-		var seat := Vector2(cx, desk.end.y + 14)
-		_prop("chair", Rect2(seat.x - 13, seat.y - 22, 26, 24), {"sort_y": seat.y + 2.0})
-		if not desk_name.is_empty():
-			_wp(desk_name, seat, "up", "desk")
-
+			color = str(members[i].get("color", ""))
+			var style := str(members[i].get("desk_style", ""))
+			is_exec = style == "executive" or owner == "chief_of_staff"
+		var cell_w: float = CELL.x * (1.55 if is_exec else 1.0)
+		if not row_x.has(row):
+			row_x[row] = origin.x + PAD_X
+		# First desk in a row resets; subsequent use the running cursor.
+		if c == 0:
+			row_x[row] = origin.x + PAD_X
+		var cell := Vector2(float(row_x[row]), origin.y + ROOM_TOP + row * CELL.y)
+		var cx := cell.x + cell_w * 0.5
+		if is_exec:
+			# Large L-shaped executive desk: wide main top + left return wing
+			# (drawn in Prop when style=executive). Seat centres on the main
+			# work surface (right of the return) so sit / waypoint still line up.
+			var desk := Rect2(cx - 78, cell.y + 26, 156, 42)
+			_prop("desk", desk, {"owner": owner, "color": color, "style": "executive"})
+			var seat := Vector2(cx + 18, desk.end.y + 16)
+			_prop("chair", Rect2(seat.x - 16, seat.y - 28, 32, 30), {"sort_y": seat.y + 2.0, "style": "executive"})
+			_prop("plant", Rect2(desk.position.x - 30, desk.position.y + 6, 28, 28))
+			if not desk_name.is_empty():
+				_wp(desk_name, seat, "up", "desk")
+		else:
+			var desk := Rect2(cx - 44, cell.y + 34, 88, 36)
+			_prop("desk", desk, {"owner": owner, "color": color})
+			var seat := Vector2(cx, desk.end.y + 14)
+			_prop("chair", Rect2(seat.x - 13, seat.y - 22, 26, 24), {"sort_y": seat.y + 2.0})
+			if not desk_name.is_empty():
+				_wp(desk_name, seat, "up", "desk")
+		row_x[row] = cell.x + cell_w
 
 func _build_break(cell: Dictionary, r: Rect2) -> void:
 	areas.append({"kind": "break", "rect": r, "theme": "tile", "name": cell.name})
