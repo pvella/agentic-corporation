@@ -91,11 +91,13 @@ FOOSBALL_SPOTS = ("Foosball_1", "Foosball_2", "Foosball_3", "Foosball_4")
 CANTEEN_COUNTER = "Canteen_Counter"
 CANTEEN_SEATS = ("Canteen_Seat_1", "Canteen_Seat_2", "Canteen_Seat_3", "Canteen_Seat_4",
                  "Canteen_Seat_5", "Canteen_Seat_6")
-CANTEEN_FOOD = ("a pie", "a salad", "sushi", "a sandwich", "noodles", "a burrito",
-                "fish and chips", "a latte and muffin", "pad thai", "a toastie")
+CANTEEN_FOOD = ("pizza", "a salad", "a burger", "a fruit bowl", "sushi", "noodles",
+                "a sandwich", "fish and chips", "a burrito", "soup and bread")
 SHARED_GROUP = "shared"
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
 DEFAULT_INBOX_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".office_inbox.json")
+DEFAULT_CLAUDE_SESSIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".office_claude")
+DEFAULT_CLAUDE_SESSIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".office_claude_sessions.json")
 INBOX_CAP = 20          # pending messages per agent
 INBOX_HISTORY = 30      # delivered messages remembered per agent (for replies)
 MAX_PROMPT = 2000
@@ -463,26 +465,21 @@ class Hub:
     def queue_message(self, agent: Agent, prompt: str) -> dict[str, Any] | None:
         text = "\n".join(clean_lines(prompt, MAX_PROMPT))
         item = self.inbox.add(agent.agent_id, text)
-        self.log_line(agent.agent_id, f"\x1b[1;36m> {clean_line(text, MAX_PROMPT)}\x1b[0m")
+        # Inbox / mode chatter stays in the harness log — the terminal only shows chat.
         if item is None:
-            self.log_line(agent.agent_id, f"\x1b[31minbox full ({INBOX_CAP} unread) for {agent.name}: "
-                                          "message not queued\x1b[0m", stream="stderr")
+            log.warning("inbox full (%s unread) for %s: message not queued", INBOX_CAP, agent.name)
             return None
-        self.log_line(agent.agent_id, f"\x1b[33mqueued for {agent.name}: they'll pick it up next time "
-                                      f"they check in\x1b[0m \x1b[2m(#{item['id']})\x1b[0m")
         self.inbox_event(agent.agent_id)
-        log.info("inbox %s += #%s", agent.agent_id, item["id"])
+        log.info("inbox %s += #%s (%s)", agent.agent_id, item["id"], clean_line(text, 80))
         if self.mode == "live":
-            self.log_line(agent.agent_id,
-                          "\x1b[33m(live mode: no CLI bound — waiting for this bot to call "
-                          "check_office_inbox; nothing will run it automatically)\x1b[0m")
+            log.info("live mode: no CLI bound for %s — waiting for check_office_inbox", agent.agent_id)
         return item
 
     def deliver_messages(self, agent: Agent) -> list[dict[str, Any]]:
         items = self.inbox.take(agent.agent_id)
         if items:
             ids = ", ".join("#" + i["id"] for i in items)
-            self.log_line(agent.agent_id, f"\x1b[32mdelivered to {agent.name}\x1b[0m \x1b[2m({ids})\x1b[0m")
+            log.info("delivered to %s (%s)", agent.name, ids)
             self.inbox_event(agent.agent_id)
             self.touch_live(agent, hold=False)
         return items
@@ -1300,44 +1297,134 @@ class AmbientDirector:
 
 
 class CliRunner:
-    """Wraps a real CLI process per agent and streams its output as events."""
+    """Runs a real CLI (typically `claude -p`) per agent and posts the final
+    reply into that agent's terminal. Debug/argv chatter stays in the harness log.
+    Claude runs keep a per-agent conversational session via --continue in a
+    dedicated .office_claude/<agent_id>/ working dir."""
 
     def __init__(self, hub: Hub, commands: dict[str, str], prompt_mode: str = "arg",
                  cwd: str | None = None, timeout: float = 0.0,
-                 cwds: dict[str, str] | None = None) -> None:
+                 cwds: dict[str, str] | None = None,
+                 systems: dict[str, str] | None = None) -> None:
         self.hub = hub
         self.commands = commands
         self.prompt_mode = prompt_mode
         self.cwd = cwd
         self.cwds = dict(cwds or {})
+        self.systems = dict(systems or {})
         self.timeout = timeout
         self.procs: set[asyncio.subprocess.Process] = set()
+        self.started: set[str] = set()
+        self._load_started()
+
+    def _load_started(self) -> None:
+        try:
+            with open(DEFAULT_CLAUDE_SESSIONS_FILE, encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                self.started = {str(k) for k, v in data.items() if v}
+            elif isinstance(data, list):
+                self.started = {str(x) for x in data}
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError) as exc:
+            log.warning("could not read %s: %s", DEFAULT_CLAUDE_SESSIONS_FILE, exc)
+
+    def _save_started(self) -> None:
+        try:
+            with open(DEFAULT_CLAUDE_SESSIONS_FILE, "w", encoding="utf-8") as fh:
+                json.dump(sorted(self.started), fh, indent=2)
+        except OSError as exc:
+            log.warning("could not save %s: %s", DEFAULT_CLAUDE_SESSIONS_FILE, exc)
 
     def handles(self, agent_id: str) -> bool:
         return agent_id in self.commands
 
-    def build_argv(self, agent_id: str, prompt: str) -> list[str]:
+    @staticmethod
+    def _is_claude(tokens: list[str]) -> bool:
+        if not tokens:
+            return False
+        base = os.path.basename(tokens[0]).lower()
+        return base in ("claude", "claude.exe") or base.startswith("claude")
+
+    def project_cwd(self, agent_id: str) -> str:
+        run_cwd = self.cwds.get(agent_id) or self.cwd
+        if run_cwd in (None, "", "."):
+            run_cwd = os.getcwd()
+        return os.path.abspath(run_cwd)
+
+    def session_cwd(self, agent_id: str, project: str) -> str:
+        """Per-agent dir so `claude --continue` keeps conversations separate."""
+        root = DEFAULT_CLAUDE_SESSIONS_DIR
+        if not os.path.isabs(root):
+            root = os.path.join(project, root)
+        path = os.path.join(root, agent_id)
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def build_argv(self, agent_id: str, prompt: str, *, continue_session: bool,
+                   project: str) -> list[str]:
         template = self.commands[agent_id]
         tokens = shlex.split(template)
         if "{prompt}" in template:
-            return [t.replace("{prompt}", prompt) for t in tokens]
-        if self.prompt_mode == "arg" and prompt:
-            return tokens + [prompt]
+            tokens = [t.replace("{prompt}", prompt) for t in tokens]
+        elif self.prompt_mode == "arg" and prompt:
+            tokens = tokens + [prompt]
+        if not self._is_claude(tokens):
+            return tokens
+
+        # Ensure print mode + plain final text (hooks still run for sprite animation).
+        if "-p" not in tokens and "--print" not in tokens:
+            tokens.insert(1, "-p")
+        if "--output-format" not in tokens:
+            # insert before the prompt arg (last) when present
+            insert_at = len(tokens) - 1 if prompt and tokens and tokens[-1] == prompt else len(tokens)
+            tokens[insert_at:insert_at] = ["--output-format", "text"]
+
+        has_sys = any(t in ("--append-system-prompt", "--system-prompt",
+                            "--append-system-prompt-file", "--system-prompt-file") for t in tokens)
+        sys_prompt = self.systems.get(agent_id, "").strip()
+        if sys_prompt and not has_sys:
+            insert_at = len(tokens) - 1 if prompt and tokens and tokens[-1] == prompt else len(tokens)
+            tokens[insert_at:insert_at] = ["--append-system-prompt", sys_prompt]
+
+        # Conversational continuity per agent (session cwd isolates --continue).
+        has_cont = any(t in ("-c", "--continue", "-r", "--resume", "--session-id") for t in tokens)
+        if continue_session and not has_cont:
+            insert_at = 1
+            # after -p if present at index 1
+            if len(tokens) > 1 and tokens[1] in ("-p", "--print"):
+                insert_at = 2
+            tokens[insert_at:insert_at] = ["--continue"]
+
+        # Allow tools to see the real project when we run from a session subdir.
+        if "--add-dir" not in tokens and project:
+            insert_at = len(tokens) - 1 if prompt and tokens and tokens[-1] == prompt else len(tokens)
+            tokens[insert_at:insert_at] = ["--add-dir", project]
         return tokens
 
     async def run_prompt(self, agent: Agent, prompt: str) -> None:
         hub, aid = self.hub, agent.agent_id
-        argv = self.build_argv(aid, prompt)
-        hub.log_line(aid, f"\x1b[1;36m> {prompt}\x1b[0m")
-        hub.log_line(aid, "\x1b[2m$ " + " ".join(shlex.quote(a) for a in argv) + "\x1b[0m")
-        hub.state(aid, "THINKING", text=f"Starting {os.path.basename(argv[0])}...")
-        env = {**os.environ, "FORCE_COLOR": "1", "CLICOLOR_FORCE": "1", "PYTHONUNBUFFERED": "1"}
-        # Project Claude Code hooks map activity onto this sprite (not the default).
+        project = self.project_cwd(aid)
+        continue_session = aid in self.started
+        argv = self.build_argv(aid, prompt, continue_session=continue_session, project=project)
+        is_claude = self._is_claude(argv)
+        run_cwd = self.session_cwd(aid, project) if is_claude else project
+
+        log.info("CLI %s%s cwd=%s: %s", aid, " (continue)" if continue_session else "",
+                 run_cwd, " ".join(shlex.quote(a) for a in argv))
+        # Terminal: typing indicator only. User message already shown by the drawer.
+        hub.log_line(aid, "\x1b[2m…\x1b[0m")
+        hub.state(aid, "THINKING", target=agent.desk, text="…")
+
+        env = {**os.environ, "FORCE_COLOR": "0", "PYTHONUNBUFFERED": "1"}
+        # Prefer the user's local Claude install when launching from a thin PATH.
+        local_bin = os.path.expanduser("~/.local/bin")
+        path = env.get("PATH", "")
+        if local_bin not in path.split(os.pathsep):
+            env["PATH"] = local_bin + os.pathsep + path
         env["OFFICE_AGENT"] = agent.name
-        run_cwd = self.cwds.get(aid) or self.cwd
-        if run_cwd in (None, "", "."):
-            run_cwd = os.getcwd()
-        env.setdefault("CLAUDE_PROJECT_DIR", run_cwd)
+        env.setdefault("CLAUDE_PROJECT_DIR", project)
         use_stdin = self.prompt_mode == "stdin"
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -1348,24 +1435,25 @@ class CliRunner:
                 cwd=run_cwd,
                 env=env,
                 limit=1 << 20,
-                start_new_session=True,  # own process group so we can kill children too
+                start_new_session=True,
             )
         except (OSError, ValueError) as exc:
+            log.error("CLI %s failed to start: %s", aid, exc)
             hub.log_line(aid, f"\x1b[31mFailed to start: {exc}\x1b[0m", stream="stderr")
             hub.state(aid, "IDLE", target=random.choice(agent.break_spots), text="Failed to start")
             return
 
         self.procs.add(proc)
-        hub.state(aid, "WORKING", target=agent.desk, text=f"Running {os.path.basename(argv[0])} (pid {proc.pid})")
+        hub.state(aid, "WORKING", target=agent.desk, text="…")
         if use_stdin and proc.stdin:
             proc.stdin.write(prompt.encode() + b"\n")
             await proc.stdin.drain()
             proc.stdin.close()
 
-        last_bubble = 0.0
+        stdout_buf: list[str] = []
+        stderr_buf: list[str] = []
 
-        async def pump(stream: asyncio.StreamReader | None, name: str) -> None:
-            nonlocal last_bubble
+        async def pump(stream: asyncio.StreamReader | None, bucket: list[str], name: str) -> None:
             if stream is None:
                 return
             while True:
@@ -1373,35 +1461,49 @@ class CliRunner:
                 if not raw:
                     break
                 line = raw.decode("utf-8", "replace").rstrip("\r\n")
-                hub.log_line(aid, line, stream=name)
-                plain = strip_ansi(line).strip()
-                # Throttled speech bubble showing the latest output line.
-                if plain and time.monotonic() - last_bubble > 3.0:
-                    last_bubble = time.monotonic()
-                    hub.state(aid, "WORKING", text=plain[:60])
+                bucket.append(line)
+                # Harness log only — never flood the office terminal mid-run.
+                (log.debug if name == "stdout" else log.info)("CLI %s %s: %s", aid, name, strip_ansi(line)[:200])
 
         try:
-            pumps = asyncio.gather(pump(proc.stdout, "stdout"), pump(proc.stderr, "stderr"))
+            pumps = asyncio.gather(pump(proc.stdout, stdout_buf, "stdout"),
+                                   pump(proc.stderr, stderr_buf, "stderr"))
             if self.timeout > 0:
                 await asyncio.wait_for(pumps, self.timeout)
             else:
                 await pumps
             code = await proc.wait()
         except asyncio.TimeoutError:
-            hub.log_line(aid, f"\x1b[31mTimed out after {self.timeout:.0f}s, terminating\x1b[0m", stream="stderr")
+            log.error("CLI %s timed out after %.0fs", aid, self.timeout)
             await self.terminate(proc)
             code = proc.returncode if proc.returncode is not None else -1
+            hub.log_line(aid, f"\x1b[31mTimed out after {self.timeout:.0f}s\x1b[0m", stream="stderr")
+            hub.state(aid, "IDLE", target=random.choice(agent.break_spots), text="Timed out")
+            return
         except asyncio.CancelledError:
             await self.terminate(proc)
             raise
         finally:
             self.procs.discard(proc)
 
+        out_text = "\n".join(stdout_buf).strip()
+        err_text = "\n".join(stderr_buf).strip()
         ok = code == 0
-        colour = "32" if ok else "31"
-        hub.log_line(aid, f"\x1b[{colour}mProcess exited with code {code}\x1b[0m")
-        hub.state(aid, "IDLE", target=random.choice(agent.break_spots),
-                  text="Done!" if ok else f"Failed (exit {code})")
+        log.info("CLI %s exited %s (%d stdout chars, %d stderr chars)",
+                 aid, code, len(out_text), len(err_text))
+        if ok and out_text:
+            self.started.add(aid)
+            self._save_started()
+            hub.post_reply(agent, out_text, bubble=True)
+            hub.state(aid, "IDLE", target=agent.desk, text=clean_line(out_text, 60))
+        elif ok:
+            hub.log_line(aid, "\x1b[33m(empty reply)\x1b[0m")
+            hub.state(aid, "IDLE", target=agent.desk, text="(empty reply)")
+        else:
+            detail = clean_line(err_text or out_text or f"exit {code}", 200)
+            hub.log_line(aid, f"\x1b[31m{detail}\x1b[0m", stream="stderr")
+            hub.state(aid, "IDLE", target=random.choice(agent.break_spots),
+                      text=f"Failed (exit {code})")
 
     async def terminate(self, proc: asyncio.subprocess.Process) -> None:
         if proc.returncode is not None:
@@ -1536,12 +1638,14 @@ class Harness:
         self.mock = MockRunner(self.hub, speed=args.speed)
         commands = dict(args.agent_cmd or [])
         cmd_cwds: dict[str, str] = {}
+        cmd_systems: dict[str, str] = {}
         cmds_file = getattr(args, "agent_cmds_file", None)
         if cmds_file:
-            file_pairs, file_cwds = load_agent_cmds_file(cmds_file)
+            file_pairs, file_cwds, file_systems = load_agent_cmds_file(cmds_file)
             for aid, cmd in file_pairs:
                 commands.setdefault(aid, cmd)
             cmd_cwds.update(file_cwds)
+            cmd_systems.update(file_systems)
         unknown = set(commands) - set(self.hub.agents)
         if unknown:
             raise SystemExit(f"--agent-cmd refers to unknown agents: {', '.join(sorted(unknown))}")
@@ -1549,7 +1653,8 @@ class Harness:
         inbox_path = None if str(args.inbox_file).lower() == "none" else (args.inbox_file or DEFAULT_INBOX_FILE)
         self.hub.inbox = Inbox(inbox_path)
         self.hub.inbox_for = self.inbox_for
-        self.cli = CliRunner(self.hub, commands, args.prompt_mode, args.cwd, args.cmd_timeout, cwds=cmd_cwds) \
+        self.cli = CliRunner(self.hub, commands, args.prompt_mode, args.cwd, args.cmd_timeout,
+                             cwds=cmd_cwds, systems=cmd_systems) \
             if args.mode in ("cli", "live") else None
         if self.cli is not None and commands:
             log.info("CLI bindings: %s", ", ".join(sorted(commands)))
@@ -1593,9 +1698,8 @@ class Harness:
             async with agent.lock:
                 runner = self.cli if (self.cli and self.cli.handles(agent.agent_id)) else self.mock
                 if self.args.mode == "live" and runner is self.mock:
-                    self.hub.log_line(agent.agent_id, f"\x1b[1;36m> {prompt}\x1b[0m")
-                    self.hub.log_line(agent.agent_id, "\x1b[33m(live mode: no command bound to this agent, "
-                                                      "the prompt was not run)\x1b[0m")
+                    log.warning("live mode: no command bound to %s; prompt not run: %s",
+                                agent.agent_id, clean_line(prompt, 80))
                     agent.queue.task_done()
                     continue
                 try:
@@ -1678,13 +1782,14 @@ class Harness:
 
 
 
-def load_agent_cmds_file(path: str) -> tuple[list[tuple[str, str]], dict[str, str]]:
+def load_agent_cmds_file(path: str) -> tuple[list[tuple[str, str]], dict[str, str], dict[str, str]]:
     """Load agent_id -> command bindings from a JSON file.
 
     Accepted shapes:
       {"chief_of_staff": "claude -p {prompt}"}
-      {"chief_of_staff": {"cmd": "claude -p {prompt}", "cwd": "."}}
-    Keys starting with _ are comments. Returns ([(agent_id, cmd), ...], {agent_id: cwd}).
+      {"chief_of_staff": {"cmd": "claude -p {prompt}", "cwd": ".", "system": "You are..."}}
+    Keys starting with _ are comments.
+    Returns ([(agent_id, cmd), ...], {agent_id: cwd}, {agent_id: system_prompt}).
     """
     with open(path, encoding="utf-8") as fh:
         data = json.load(fh)
@@ -1692,6 +1797,7 @@ def load_agent_cmds_file(path: str) -> tuple[list[tuple[str, str]], dict[str, st
         raise argparse.ArgumentTypeError(f"{path}: expected a JSON object")
     pairs: list[tuple[str, str]] = []
     cwds: dict[str, str] = {}
+    systems: dict[str, str] = {}
     for key, val in data.items():
         if str(key).startswith("_"):
             continue
@@ -1701,10 +1807,13 @@ def load_agent_cmds_file(path: str) -> tuple[list[tuple[str, str]], dict[str, st
         if isinstance(val, str):
             cmd = val.strip()
             cwd = None
+            system = None
         elif isinstance(val, dict):
             cmd = str(val.get("cmd") or val.get("command") or "").strip()
             raw_cwd = val.get("cwd")
             cwd = str(raw_cwd).strip() if raw_cwd else None
+            raw_sys = val.get("system") or val.get("system_prompt") or val.get("role")
+            system = str(raw_sys).strip() if raw_sys else None
         else:
             raise argparse.ArgumentTypeError(f"{path}: {aid}: expected string or object")
         if not cmd:
@@ -1712,7 +1821,9 @@ def load_agent_cmds_file(path: str) -> tuple[list[tuple[str, str]], dict[str, st
         pairs.append((aid, cmd))
         if cwd:
             cwds[aid] = cwd
-    return pairs, cwds
+        if system:
+            systems[aid] = system
+    return pairs, cwds, systems
 
 
 def parse_agent_cmd(value: str) -> tuple[str, str]:

@@ -333,21 +333,27 @@ func _build_canteen(cell: Dictionary, r: Rect2) -> void:
 	areas.append({"kind": "canteen", "rect": r, "theme": "tile", "name": cell.name})
 	signs.append({"room_id": "", "name": str(cell.name), "rect": _sign_rect(r, str(cell.name)), "color": Color("#c47a4a"), "clickable": false})
 	var p := r.position
-	# Kitchen / service counter along the back wall.
-	_prop("counter", Rect2(p.x + 40, p.y + 48, 220, 36))
-	_prop("coffee", Rect2(p.x + 270, p.y + 44, 48, 40))
-	_wp("Canteen_Counter", Vector2(p.x + 150, p.y + 110), "up")
-	# Dining tables with chairs (seats face the table).
+	# Serving counter with sneeze guard + trays of food along the back wall.
+	_prop("counter", Rect2(p.x + 28, p.y + 42, 200, 40), {"set": "canteen"})
+	# Menu board on the wall above / beside the counter.
+	_prop("menu", Rect2(p.x + 40, p.y + 10, 72, 28), {"sort_y": p.y + 20.0})
+	# Drinks fridge, coffee machine, microwave.
+	_prop("fridge", Rect2(p.x + 240, p.y + 36, 40, 52))
+	_prop("coffee", Rect2(p.x + 290, p.y + 44, 48, 40))
+	_prop("microwave", Rect2(p.x + 348, p.y + 52, 36, 28))
+	# Bin near the exit.
+	_prop("bin", Rect2(r.end.x - 40, r.end.y - 56, 22, 22))
+	_wp("Canteen_Counter", Vector2(p.x + 130, p.y + 108), "up")
+	# Long dining tables with chairs and place settings.
 	var tables := [
-		Vector2(p.x + 50, p.y + 180),
-		Vector2(p.x + 200, p.y + 180),
-		Vector2(p.x + 120, p.y + 300),
+		Vector2(p.x + 36, p.y + 170),
+		Vector2(p.x + 200, p.y + 170),
+		Vector2(p.x + 100, p.y + 290),
 	]
 	var seat_i := 1
 	for tpos in tables:
-		var table := Rect2(tpos.x, tpos.y, 72, 48)
-		_prop("table", table)
-		# Two seats per table.
+		var table := Rect2(tpos.x, tpos.y, 96, 52)
+		_prop("table", table, {"set": "canteen"})
 		_wp("Canteen_Seat_%d" % seat_i, Vector2(table.position.x - 18, table.get_center().y), "right", "chair")
 		seat_i += 1
 		_wp("Canteen_Seat_%d" % seat_i, Vector2(table.end.x + 18, table.get_center().y), "left", "chair")

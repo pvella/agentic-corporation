@@ -38,7 +38,7 @@ func setup(d: Dictionary, slice: Rect2 = Rect2()) -> void:
 		position = Iso.to_screen(iso_anchor())
 	else:
 		position = Vector2(rect.position.x, float(d.get("sort_y", rect.end.y))) * Iso.SCALE
-	set_process(kind in ["desk", "foosball", "servers", "coffee", "water", "plant", "vending"])
+	set_process(kind in ["desk", "foosball", "servers", "coffee", "water", "plant", "vending", "fridge", "microwave"])
 
 
 ## World point whose depth (x + y) orders this prop against people.
@@ -83,6 +83,10 @@ func _draw() -> void:
 		"bench": _draw_bench()
 		"servers": _draw_servers()
 		"vending": _draw_vending()
+		"fridge": _draw_fridge()
+		"menu": _draw_menu()
+		"microwave": _draw_microwave()
+		"bin": _draw_bin()
 
 
 func _rr(r: Rect2, radius: float, c: Color) -> void:
@@ -443,6 +447,10 @@ func _draw_iso() -> void:
 		"servers": _iso_servers()
 		"wall": _iso_wall()
 		"whiteboard": _iso_whiteboard()
+		"fridge": _iso_fridge()
+		"menu": _iso_menu()
+		"microwave": _iso_microwave()
+		"bin": _iso_bin()
 		_: _box(rect, 0, 20, Color("#90a4ae"))
 
 
@@ -526,24 +534,62 @@ func _iso_coffee() -> void:
 func _iso_counter() -> void:
 	var r := rect
 	var h := 30.0
+	var canteen := str(data.get("set", "")) == "canteen"
 	_floor_shadow(r, 0.12)
-	_box(r, 0, h, Color("#eceff1"), Color("#b0bec5"), Color("#90a4ae"))
-	_plane_top(h)
-	var sink := Rect2(r.end.x - 52, r.position.y + 6, 40, 18)
-	if _in_clip(sink.get_center()):
-		draw_rect(sink, Color("#b0bec5"))
-		draw_rect(sink.grow(-3), Color("#cfd8dc"))
-	_plane_reset()
-	var bowl := Vector2(r.position.x + 30, r.position.y + 14)
-	if _in_clip(bowl):
-		var bp := _p(bowl, h)
-		draw_set_transform(bp, 0, Vector2(1, 0.55) * Iso.SCALE)
-		draw_circle(Vector2.ZERO, 9.0, Color("#ffcc80"))
-		_bb(bp)
-		draw_circle(Vector2(-3, -3), 3.2, Color("#e53935"))
-		draw_circle(Vector2(3, -2), 3.2, Color("#fdd835"))
-		draw_circle(Vector2(0, -5), 3.0, Color("#7cb342"))
+	_box(r, 0, h, Color("#eceff1") if canteen else Color("#eceff1"), Color("#b0bec5"), Color("#90a4ae"))
+	# Stainless front strip for a serving counter.
+	if canteen:
+		_plane_south(r.end.y, h)
+		draw_rect(Rect2(r.position.x + 2, 4, r.size.x - 4, 6), Color("#cfd8dc"))
 		_plane_reset()
+	_plane_top(h)
+	if canteen:
+		# Trays of food along the counter: pizza, salad, burgers, fruit bowls.
+		var foods := [
+			{"c": Color("#ef6c00"), "label": "pizza"},
+			{"c": Color("#66bb6a"), "label": "salad"},
+			{"c": Color("#8d6e63"), "label": "burgers"},
+			{"c": Color("#ff7043"), "label": "fruit"},
+		]
+		var n := foods.size()
+		for i in n:
+			var fx := r.position.x + 18.0 + i * ((r.size.x - 36.0) / maxf(n - 1, 1))
+			var tray := Rect2(fx - 14, r.position.y + 6, 28, 20)
+			if not _in_clip(tray.get_center()):
+				continue
+			draw_rect(tray, Color("#eceff1"))
+			draw_rect(tray.grow(-2), foods[i].c)
+			# Garnish dots.
+			draw_circle(tray.get_center() + Vector2(-4, -2), 2.2, Color(1, 1, 1, 0.55))
+			draw_circle(tray.get_center() + Vector2(4, 1), 2.0, Color(0, 0, 0, 0.18))
+		_plane_reset()
+		# Sneeze guard (glass panel rising from the counter front).
+		var guard_h := 28.0
+		_plane_south(r.end.y - 2.0, h + guard_h)
+		var glass := Rect2(r.position.x + 6, 2, r.size.x - 12, guard_h - 4)
+		draw_rect(glass, Color(0.75, 0.9, 1.0, 0.28))
+		draw_rect(glass, Color(1, 1, 1, 0.45), false, 1.0)
+		draw_line(Vector2(glass.position.x + 4, glass.position.y + 3), Vector2(glass.position.x + 18, glass.position.y + 3), Color(1, 1, 1, 0.35), 1.0)
+		_plane_reset()
+		# Metal posts holding the guard.
+		for px in [r.position.x + 10.0, r.end.x - 10.0]:
+			draw_line(_p(Vector2(px, r.end.y - 2), h), _p(Vector2(px, r.end.y - 2), h + guard_h), Color("#90a4ae"), 2.0)
+	else:
+		var sink := Rect2(r.end.x - 52, r.position.y + 6, 40, 18)
+		if _in_clip(sink.get_center()):
+			draw_rect(sink, Color("#b0bec5"))
+			draw_rect(sink.grow(-3), Color("#cfd8dc"))
+		_plane_reset()
+		var bowl := Vector2(r.position.x + 30, r.position.y + 14)
+		if _in_clip(bowl):
+			var bp := _p(bowl, h)
+			draw_set_transform(bp, 0, Vector2(1, 0.55) * Iso.SCALE)
+			draw_circle(Vector2.ZERO, 9.0, Color("#ffcc80"))
+			_bb(bp)
+			draw_circle(Vector2(-3, -3), 3.2, Color("#e53935"))
+			draw_circle(Vector2(3, -2), 3.2, Color("#fdd835"))
+			draw_circle(Vector2(0, -5), 3.0, Color("#7cb342"))
+			_plane_reset()
 
 
 func _iso_water() -> void:
@@ -649,23 +695,43 @@ func _iso_foosball() -> void:
 func _iso_table() -> void:
 	var r := rect
 	var h := 26.0
+	var canteen := str(data.get("set", "")) == "canteen"
 	_floor_shadow(r, 0.2)
 	_legs(r, h - 5, Color("#4e342e"), 6.0, 6.0)
-	_box(r, h - 5, 5, Color("#8d6e63"), Color("#6d4c41"), Color("#5d4037"))
+	_box(r, h - 5, 5, Color("#a1887f") if canteen else Color("#8d6e63"), Color("#6d4c41"), Color("#5d4037"))
 	_plane_top(h)
 	draw_rect(Rect2(r.position.x + 8, r.position.y + 4, r.size.x - 16, 2).intersection(clip), Color(1, 1, 1, 0.15))
-	var n := int(r.size.x / 70.0)
-	for i in n:
-		var px := r.position.x + 24 + i * (r.size.x - 48) / maxf(n - 1, 1)
-		var paper := Rect2(px - 9, r.position.y + 14 + (i % 2) * 22, 18, 13)
-		if _in_clip(paper.get_center()):
-			draw_rect(paper, Color(1, 1, 1, 0.85))
-			draw_line(paper.position + Vector2(3, 4), paper.position + Vector2(14, 4), Color("#90a4ae"), 1.0)
-			draw_line(paper.position + Vector2(3, 8), paper.position + Vector2(11, 8), Color("#90a4ae"), 1.0)
+	if canteen:
+		# Place settings / trays of food on the dining tables.
+		var foods := [Color("#ef6c00"), Color("#66bb6a"), Color("#8d6e63"), Color("#ff7043"), Color("#42a5f5")]
+		var slots := maxi(2, int(r.size.x / 40.0))
+		for i in slots:
+			var px := r.position.x + 18.0 + i * ((r.size.x - 36.0) / maxf(slots - 1, 1))
+			var py := r.position.y + (14.0 if i % 2 == 0 else 28.0)
+			if not _in_clip(Vector2(px, py)):
+				continue
+			# Tray
+			draw_rect(Rect2(px - 10, py - 7, 20, 14), Color("#eceff1"))
+			# Plate
+			draw_circle(Vector2(px - 2, py), 5.5, Color("#fafafa"))
+			draw_circle(Vector2(px - 2, py), 3.5, foods[i % foods.size()])
+			# Cup
+			draw_rect(Rect2(px + 5, py - 3, 4, 5), Color("#fff8e1"))
+	else:
+		var n := int(r.size.x / 70.0)
+		for i in n:
+			var px := r.position.x + 24 + i * (r.size.x - 48) / maxf(n - 1, 1)
+			var paper := Rect2(px - 9, r.position.y + 14 + (i % 2) * 22, 18, 13)
+			if _in_clip(paper.get_center()):
+				draw_rect(paper, Color(1, 1, 1, 0.85))
+				draw_line(paper.position + Vector2(3, 4), paper.position + Vector2(14, 4), Color("#90a4ae"), 1.0)
+				draw_line(paper.position + Vector2(3, 8), paper.position + Vector2(11, 8), Color("#90a4ae"), 1.0)
+		_plane_reset()
+		var mug := Vector2(r.end.x - 20, r.position.y + 14)
+		if _in_clip(mug):
+			_box(Rect2(mug - Vector2(4, 4), Vector2(8, 8)), h, 8, Color("#fafafa"))
+			return
 	_plane_reset()
-	var mug := Vector2(r.end.x - 20, r.position.y + 14)
-	if _in_clip(mug):
-		_box(Rect2(mug - Vector2(4, 4), Vector2(8, 8)), h, 8, Color("#fafafa"))
 
 
 func _iso_plant() -> void:
@@ -780,4 +846,110 @@ func _iso_whiteboard() -> void:
 		draw_line(Vector2(r.position.y + 14, 10 + i * 9), Vector2(r.position.y + 50 + i * 18, 10 + i * 9), cols[i], 2.0)
 	draw_rect(Rect2(r.position.y + 80, 8, 26, 20), Color("#ffe082"))
 	draw_rect(Rect2(r.position.y + 10, h - 5, 40, 3), Color("#78909c"))
+	_plane_reset()
+
+
+# ---- canteen extras -----------------------------------------------------------
+func _draw_fridge() -> void:
+	var r := rect
+	_shadow(r)
+	_rr(r, 4, Color("#37474f"))
+	_rr(Rect2(r.position + Vector2(3, 4), r.size - Vector2(6, 10)), 3, Color("#263238"))
+	# Coloured cans / bottles behind glass.
+	var cols := [Color("#e53935"), Color("#1e88e5"), Color("#43a047"), Color("#fdd835"), Color("#8e24aa")]
+	for row in 3:
+		for i in 3:
+			var c := cols[(row + i) % cols.size()]
+			draw_rect(Rect2(r.position.x + 6 + i * 10, r.position.y + 8 + row * 12, 7, 9), c)
+	draw_rect(Rect2(r.position.x + 4, r.end.y - 8, r.size.x - 8, 4), Color("#546e7a"))
+	draw_circle(Vector2(r.end.x - 8, r.position.y + 8), 2.0, Color("#69f0ae") if fmod(_t, 2.0) < 1.5 else Color("#1b5e20"))
+
+
+func _draw_menu() -> void:
+	var r := rect
+	_rr(r, 3, Color("#5d4037"))
+	_rr(r.grow(-3), 2, Color("#fff8e1"))
+	for i in 4:
+		draw_line(r.position + Vector2(6, 7 + i * 5), r.position + Vector2(r.size.x - 8, 7 + i * 5), Color("#8d6e63"), 1.2)
+	draw_rect(Rect2(r.position.x + 4, r.position.y + 2, r.size.x - 8, 4), Color("#ef6c00"))
+
+
+func _draw_microwave() -> void:
+	var r := rect
+	_shadow(r)
+	_rr(r, 3, Color("#546e7a"))
+	_rr(Rect2(r.position + Vector2(3, 4), Vector2(r.size.x * 0.62, r.size.y - 10)), 2, Color("#212121"))
+	draw_rect(Rect2(r.end.x - 12, r.position.y + 6, 6, 8), Color("#90a4ae"))
+	draw_circle(Vector2(r.end.x - 9, r.end.y - 8), 2.0, Color("#ffca28") if fmod(_t, 1.6) < 0.8 else Color("#795548"))
+
+
+func _draw_bin() -> void:
+	var r := rect
+	_shadow(r, 0.12)
+	_rr(r, 3, Color("#455a64"))
+	draw_rect(Rect2(r.position.x + 2, r.position.y - 3, r.size.x - 4, 5), Color("#37474f"))
+	draw_rect(Rect2(r.position.x + 5, r.position.y + 4, r.size.x - 10, 3), Color("#607d8b"))
+
+
+func _iso_fridge() -> void:
+	var r := rect
+	var h := 64.0
+	_floor_shadow(r)
+	_box(r, 0, h, Color("#455a64"), Color("#37474f"), Color("#263238"))
+	_plane_south(r.end.y, h)
+	var glass := Rect2(r.position.x + 4, 6, r.size.x - 10, h - 18)
+	draw_rect(glass, Color("#1c2a33"))
+	var cols := [Color("#e53935"), Color("#1e88e5"), Color("#43a047"), Color("#fdd835"), Color("#8e24aa"), Color("#26c6da")]
+	for row in 4:
+		for i in 2:
+			draw_rect(Rect2(glass.position.x + 4 + i * 12, glass.position.y + 4 + row * 11, 8, 8), cols[(row * 2 + i) % cols.size()])
+		draw_line(Vector2(glass.position.x, glass.position.y + 13 + row * 11), Vector2(glass.end.x, glass.position.y + 13 + row * 11), Color(1, 1, 1, 0.2), 1.0)
+	draw_rect(Rect2(glass.position.x, glass.position.y, 3, glass.size.y), Color(1, 1, 1, 0.15))
+	draw_circle(Vector2(r.end.x - 8, 10), 2.2, Color("#69f0ae") if fmod(_t, 2.0) < 1.5 else Color("#1b5e20"))
+	_plane_reset()
+	_plane_top(h)
+	draw_rect(Rect2(r.position.x + 2, r.position.y + 2, r.size.x - 4, 4), Color(1, 1, 1, 0.12))
+	_plane_reset()
+
+
+func _iso_menu() -> void:
+	var r := rect
+	var h := 40.0
+	# Wall-mounted board: thin box raised off the floor.
+	_box(r, 18, h - 10, Color("#5d4037"), Color("#4e342e"), Color("#3e2723"))
+	_plane_south(r.end.y, 18 + h - 10)
+	var board := Rect2(r.position.x + 3, 4, r.size.x - 6, h - 18)
+	draw_rect(board, Color("#fff8e1"))
+	draw_rect(Rect2(board.position.x, board.position.y, board.size.x, 5), Color("#ef6c00"))
+	for i in 4:
+		draw_line(Vector2(board.position.x + 4, board.position.y + 10 + i * 5), Vector2(board.end.x - 4, board.position.y + 10 + i * 5), Color("#8d6e63"), 1.2)
+	# Price dots
+	for i in 4:
+		draw_circle(Vector2(board.end.x - 7, board.position.y + 10 + i * 5), 1.4, Color("#43a047"))
+	_plane_reset()
+
+
+func _iso_microwave() -> void:
+	var r := rect
+	var h := 28.0
+	_floor_shadow(r, 0.1)
+	_box(r, 8, h, Color("#607d8b"), Color("#546e7a"), Color("#455a64"))
+	_plane_south(r.end.y, 8 + h)
+	var window := Rect2(r.position.x + 4, 6, r.size.x * 0.58, h - 12)
+	draw_rect(window, Color("#212121"))
+	draw_rect(window.grow(-2), Color("#37474f", 0.6))
+	draw_rect(Rect2(r.end.x - 12, 8, 6, 8), Color("#cfd8dc"))
+	draw_circle(Vector2(r.end.x - 9, h - 6), 2.0, Color("#ffca28") if fmod(_t, 1.6) < 0.8 else Color("#795548"))
+	_plane_reset()
+
+
+func _iso_bin() -> void:
+	var r := rect
+	var h := 22.0
+	_floor_shadow(r, 0.12)
+	_box(r, 0, h, Color("#546e7a"), Color("#455a64"), Color("#37474f"))
+	_plane_top(h)
+	draw_rect(Rect2(r.position.x + 2, r.position.y + 2, r.size.x - 4, 4), Color("#263238"))
+	# Lid flap
+	draw_rect(Rect2(r.position.x + 4, r.position.y + 3, r.size.x - 8, 2), Color("#78909c"))
 	_plane_reset()

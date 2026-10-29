@@ -18,3 +18,10 @@ In `--mode live` without `--agent-cmd` / `agent_cmds.json`, typing a task in a s
 - Shared Canteen with lunch idle behaviour (12–14 local)
 - Hire FX: beam + sparkles + materialise; Fire FX: cartoon collapse + medics + stretcher + clear desk
 - Triggers: harness `HIRE_AGENT` / `FIRE_AGENT`/`ARCHIVE_AGENT` / `PREVIEW_HIRE_FIRE`; drawer Archive + recruiter Hire…; Shift+H/F/B; `--preview-hire` etc.
+
+## Quiet terminal + every-agent Claude (same PR)
+
+- Terminal shows `you> …` then the reply only (no inbox/queue ACK chatter)
+- All roster agents bound in `agent_cmds.example.json` to `claude -p` with short role system prompts
+- Per-agent Claude sessions under `.office_claude/<agent_id>/` (`--continue` + `--add-dir` project)
+- Canteen restyle: serving counter + sneeze guard + food trays, drinks fridge, coffee, microwave, menu board, bin, long tables with place settings; plate in front of eating agents

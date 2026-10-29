@@ -606,11 +606,8 @@ func handle_message(msg: Dictionary) -> void:
 		"COLLABORATE":
 			_apply_collaborate(msg)
 		"ACK":
-			if drawer.agent and drawer.agent.agent_id == str(msg.get("agent_id", "")):
-				if msg.get("inbox", false):
-					drawer.append_system("in %s's inbox (%d unread)" % [drawer.agent.display_name, int(msg.get("unread", 0))], "#e5c07b")
-				else:
-					drawer.append_system("prompt accepted by harness (queue: %d)" % int(msg.get("queued", 0)), "#56b6c2")
+			# Quiet: terminal already shows you> … then the reply. Keep ACK off the drawer.
+			pass
 		"AGENT_HIRE":
 			_play_hire(msg)
 		"AGENT_FIRE":
