@@ -45,6 +45,7 @@ const PropScript := preload("res://Prop.gd")
 const Office := preload("res://Office.gd")
 const Iso := preload("res://Iso.gd")
 const HireFireFxScript := preload("res://HireFireFx.gd")
+const KnowledgeLibraryScript := preload("res://KnowledgeLibrary.gd")
 const AgentViewScript := preload("res://AgentView.gd")
 const SignTagScript := preload("res://SignTag.gd")
 const SETTINGS_PATH := "user://agent_office.cfg"
@@ -97,6 +98,8 @@ var _role_catalog: Array = []
 var _role_categories: Array = []
 var _fire_preview_variant := ""
 var _knowledge_racks: Array = []
+var _knowledge_library: Node = null
+var _server_clickables: Array = []
 var _human_queue: Array = []
 var _meeting_panel: Control = null
 var _human_dialog: Window = null
@@ -107,6 +110,9 @@ var _start_fit := false
 var _screenshot_path: String = ""
 var _open_hiring_board_on_start := false
 var _open_hiring_sheet_on_start := false
+var _debug_activity := false
+var _debug_activity_log: Array = []
+var _debug_activity_started_ms := 0
 var _screenshot_delay: float = 6.0
 var _quit_after_screenshot: bool = false
 var _screenshot_every: float = 0.0
@@ -135,6 +141,9 @@ var bodies_root: Node2D
 
 
 func _ready() -> void:
+	# Cap FPS: uncapped GL Compatibility + iso office pegged MBP ~90% CPU
+	# and made the window feel dead / unresponsive.
+	Engine.max_fps = 30
 	get_viewport().physics_object_picking = true
 	_setup_hidpi()
 	bodies_root = Node2D.new()
@@ -188,12 +197,22 @@ func _ready() -> void:
 			if drawer.agent:
 				_view_job_description_for(drawer.agent)
 		)
+	if drawer.has_signal("kb_requested"):
+		drawer.kb_requested.connect(func(subcmd: String, arg: String) -> void:
+			if subcmd == "rm":
+				send_json({"action": "REMOVE_KNOWLEDGE", "name": arg})
+			else:
+				send_json({"action": "LIST_KNOWLEDGE"})
+				_open_knowledge_library()
+		)
 	camera.zoom_changed.connect(_apply_ui_scale)
 	build_layout(Office.LEGACY_LAYOUT, true)
 	_backoff = reconnect_min
 	_connect_socket()
 	if _open_hiring_board_on_start:
 		call_deferred("_open_hiring_board")
+	if _debug_activity:
+		call_deferred("_start_debug_activity")
 	if _screenshot_path != "":
 		_take_screenshot()
 
@@ -345,6 +364,7 @@ func _build_visuals() -> void:
 	for id: String in _desk_props.keys():
 		if agents.has(id):
 			_desk_props[id].owner_agent = agents[id]
+	_add_server_rack_hotspots()
 	_build_signs()
 	office.queue_redraw()
 
@@ -362,6 +382,8 @@ func _link_prop(d: Dictionary, p: Node2D) -> void:
 		_desk_props[str(d.owner)] = p
 	elif d.kind == "foosball":
 		_foosball_props.append(p)
+	elif str(d.get("kind", "")) == "servers":
+		_make_server_clickable(p)
 
 
 ## Splits `r` along its long axis into equal pieces no longer than `max_len`.
@@ -386,7 +408,11 @@ func _build_signs() -> void:
 			var tag := _add_sign_tag(s, Iso.to_screen((s.rect as Rect2).position + Vector2(18, 20)))
 			if s.clickable:
 				var room_id := str(s.room_id)
-				tag.pressed.connect(func() -> void: open_team(room_id))
+				var sname := str(s.get("name", "")).to_lower()
+				if room_id == "__knowledge__" or sname.find("server") >= 0:
+					tag.pressed.connect(func() -> void: _open_knowledge_library())
+				else:
+					tag.pressed.connect(func() -> void: open_team(room_id))
 		for f: Dictionary in office.outer_frames:
 			var o: Rect2 = (f.rect as Rect2).grow(Office.EXT_WALL)
 			_add_sign_tag({"name": str(f.name), "style": "building"}, Iso.to_screen(o.position, Office.WALL_H_BACK + 6.0))
@@ -494,23 +520,36 @@ func _load_role_catalog() -> void:
 
 
 func _add_hr_buttons() -> void:
+	# Keep HR buttons left of the expanding StatusLabel so a long roster cannot
+	# push "+ Add Agent" off-screen (looked like a dead button).
 	var hbox := roster.get_parent()
+	var hud := $HUD as CanvasLayer
+	if hud:
+		hud.layer = maxi(hud.layer, 20)
+	var insert_at := 2  # after Title + VSeparator
+	for i in hbox.get_child_count():
+		if hbox.get_child(i) == status_label:
+			insert_at = i
+			break
 	_add_agent_button = Button.new()
 	_add_agent_button.focus_mode = Control.FOCUS_NONE
+	_add_agent_button.mouse_filter = Control.MOUSE_FILTER_STOP
 	_add_agent_button.add_theme_font_size_override("font_size", 12)
 	_add_agent_button.text = "+ Add Agent"
 	_add_agent_button.tooltip_text = "Hire from roles/catalog.json or Custom"
-	_add_agent_button.pressed.connect(_on_add_agent_pressed)
+	var conn_err := _add_agent_button.pressed.connect(_on_add_agent_pressed)
+	print("[AgentOffice] Add Agent pressed-signal connect err=%s catalog=%d" % [conn_err, _role_catalog.size()])
 	hbox.add_child(_add_agent_button)
-	hbox.move_child(_add_agent_button, roster.get_index())
+	hbox.move_child(_add_agent_button, insert_at)
 	_kill_agent_button = Button.new()
 	_kill_agent_button.focus_mode = Control.FOCUS_NONE
+	_kill_agent_button.mouse_filter = Control.MOUSE_FILTER_STOP
 	_kill_agent_button.add_theme_font_size_override("font_size", 12)
 	_kill_agent_button.text = "Kill Agent"
 	_kill_agent_button.tooltip_text = "Archive an agent (random cartoon exit; soft-delete)"
 	_kill_agent_button.pressed.connect(_on_kill_agent_pressed)
 	hbox.add_child(_kill_agent_button)
-	hbox.move_child(_kill_agent_button, roster.get_index())
+	hbox.move_child(_kill_agent_button, insert_at + 1)
 
 
 func _setup_files_dropped() -> void:
@@ -525,6 +564,7 @@ func _on_files_dropped(files: PackedStringArray) -> void:
 
 
 func _on_add_agent_pressed() -> void:
+	print("[AgentOffice] Add Agent pressed — opening Hiring Board (catalog=%d)" % _role_catalog.size())
 	_open_hiring_board()
 
 
@@ -544,6 +584,15 @@ func _catalog_categories() -> Array:
 
 
 func _open_hiring_board() -> void:
+	_dismiss_exclusive_windows()
+	# One board at a time — a second CanvasLayer board stacked silently.
+	for child in get_children():
+		var scr: Variant = child.get_script()
+		if scr != null and str(scr.resource_path).ends_with("hiring/hiring_board.gd") and is_instance_valid(child):
+			if child.has_method("close"):
+				child.close()
+			else:
+				child.queue_free()
 	var BoardScript = load("res://hiring/hiring_board.gd")
 	if BoardScript == null:
 		push_error("[AgentOffice] hiring/hiring_board.gd missing")
@@ -559,6 +608,12 @@ func _open_hiring_board() -> void:
 			merged.merge(overrides, true)
 		_hire_from_role(merged)
 	)
+	var board_layer := 0
+	if board_node is CanvasLayer:
+		board_layer = (board_node as CanvasLayer).layer
+	print("[AgentOffice] Hiring Board opened visible=%s layer=%d roles=%d" % [
+		board_node.visible, board_layer, _role_catalog.size()])
+	_set_status("Hiring Board open (%d roles)" % _role_catalog.size(), Color("#80cbc4"))
 	if _open_hiring_sheet_on_start and _role_catalog.size() > 0:
 		var first: Dictionary = _role_catalog[0]
 		if board_node.has_method("open_for_role"):
@@ -818,30 +873,215 @@ func _hired_unique_role_ids() -> Dictionary:
 
 func _on_knowledge_added(msg: Dictionary) -> void:
 	var title := str(msg.get("title", msg.get("filename", "doc")))
+	var fname := str(msg.get("filename", msg.get("name", title)))
 	_set_status("Knowledge added: %s → Server Room" % title, Color("#29b6f6"))
-	# Visual: flash a knowledge slate onto the Server Room rack.
+	# Visual: flash a knowledge slate onto the Server Room rack (screen space).
 	var rack_name := str(msg.get("rack", "Server_Rack_1"))
-	var pos := Vector2(720, 520)
+	var world := Vector2(720, 520)
 	if waypoints.has(rack_name) and waypoints[rack_name] is Node2D:
-		pos = (waypoints[rack_name] as Node2D).global_position
+		world = (waypoints[rack_name] as Node2D).global_position
 	elif waypoints.has("Server_Room") and waypoints["Server_Room"] is Node2D:
-		pos = (waypoints["Server_Room"] as Node2D).global_position
+		world = (waypoints["Server_Room"] as Node2D).global_position
+	var pos := Iso.to_screen(world)
 	var slate := ColorRect.new()
+	slate.mouse_filter = Control.MOUSE_FILTER_STOP  # small rack chip only
 	slate.size = Vector2(28, 36)
 	slate.position = pos + Vector2(-14, -48)
 	slate.color = Color("#26a69a")
 	slate.z_index = 40
+	slate.gui_input.connect(func(ev: InputEvent) -> void:
+		if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
+			_open_knowledge_library()
+	)
 	add_child(slate)
-	_knowledge_racks.append({"node": slate, "title": title, "path": str(msg.get("path", ""))})
+	_knowledge_racks.append({"node": slate, "title": title, "path": str(msg.get("path", "")), "name": fname})
 	var label := Label.new()
 	label.text = title.left(12)
 	label.add_theme_font_size_override("font_size", 9)
 	label.position = Vector2(0, 38)
 	slate.add_child(label)
-	# Soft pulse then settle.
 	var tw := create_tween()
 	tw.tween_property(slate, "modulate", Color(1.4, 1.4, 1.4, 1.0), 0.25)
 	tw.tween_property(slate, "modulate", Color(1, 1, 1, 1), 0.4)
+	if _knowledge_library and is_instance_valid(_knowledge_library):
+		send_json({"action": "LIST_KNOWLEDGE"})
+
+
+func _on_knowledge_list(msg: Dictionary) -> void:
+	var files: Array = msg.get("files", [])
+	if not (files is Array):
+		files = []
+	if drawer and drawer.has_method("append_system"):
+		if files.is_empty():
+			drawer.append_system("knowledge/: (empty)")
+		else:
+			drawer.append_system("knowledge/ (%d):" % files.size())
+			for f in files:
+				if not (f is Dictionary):
+					continue
+				var nm := str(f.get("name", "?"))
+				var sz := int(f.get("size", 0))
+				drawer.append_system("  · %s (%d B)" % [nm, sz])
+	# Only refresh an already-open panel. Auto-spawning here left a layer-66
+	# full-rect dim (mouse_filter STOP) that ate HUD clicks including Add Agent.
+	if _knowledge_library and is_instance_valid(_knowledge_library):
+		_knowledge_library.set_files(files)
+
+
+func _on_knowledge_removed(msg: Dictionary) -> void:
+	var title := str(msg.get("title", msg.get("filename", "doc")))
+	var fname := str(msg.get("filename", msg.get("name", "")))
+	_set_status("Knowledge removed: %s" % title, Color("#ef9a9a"))
+	if drawer and drawer.has_method("append_system"):
+		drawer.append_system("knowledge: removed %s" % (fname if fname != "" else title))
+	var kept: Array = []
+	for entry in _knowledge_racks:
+		var ename := str(entry.get("name", entry.get("title", "")))
+		if ename == fname or str(entry.get("title", "")) == title:
+			var n: Node = entry.get("node")
+			if n and is_instance_valid(n):
+				n.queue_free()
+		else:
+			kept.append(entry)
+	_knowledge_racks = kept
+	_play_server_spark()
+	var files: Array = msg.get("files", [])
+	if _knowledge_library and is_instance_valid(_knowledge_library):
+		if files is Array:
+			_knowledge_library.set_files(files)
+		else:
+			send_json({"action": "LIST_KNOWLEDGE"})
+
+
+func _open_knowledge_library() -> void:
+	_dismiss_exclusive_windows()
+	send_json({"action": "LIST_KNOWLEDGE"})
+	if _knowledge_library and is_instance_valid(_knowledge_library):
+		return
+	_spawn_knowledge_library([])
+
+
+func _spawn_knowledge_library(files: Array) -> void:
+	if _knowledge_library and is_instance_valid(_knowledge_library):
+		_knowledge_library.set_files(files)
+		return
+	var lib: Node = KnowledgeLibraryScript.new()
+	add_child(lib)
+	_knowledge_library = lib
+	lib.closed.connect(func() -> void:
+		if _knowledge_library == lib:
+			_knowledge_library = null
+	)
+	lib.remove_requested.connect(func(filename: String) -> void:
+		send_json({"action": "REMOVE_KNOWLEDGE", "name": filename})
+	)
+	lib.refresh_requested.connect(func() -> void:
+		send_json({"action": "LIST_KNOWLEDGE"})
+	)
+	lib.open_with(files)
+
+
+func _make_server_clickable(prop: Node2D) -> void:
+	var area := Area2D.new()
+	area.name = "KnowledgeHotspot"
+	area.input_pickable = true
+	area.monitoring = false
+	area.collision_layer = 8
+	var shape := CollisionShape2D.new()
+	var rect_shape := RectangleShape2D.new()
+	rect_shape.size = Vector2(64, 100)
+	shape.shape = rect_shape
+	shape.position = Vector2(0, -20)
+	area.add_child(shape)
+	area.input_event.connect(func(_vp: Node, ev: InputEvent, _i: int) -> void:
+		if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
+			_open_knowledge_library()
+			get_viewport().set_input_as_handled()
+	)
+	prop.add_child(area)
+	_server_clickables.append(area)
+
+
+func _add_server_rack_hotspots() -> void:
+	for rack_name in ["Server_Rack_1", "Server_Rack_2", "Server_Room"]:
+		if not waypoints.has(rack_name):
+			continue
+		var m: Node2D = waypoints[rack_name]
+		if m == null:
+			continue
+		var holder := Node2D.new()
+		holder.name = "KnowledgeHotspotHolder_%s" % rack_name
+		holder.position = Iso.to_screen(m.global_position)
+		holder.z_index = 30
+		signs_root.add_child(holder)
+		var area := Area2D.new()
+		area.name = "KnowledgeHotspot"
+		area.input_pickable = true
+		area.monitoring = false
+		area.collision_layer = 8
+		var shape := CollisionShape2D.new()
+		var rect_shape := RectangleShape2D.new()
+		rect_shape.size = Vector2(70, 90)
+		shape.shape = rect_shape
+		area.add_child(shape)
+		holder.add_child(area)
+		area.input_event.connect(func(_vp: Node, ev: InputEvent, _i: int) -> void:
+			if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
+				_open_knowledge_library()
+				get_viewport().set_input_as_handled()
+		)
+		_server_clickables.append(area)
+
+
+func _play_server_spark() -> void:
+	var world := Vector2(720, 520)
+	if waypoints.has("Server_Rack_1") and waypoints["Server_Rack_1"] is Node2D:
+		world = (waypoints["Server_Rack_1"] as Node2D).global_position
+	elif waypoints.has("Server_Room") and waypoints["Server_Room"] is Node2D:
+		world = (waypoints["Server_Room"] as Node2D).global_position
+	var pos := Iso.to_screen(world)
+	var spark := Node2D.new()
+	spark.z_index = 55
+	spark.position = pos
+	add_child(spark)
+	var bits: Array = []
+	for i in 16:
+		bits.append({
+			"p": Vector2(randf_range(-10, 10), randf_range(-24, 0)),
+			"v": Vector2(randf_range(-90, 90), randf_range(-160, -40)),
+			"life": randf_range(0.35, 0.9),
+			"c": Color(0.35, 1.0, 0.85, 1.0) if i % 2 == 0 else Color(0.7, 1.0, 0.4, 1.0),
+		})
+	spark.set_meta("bits", bits)
+	var acc := {"t": 0.0}
+	var tw := create_tween()
+	tw.set_loops(24)
+	tw.tween_callback(func() -> void:
+		if not is_instance_valid(spark):
+			return
+		var dt := 0.045
+		acc["t"] += dt
+		var bits2: Array = spark.get_meta("bits")
+		for b in bits2:
+			b["p"] = b["p"] + b["v"] * dt
+			b["v"] = b["v"] + Vector2(0, 220) * dt
+			b["life"] = float(b["life"]) - dt
+		for child in spark.get_children():
+			child.queue_free()
+		for b in bits2:
+			if float(b["life"]) <= 0.0:
+				continue
+			var dot := ColorRect.new()
+			dot.size = Vector2(3, 3)
+			dot.position = b["p"]
+			var c: Color = b["c"]
+			c.a = clampf(float(b["life"]), 0.0, 1.0)
+			dot.color = c
+			spark.add_child(dot)
+		if acc["t"] > 1.05:
+			spark.queue_free()
+	)
+	tw.tween_interval(0.045)
 
 
 func _on_agent_dm(msg: Dictionary) -> void:
@@ -1123,7 +1363,10 @@ func handle_message(msg: Dictionary) -> void:
 		"STATE_CHANGE":
 			var agent := _get_or_spawn(str(msg.get("agent_id", "")))
 			if agent:
-				_apply_state(agent, str(msg.get("state", "IDLE")), _str_or_empty(msg.get("target")), str(msg.get("text", "")))
+				var tgt := _str_or_empty(msg.get("target"))
+				_apply_state(agent, str(msg.get("state", "IDLE")), tgt, str(msg.get("text", "")))
+				if _debug_activity:
+					_log_debug_activity(agent, str(msg.get("state", "IDLE")), tgt)
 		"LOG_ENTRY":
 			var agent := _get_or_spawn(str(msg.get("agent_id", "")))
 			if agent:
@@ -1143,6 +1386,10 @@ func handle_message(msg: Dictionary) -> void:
 					drawer.append_system("%s: %s" % [act, str(msg.get("name", msg.get("agent_id", "")))], "#ffd54f")
 		"KNOWLEDGE_ADDED":
 			_on_knowledge_added(msg)
+		"KNOWLEDGE_LIST":
+			_on_knowledge_list(msg)
+		"KNOWLEDGE_REMOVED":
+			_on_knowledge_removed(msg)
 		"AGENT_DM":
 			_on_agent_dm(msg)
 		"ASK_HUMAN":
@@ -1167,6 +1414,9 @@ func handle_message(msg: Dictionary) -> void:
 			var agent: Agent = agents.get(str(msg.get("agent_id", "")))
 			if agent and str(msg.get("action", "")) == "phone":
 				agent.glance_phone(float(msg.get("seconds", 4.0)), false)
+		"OPEN_HIRING_BOARD":
+			print("[AgentOffice] harness OPEN_HIRING_BOARD — simulating Add Agent")
+			_on_add_agent_pressed()
 		"PONG":
 			pass
 		var other:
@@ -1576,6 +1826,70 @@ func _parse_user_args() -> void:
 			"--open-hiring-sheet":
 				_open_hiring_board_on_start = true
 				_open_hiring_sheet_on_start = true
+			"--debug-activity":
+				_debug_activity = true
+
+
+
+func _start_debug_activity() -> void:
+	_debug_activity_log.clear()
+	_debug_activity_started_ms = Time.get_ticks_msec()
+	print("[AgentOffice] debug-activity: logging walks/state for 60s")
+	# Prove the HUD button signal is wired, then open the board via the same path.
+	if _add_agent_button and _add_agent_button.pressed.get_connections().size() > 0:
+		print("[AgentOffice] debug-activity: Add Agent connections=%d rect=%s" % [
+			_add_agent_button.pressed.get_connections().size(), _add_agent_button.get_global_rect()])
+		_add_agent_button.pressed.emit()
+	else:
+		push_error("[AgentOffice] debug-activity: Add Agent button missing or unconnected")
+		_on_add_agent_pressed()
+	await get_tree().create_timer(2.0).timeout
+	var board_open := false
+	for child in get_children():
+		var scr: Variant = child.get_script()
+		if scr != null and str(scr.resource_path).ends_with("hiring/hiring_board.gd") and is_instance_valid(child):
+			board_open = child.visible
+			print("[AgentOffice] debug-activity: hiring board child visible=%s" % child.visible)
+	print("[AgentOffice] debug-activity: hiring_board_visible=%s" % board_open)
+	await get_tree().create_timer(58.0).timeout
+	_flush_debug_activity()
+
+
+func _log_debug_activity(agent: Agent, state: String, target: String) -> void:
+	var elapsed := (Time.get_ticks_msec() - _debug_activity_started_ms) / 1000.0
+	var desk := agent.desk
+	var away := target != "" and target != desk
+	var entry := {
+		"t": snappedf(elapsed, 0.1),
+		"id": agent.agent_id,
+		"state": state,
+		"target": target,
+		"wp": agent.current_waypoint,
+		"pos": [snappedf(agent.global_position.x, 0.1), snappedf(agent.global_position.y, 0.1)],
+		"nav": not agent.is_at_destination(),
+		"away": away,
+	}
+	_debug_activity_log.append(entry)
+	if away or state in ["IDLE", "COLLAB"]:
+		print("[AgentOffice] walk/state t=%.1f %s %s -> %s nav=%s" % [
+			elapsed, agent.agent_id, state, target if target != "" else agent.current_waypoint,
+			entry["nav"]])
+
+
+func _flush_debug_activity() -> void:
+	var walks: Array = []
+	for e in _debug_activity_log:
+		if e.get("away", false):
+			walks.append(e)
+	print("[AgentOffice] debug-activity DONE entries=%d walks=%d" % [_debug_activity_log.size(), walks.size()])
+	for e in walks:
+		print("[AgentOffice] WALK %s" % e)
+	var out := OS.get_environment("HOME") + "/Documents/GitHub/_agent_extracts/godot_activity_60s.json"
+	var f := FileAccess.open(out, FileAccess.WRITE)
+	if f:
+		f.store_string(JSON.stringify({"entries": _debug_activity_log, "walks": walks}, "\t"))
+		f.close()
+		print("[AgentOffice] wrote %s" % out)
 
 
 func _take_screenshot() -> void:

@@ -13,6 +13,7 @@ signal hire_submit(name: String, role: String)  ## real hire from /hire Name | R
 signal verbose_toggled(verbose: bool)  ## /verbose or /quiet
 signal job_description_requested(agent_id: String)
 signal dm_requested(to_agent: String, text: String)
+signal kb_requested(subcommand: String, arg: String)
 
 const Ansi := preload("res://ansi.gd")
 const SLIDE_TIME := 0.28
@@ -202,7 +203,7 @@ func open_for(a: Agent) -> void:
 	_render_all()
 	panel.visible = true
 	_animate_to(1.0)
-	prompt_input.placeholder_text = "Prompt for %s — /jd · /verbose · /msg" % a.display_name
+	prompt_input.placeholder_text = "Prompt for %s — /jd · /verbose · /msg · /kb" % a.display_name
 	prompt_input.grab_focus.call_deferred()
 	if archive_button:
 		archive_button.visible = false
@@ -282,13 +283,37 @@ func _update_state(s: String) -> void:
 
 
 func _submit() -> void:
-	if agent == null:
-		return
 	var text := prompt_input.text.strip_edges()
 	if text.is_empty():
 		return
-	prompt_input.clear()
 	var lower := text.to_lower()
+	# /kb works even with no agent selected (Server Room knowledge library).
+	if lower == "/kb" or lower.begins_with("/kb "):
+		prompt_input.clear()
+		var rest := text.substr(3).strip_edges()
+		if rest.is_empty() or rest.to_lower() in ["list", "ls"]:
+			kb_requested.emit("list", "")
+			append_system("knowledge: listing…")
+			return
+		var parts := rest.split(" ", false, 1)
+		var subcmd := parts[0].strip_edges().to_lower()
+		var arg := parts[1].strip_edges() if parts.size() > 1 else ""
+		if subcmd in ["rm", "remove", "del", "delete"]:
+			if arg == "":
+				append_system("usage: /kb rm <filename.md>")
+				return
+			kb_requested.emit("rm", arg)
+			append_system("knowledge: removing %s…" % arg)
+			return
+		if subcmd in ["list", "ls"]:
+			kb_requested.emit("list", "")
+			append_system("knowledge: listing…")
+			return
+		append_system("usage: /kb  |  /kb rm <filename.md>")
+		return
+	if agent == null:
+		return
+	prompt_input.clear()
 	# Local terminal commands (not sent to the harness as prompts).
 	if lower == "/verbose" or lower == "/quiet":
 		verbose_toggled.emit(lower == "/verbose")

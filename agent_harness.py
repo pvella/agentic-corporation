@@ -695,6 +695,10 @@ class Hub:
             await self._action_preview_hire_fire(ws, msg)
         elif action == "ADD_KNOWLEDGE":
             await self._action_add_knowledge(ws, msg)
+        elif action == "LIST_KNOWLEDGE":
+            await self._action_list_knowledge(ws, msg)
+        elif action == "REMOVE_KNOWLEDGE":
+            await self._action_remove_knowledge(ws, msg)
         elif action == "SEND_DM":
             await self._action_send_dm(ws, msg)
         elif action == "HUMAN_REPLY":
@@ -702,6 +706,11 @@ class Hub:
         elif action == "ASK_HUMAN":
             # Client / test path: surface an ask-human dialog for an agent.
             await self._action_ask_human(ws, msg)
+        elif action == "OPEN_HIRING_BOARD":
+            # Test hook: ask the Godot client to open the Hiring Board (same as + Add Agent).
+            payload = {"type": "OPEN_HIRING_BOARD"}
+            self.emit(payload)
+            await self.reply(ws, {"type": "ACK", "action": "OPEN_HIRING_BOARD"})
         else:
             await self.reply(ws, {"type": "ERROR", "message": f"unknown action '{action}'"})
 
@@ -750,6 +759,91 @@ class Hub:
         self.emit(payload)
         log.info("ADD_KNOWLEDGE %s -> %s", src_path, dest)
         await self.reply(ws, {"type": "ACK", "action": "ADD_KNOWLEDGE", "filename": dest.name, "title": title})
+
+    def _knowledge_dir(self) -> Path:
+        root = Path(self.office_path).resolve().parent if self.office_path else Path.cwd()
+        return root / "knowledge"
+
+    def _list_knowledge_files(self) -> list[dict[str, Any]]:
+        dest_dir = self._knowledge_dir()
+        if not dest_dir.is_dir():
+            return []
+        out: list[dict[str, Any]] = []
+        for p in sorted(dest_dir.iterdir(), key=lambda x: x.name.lower()):
+            if not p.is_file() or p.suffix.lower() != ".md":
+                continue
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            content = ""
+            try:
+                content = p.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                content = ""
+            out.append({
+                "name": p.name,
+                "filename": p.name,
+                "title": p.stem.replace("_", " ").replace("-", " "),
+                "path": str(p),
+                "size": int(st.st_size),
+                "mtime": float(st.st_mtime),
+                "added": float(st.st_mtime),
+                "content": content,
+            })
+        return out
+
+    async def _action_list_knowledge(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        files = self._list_knowledge_files()
+        payload = {"type": "KNOWLEDGE_LIST", "files": files, "count": len(files)}
+        await self.reply(ws, payload)
+        # Also broadcast so any open panel can refresh.
+        self.emit(payload)
+
+    async def _action_remove_knowledge(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        raw = str(msg.get("name", msg.get("filename", msg.get("path", "")))).strip()
+        if not raw:
+            await self.reply(ws, {"type": "ERROR", "action": "REMOVE_KNOWLEDGE", "message": "name required"})
+            return
+        dest_dir = self._knowledge_dir()
+        # Accept basename only; reject path traversal.
+        name = Path(raw).name
+        target = dest_dir / name
+        if not target.is_file() or target.suffix.lower() != ".md":
+            # Try stem match / case-insensitive.
+            found = None
+            if dest_dir.is_dir():
+                for p in dest_dir.iterdir():
+                    if p.is_file() and p.suffix.lower() == ".md" and (
+                        p.name == name or p.stem == Path(name).stem
+                        or p.name.lower() == name.lower()
+                    ):
+                        found = p
+                        break
+            if found is None:
+                await self.reply(ws, {"type": "ERROR", "action": "REMOVE_KNOWLEDGE",
+                                     "message": f"not found: {name}"})
+                return
+            target = found
+            name = target.name
+        try:
+            target.unlink()
+        except OSError as exc:
+            await self.reply(ws, {"type": "ERROR", "action": "REMOVE_KNOWLEDGE", "message": str(exc)})
+            return
+        title = Path(name).stem.replace("_", " ").replace("-", " ")
+        payload = {
+            "type": "KNOWLEDGE_REMOVED",
+            "filename": name,
+            "name": name,
+            "title": title,
+            "path": str(target),
+            "files": self._list_knowledge_files(),
+        }
+        self.emit(payload)
+        log.info("REMOVE_KNOWLEDGE %s", target)
+        await self.reply(ws, {"type": "ACK", "action": "REMOVE_KNOWLEDGE",
+                              "filename": name, "title": title})
 
     async def _action_send_dm(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
         to_raw = str(msg.get("to", "")).strip()
@@ -1166,9 +1260,9 @@ class Tempo:
 
 
 TEMPOS: dict[str, Tempo] = {
-    "calm": Tempo(work=(20, 60), log_every=(5, 12), think_chance=0.15, think=(4, 8), break_chance=0.25,
+    "calm": Tempo(work=(20, 60), log_every=(5, 12), think_chance=0.15, think=(4, 8), break_chance=0.55,
                   break_time=(15, 30), collab_every=(180, 360), collab_time=(25, 45), chat_every=(7, 12),
-                  walk_slot=6, foosball_every=(300, 600), foosball_time=(40, 80), chat_group_every=(60, 150),
+                  walk_slot=2.5, foosball_every=(300, 600), foosball_time=(40, 80), chat_group_every=(60, 150),
                   chat_time=(30, 60)),
     "normal": Tempo(work=(12, 30), log_every=(3, 7), think_chance=0.2, think=(3, 6), break_chance=0.4,
                     break_time=(10, 20), collab_every=(60, 120), collab_time=(15, 30), chat_every=(5, 9),
@@ -1376,21 +1470,37 @@ class AmbientDirector:
         return random.uniform(*span)
 
     def can_walk(self) -> bool:
-        return self.now() >= self.walk_free_at
+        # Two independent walk slots (A/B) so calm offices with many agents still move.
+        now = self.now()
+        a = getattr(self, "walk_free_at", 0.0)
+        b = getattr(self, "walk_free_at_b", 0.0)
+        return now >= a or now >= b
 
     def reserve_walk(self, factor: float = 1.0) -> None:
-        self.walk_free_at = self.now() + self.tempo.walk_slot * factor
+        now = self.now()
+        slot = self.tempo.walk_slot * factor
+        a = getattr(self, "walk_free_at", 0.0)
+        b = getattr(self, "walk_free_at_b", 0.0)
+        if now >= a:
+            self.walk_free_at = now + slot
+        else:
+            self.walk_free_at_b = now + slot
 
     def desk_span(self) -> tuple[float, float]:
         """Time at the desk between ambient activities."""
         t = self.tempo.work
-        return (t[0] * 1.5, t[1] * 1.5) if self.idle_only else t
+        # Idle-only: shorter sits so the office still wanders (walk / canteen / chat).
+        # Mock/cli: also shorten vs raw tempo so calm offices are visibly alive.
+        if self.idle_only:
+            return (t[0] * 0.45, t[1] * 0.7)
+        return (t[0] * 0.55, t[1] * 0.75)
 
     def place_initial(self, agent: Agent) -> None:
         """Agents start seated at their desks (staggered session ends)."""
         agent.state, agent.target, agent.activity = ("IDLE" if self.idle_only else "WORKING"), agent.desk, "desk"
         agent.text = ""
-        agent.activity_until = self.rand(self.desk_span()) * (random.uniform(0.1, 1.0) if self.idle_only else 1.0)
+        # Always stagger so the floor does not sit frozen for a full desk_span.
+        agent.activity_until = self.rand(self.desk_span()) * random.uniform(0.08, 0.55)
         agent.next_event_at = self.rand(self.tempo.log_every) + random.uniform(0, 6)
 
     def after_prompt(self, agent: Agent) -> None:
@@ -1490,7 +1600,7 @@ class AmbientDirector:
         maybe a wander to a break spot."""
         t = self.tempo
         if now >= agent.activity_until:
-            if random.random() < 0.55 and self.can_walk():
+            if random.random() < 0.72 and self.can_walk():
                 self.reserve_walk()
                 agent.activity = "break"
                 agent.activity_until = now + self.rand(t.break_time) * 1.5
@@ -2154,9 +2264,12 @@ class Harness:
                       or (args.mode == "cli" and args.ambient))
         self.director: AmbientDirector | None = None
         if ambient_on:
+            # Live/idle-only: include CLI-bound agents so they wander when not
+            # on a real report. Mock/cli: keep excluding bound bots from fake work.
             self.director = AmbientDirector(
                 self.hub, self.tempo, args.speed,
-                agent_filter=lambda a: not (self.cli and self.cli.handles(a.agent_id)),
+                agent_filter=(lambda _a: True) if args.mode == "live"
+                else (lambda a: not (self.cli and self.cli.handles(a.agent_id))),
                 idle_only=args.mode == "live")
             self.hub.on_release = self.director.after_finish
             for agent in self.hub.agents.values():

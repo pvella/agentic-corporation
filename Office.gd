@@ -412,7 +412,7 @@ func _build_canteen(cell: Dictionary, r: Rect2) -> void:
 
 func _build_server(cell: Dictionary, r: Rect2) -> void:
 	areas.append({"kind": "server", "rect": r, "theme": "tile", "name": cell.name})
-	signs.append({"room_id": "", "name": str(cell.name), "rect": _sign_rect(r, str(cell.name)), "color": Color("#26a69a"), "clickable": false})
+	signs.append({"room_id": "__knowledge__", "name": str(cell.name), "rect": _sign_rect(r, str(cell.name)), "color": Color("#26a69a"), "clickable": true})
 	var p := r.position
 	# Cold aisle of server racks.
 	for i in 4:
