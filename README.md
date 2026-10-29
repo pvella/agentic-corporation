@@ -457,6 +457,7 @@ godot --headless --path . --script res://tests/smoke_test.gd    # layouts, spawn
 ## Roadmap
 
 - **Art:** optional sprite sheets through the existing `Agent.sprite_frames` hook (animations `idle`, `walk`, `work`, `think`, `collab`, `phone`), e.g. CC0 packs, recorded in `CREDITS.md`.
+- **Claude Code hooks (live now):** project `.claude/settings.json` posts `report_office_status` on SessionStart / tool use / Stop so a sprite shows live activity. See [docs/claude-code-hooks.md](docs/claude-code-hooks.md). Default character: Chief of Staff (`$OFFICE_AGENT` to change).
 - **Claude Code:** parse `claude -p --output-format stream-json` so tool calls drive desk work (tool name in the bubble), assistant text becomes thinking or speech bubbles, and `result` ends the run.
 - **Other agents:** adapters for Grok and Hermes CLIs and for other agent output formats.
 - **Security:** an auth token on the WebSocket too, so the dashboard could be used remotely.
