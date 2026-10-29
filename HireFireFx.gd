@@ -1,6 +1,7 @@
 ## Cartoon hire / fire pageantry for Agent Office.
 ## Hire: beam of light from above, sparkles, sprite fades in at the desk.
-## Fire: randomly pick a playful pixel-art exit (never gory). Variants:
+## Fire: ~6–8s playful pixel-art exit (never gory); camera focuses on the agent.
+## Variants:
 ##   medics   — agent topples, paramedics drag them out the door
 ##   stomp    — giant cartoon foot stomps flat + screen shake, janitor mops
 ##   anvil    — Acme anvil drops, puff of smoke, desk cleared
@@ -30,6 +31,9 @@ var _sparkles: Array[Dictionary] = []
 var _shake_amp := 0.0
 var _cam: Node = null
 var _cam_orig := Vector2.ZERO
+var _cam_orig_pos := Vector2.ZERO
+var _cam_orig_zoom := Vector2.ONE
+var _did_cam_focus := false
 var _flat_alpha := 0.0
 var _mop_x := -40.0
 var _anvil_y := -180.0
@@ -92,6 +96,15 @@ func play_fire(agent: Node, entrance_pos: Vector2, forced: String = "") -> void:
 	_cam = get_viewport().get_camera_2d()
 	if _cam:
 		_cam_orig = _cam.offset
+		_cam_orig_pos = _cam.position
+		_cam_orig_zoom = _cam.zoom
+		_did_cam_focus = true
+		var focus := Iso.to_screen(_from_world)
+		if _cam.has_method("focus_on"):
+			var z := clampf(_cam.zoom.x * 1.25, 0.45, 2.2)
+			_cam.focus_on(focus, z)
+		else:
+			_cam.position = focus
 	match variant:
 		"medics":
 			_setup_medics()
@@ -173,6 +186,13 @@ func _process_hire(delta: float) -> void:
 func _finish_fire() -> void:
 	if _cam:
 		_cam.offset = _cam_orig
+		if _did_cam_focus:
+			# Ease back toward prior framing (user can still pan).
+			if _cam.has_method("focus_on"):
+				_cam.focus_on(_cam_orig_pos, _cam_orig_zoom.x)
+			else:
+				_cam.position = _cam_orig_pos
+				_cam.zoom = _cam_orig_zoom
 	finished.emit("fire", agent_id)
 	queue_free()
 
@@ -239,7 +259,7 @@ func _process_anvil(_delta: float) -> void:
 			_shake_amp = 14.0
 			_hide_agent()
 			_spawn_puff(14)
-	elif _phase == 1 and _t >= 2.8:
+	elif _phase == 1 and _t >= 4.5:
 		_finish_fire()
 	elif _phase == 1:
 		_anvil_y = -8.0
@@ -251,13 +271,13 @@ func _process_trapdoor(_delta: float) -> void:
 		_wave_hand = sin(_t * 10.0) * 10.0
 		if _agent and is_instance_valid(_agent) and _agent.view:
 			_agent.view.position.y = lerpf(0.0, 8.0, _trap_open)
-		if _t >= 2.2:
+		if _t >= 3.0:
 			_phase = 1
 			_t = 0.0
 			_hide_agent()
 	elif _phase == 1:
-		_trap_open = clampf(1.0 - _t / 1.4, 0.0, 1.0)
-		if _t >= 2.4:
+		_trap_open = clampf(1.0 - _t / 2.0, 0.0, 1.0)
+		if _t >= 3.5:
 			_finish_fire()
 
 
@@ -265,23 +285,23 @@ func _process_ufo(_delta: float) -> void:
 	if _phase == 0:
 		_ufo_y = lerpf(-180.0, -70.0, clampf(_t / 1.6, 0.0, 1.0))
 		_beam_alpha = clampf((_t - 0.5) / 0.8, 0.0, 1.0)
-		if _t >= 1.8:
+		if _t >= 2.2:
 			_phase = 1
 			_t = 0.0
 	elif _phase == 1:
 		_beam_alpha = 1.0
 		if _agent and is_instance_valid(_agent) and _agent.view:
-			_agent.view.modulate.a = clampf(1.0 - _t / 1.6, 0.0, 1.0)
-			_agent.view.position.y = -_t * 40.0
-			_agent.view.scale = Vector2.ONE * clampf(1.0 - _t / 1.8, 0.15, 1.0)
-		if _t >= 1.8:
+			_agent.view.modulate.a = clampf(1.0 - _t / 2.0, 0.0, 1.0)
+			_agent.view.position.y = -_t * 36.0
+			_agent.view.scale = Vector2.ONE * clampf(1.0 - _t / 2.2, 0.15, 1.0)
+		if _t >= 2.2:
 			_hide_agent()
 			_phase = 2
 			_t = 0.0
 	elif _phase == 2:
-		_ufo_y = lerpf(-70.0, -200.0, clampf(_t / 1.4, 0.0, 1.0))
-		_beam_alpha = clampf(1.0 - _t / 0.9, 0.0, 1.0)
-		if _t >= 1.6:
+		_ufo_y = lerpf(-70.0, -200.0, clampf(_t / 1.8, 0.0, 1.0))
+		_beam_alpha = clampf(1.0 - _t / 1.1, 0.0, 1.0)
+		if _t >= 2.0:
 			_finish_fire()
 
 

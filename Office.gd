@@ -12,6 +12,7 @@
 ## Waypoint naming (shared with agent_harness.py):
 ##   Desk_<agent_id> (or the member's "desk"), Coffee_Machine, Water_Cooler,
 ##   Vending_Machine, Sofa_1/2, Foosball_1..4, Canteen_Counter, Canteen_Seat_1..6,
+##   Yoga_Mat_1/2, Meditation_Cushion_1/2 (Rec Room),
 ##   Meeting_Table_1..N, Entrance;
 ##   isolated room <id>: <id>_Coffee, <id>_Water, <id>_Sofa_1/2,
 ##   <id>_Meeting_1..4, <id>_Entrance.
@@ -61,6 +62,7 @@ const THEMES := {
 	"tile": [Color("#e8e4dc"), Color("#d6d1c6")],
 	"carpet": [Color("#a99bc4"), Color("#9a8bb7")],
 	"lobby": [Color("#d7d2c8"), Color("#cbc4b8")],
+	"zen": [Color("#c8d9c4"), Color("#b5cbb0")],
 	"corridor": [Color("#bfb6a6"), Color("#b3aa99")],
 }
 
@@ -109,7 +111,8 @@ func build(cfg: Dictionary) -> void:
 		else:
 			team_rooms.append(r)
 			if spots.is_empty():
-				spots = ["Coffee_Machine", "Water_Cooler", "Sofa_1", "Sofa_2"]
+				spots = ["Coffee_Machine", "Water_Cooler", "Sofa_1", "Sofa_2",
+					"Yoga_Mat_1", "Yoga_Mat_2", "Meditation_Cushion_1", "Meditation_Cushion_2"]
 		room_break_spots[str(r.id)] = spots
 		for m: Dictionary in r.get("members", []):
 			var aid := str(m.agent_id)
@@ -140,6 +143,14 @@ func build(cfg: Dictionary) -> void:
 		bottom.append({"kind": "server", "name": server_name})
 	else:
 		top.append({"kind": "server", "name": server_name})
+	# Rec Room — yoga / meditation amenity.
+	var rec_name := "Rec Room"
+	if typeof(shared.get("rec_room", {})) == TYPE_DICTIONARY:
+		rec_name = str(shared.get("rec_room", {}).get("name", "Rec Room"))
+	if top.size() <= bottom.size():
+		top.append({"kind": "rec", "name": rec_name})
+	else:
+		bottom.append({"kind": "rec", "name": rec_name})
 	var has_lobby := false
 	while bottom.size() < top.size():
 		bottom.append({"kind": "lobby" if not has_lobby else "lounge"})
@@ -233,6 +244,7 @@ func _cell_size(cell: Dictionary) -> Vector2:
 		"break": return Vector2(480, 470)
 		"canteen": return Vector2(420, 470)
 		"server": return Vector2(380, 420)
+		"rec": return Vector2(400, 430)
 		"meeting":
 			var per_side := ceili(int(cell.seats) / 2.0)
 			return Vector2(maxf(360.0, per_side * 84.0 + 190.0), 450)
@@ -242,7 +254,7 @@ func _cell_size(cell: Dictionary) -> Vector2:
 func _corridor_wall(cell: Dictionary, r: Rect2) -> void:
 	if str(cell.kind) in ["lobby", "lounge"]:
 		return  # open onto the corridor
-	var door_w := 110.0 if str(cell.kind) in ["break", "meeting"] else DOOR
+	var door_w := 110.0 if str(cell.kind) in ["break", "meeting", "rec"] else DOOR
 	var cx := r.position.x + r.size.x * 0.5
 	walls.append(Rect2(r.position.x, r.position.y, cx - door_w * 0.5 - r.position.x, r.size.y))
 	walls.append(Rect2(cx + door_w * 0.5, r.position.y, r.end.x - cx - door_w * 0.5, r.size.y))
@@ -261,6 +273,8 @@ func _build_cell(cell: Dictionary, r: Rect2, is_top: bool) -> Rect2:
 			_build_canteen(cell, r)
 		"server":
 			_build_server(cell, r)
+		"rec":
+			_build_rec(cell, r)
 		"lobby":
 			areas.append({"kind": "lobby", "rect": r, "theme": "lobby", "name": "Lobby"})
 			_prop("reception", Rect2(r.position.x + r.size.x * 0.5 - 70, r.position.y + 70, 140, 38))
@@ -427,6 +441,40 @@ func _build_server(cell: Dictionary, r: Rect2) -> void:
 	_chat("Chat_Server", Vector2(p.x + r.size.x * 0.5, r.end.y - 36))
 
 
+
+func _build_rec(cell: Dictionary, r: Rect2) -> void:
+	areas.append({"kind": "rec", "rect": r, "theme": "zen", "name": cell.name})
+	signs.append({"room_id": "", "name": str(cell.name), "rect": _sign_rect(r, str(cell.name)), "color": Color("#7cb342"), "clickable": false})
+	var p := r.position
+	# Soft rug covering most of the floor (drawn as prop under mats).
+	_prop("rug", Rect2(p.x + 24, p.y + 70, r.size.x - 48, r.size.y - 120), {"sort_y": p.y + 72.0})
+	# Calm floor lamps in the corners.
+	_prop("lamp", Rect2(p.x + 18, p.y + 48, 22, 36), {"set": "rec"})
+	_prop("lamp", Rect2(r.end.x - 40, p.y + 48, 22, 36), {"set": "rec"})
+	# Water feature / fountain against the back wall.
+	_prop("fountain", Rect2(p.x + r.size.x * 0.5 - 28, p.y + 40, 56, 48), {"set": "rec"})
+	# Plants flanking the fountain.
+	_prop("plant", Rect2(p.x + r.size.x * 0.5 - 70, p.y + 44, 30, 30))
+	_prop("plant", Rect2(p.x + r.size.x * 0.5 + 40, p.y + 44, 30, 30))
+	_prop("plant", Rect2(p.x + 20, r.end.y - 52, 30, 30))
+	_prop("plant", Rect2(r.end.x - 50, r.end.y - 52, 30, 30))
+	# Yoga mats (standing poses).
+	var mat1 := Rect2(p.x + 48, p.y + 160, 70, 110)
+	var mat2 := Rect2(p.x + 140, p.y + 160, 70, 110)
+	_prop("yoga_mat", mat1, {"set": "rec", "tint": "#81c784"})
+	_prop("yoga_mat", mat2, {"set": "rec", "tint": "#aed581"})
+	_wp("Yoga_Mat_1", Vector2(mat1.get_center().x, mat1.get_center().y + 10), "down", "yoga")
+	_wp("Yoga_Mat_2", Vector2(mat2.get_center().x, mat2.get_center().y + 10), "down", "yoga")
+	# Meditation cushions (cross-legged sit).
+	var c1 := Rect2(p.x + 250, p.y + 180, 44, 36)
+	var c2 := Rect2(p.x + 310, p.y + 230, 44, 36)
+	_prop("cushion", c1, {"set": "rec", "tint": "#ce93d8"})
+	_prop("cushion", c2, {"set": "rec", "tint": "#b39ddb"})
+	_wp("Meditation_Cushion_1", Vector2(c1.get_center().x, c1.get_center().y - 2), "down", "meditate")
+	_wp("Meditation_Cushion_2", Vector2(c2.get_center().x, c2.get_center().y - 2), "down", "meditate")
+	_chat("Chat_Rec", Vector2(p.x + r.size.x * 0.35, r.end.y - 40))
+
+
 func _build_meeting(cell: Dictionary, r: Rect2) -> void:
 	areas.append({"kind": "meeting", "rect": r, "theme": "carpet", "name": cell.name})
 	signs.append({"room_id": "", "name": str(cell.name), "rect": _sign_rect(r, str(cell.name)), "color": Color("#7e6aa6"), "clickable": false})
@@ -501,7 +549,8 @@ func _prop(kind: String, r: Rect2, extra: Dictionary = {}) -> void:
 	var d := {"kind": kind, "rect": r, "sort_y": r.end.y}
 	d.merge(extra, true)
 	props.append(d)
-	if kind != "chair":
+	# Walkable surface props (mats, rugs, cushions, floor lamps glow) must not block nav.
+	if kind not in ["chair", "rug", "yoga_mat", "cushion"]:
 		obstacles.append(r)
 
 
@@ -640,6 +689,12 @@ func _draw_floor(a: Dictionary) -> void:
 					draw_line(Vector2(x, y), Vector2(x, minf(y + 20, r.end.y)), Color(c2, 0.9), 1.0)
 					x += 140.0
 				row += 1
+	if a.kind == "rec":
+		# Soft warm calm lighting wash.
+		draw_rect(r.grow(-8), Color(1.0, 0.95, 0.7, 0.08))
+		var rug := Rect2(r.position.x + 28, r.position.y + 80, r.size.x - 56, r.size.y - 130)
+		_rrect(rug, 18, Color("#8d6e63", 0.35))
+		_rrect(rug.grow(-6), 14, Color("#a1887f", 0.28))
 	if a.has("color") and a.kind in ["room", "wing"]:
 		# A soft rug in the team colour under the desks.
 		var c: Color = a.color

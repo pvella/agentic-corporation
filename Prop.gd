@@ -38,7 +38,7 @@ func setup(d: Dictionary, slice: Rect2 = Rect2()) -> void:
 		position = Iso.to_screen(iso_anchor())
 	else:
 		position = Vector2(rect.position.x, float(d.get("sort_y", rect.end.y))) * Iso.SCALE
-	set_process(kind in ["desk", "foosball", "servers", "coffee", "water", "plant", "vending", "fridge", "microwave"])
+	set_process(kind in ["desk", "foosball", "servers", "coffee", "water", "plant", "vending", "fridge", "microwave", "fountain", "lamp"])
 
 
 ## World point whose depth (x + y) orders this prop against people.
@@ -87,6 +87,11 @@ func _draw() -> void:
 		"menu": _draw_menu()
 		"microwave": _draw_microwave()
 		"bin": _draw_bin()
+		"yoga_mat": _iso_yoga_mat()
+		"cushion": _iso_cushion()
+		"rug": _iso_rug()
+		"fountain": _iso_fountain()
+		"lamp": _iso_lamp()
 
 
 func _rr(r: Rect2, radius: float, c: Color) -> void:
@@ -494,6 +499,11 @@ func _draw_iso() -> void:
 		"foosball": _iso_foosball()
 		"table": _iso_table()
 		"plant": _iso_plant()
+		"yoga_mat": _draw_yoga_mat()
+		"cushion": _draw_cushion()
+		"rug": _draw_rug()
+		"fountain": _draw_fountain()
+		"lamp": _draw_lamp()
 		"reception": _iso_reception()
 		"bench": _iso_bench()
 		"servers": _iso_servers()
@@ -1024,3 +1034,106 @@ func _iso_bin() -> void:
 	# Lid flap
 	draw_rect(Rect2(r.position.x + 4, r.position.y + 3, r.size.x - 8, 2), Color("#78909c"))
 	_plane_reset()
+
+
+func _draw_rug() -> void:
+	var r := clip if clip.has_area() else rect
+	_rr(r, 16, Color("#8d6e63", 0.55))
+	_rr(r.grow(-8), 12, Color("#a1887f", 0.4))
+	# Soft fringe
+	for i in 8:
+		var x := r.position.x + 10 + i * (r.size.x - 20) / 7.0
+		draw_line(Vector2(x, r.position.y + 2), Vector2(x, r.position.y + 8), Color("#6d4c41", 0.5), 1.5)
+
+
+func _draw_yoga_mat() -> void:
+	var r := clip if clip.has_area() else rect
+	var tint := Color.from_string(str(data.get("tint", "#81c784")), Color("#81c784"))
+	_shadow(r, 0.12)
+	_rr(r, 6, tint.darkened(0.15))
+	_rr(r.grow(-3), 5, tint)
+	# Rolled edge stripe
+	draw_rect(Rect2(r.position.x + 4, r.position.y + 4, r.size.x - 8, 4), tint.lightened(0.2))
+	draw_rect(Rect2(r.position.x + 4, r.end.y - 8, r.size.x - 8, 4), tint.lightened(0.2))
+
+
+func _draw_cushion() -> void:
+	var r := clip if clip.has_area() else rect
+	var tint := Color.from_string(str(data.get("tint", "#ce93d8")), Color("#ce93d8"))
+	_shadow(r, 0.15)
+	# Roundish cushion
+	var c := r.get_center()
+	draw_circle(c + Vector2(1, 2), minf(r.size.x, r.size.y) * 0.48, Color(0, 0, 0, 0.18))
+	draw_circle(c, minf(r.size.x, r.size.y) * 0.48, tint.darkened(0.1))
+	draw_circle(c + Vector2(-2, -2), minf(r.size.x, r.size.y) * 0.38, tint.lightened(0.12))
+	# Button
+	draw_circle(c, 3.0, tint.darkened(0.25))
+
+
+func _draw_fountain() -> void:
+	var r := clip if clip.has_area() else rect
+	var c := r.get_center()
+	_shadow(r, 0.2)
+	# Stone basin
+	_rr(Rect2(r.position.x, r.position.y + r.size.y * 0.35, r.size.x, r.size.y * 0.55), 8, Color("#90a4ae"))
+	_rr(Rect2(r.position.x + 4, r.position.y + r.size.y * 0.4, r.size.x - 8, r.size.y * 0.4), 6, Color("#78909c"))
+	# Water pool
+	var water := Color(0.4, 0.75, 0.9, 0.75)
+	_rr(Rect2(r.position.x + 8, r.position.y + r.size.y * 0.45, r.size.x - 16, r.size.y * 0.28), 5, water)
+	# Animated ripples / spout
+	var bob := sin(_t * 4.0) * 2.0
+	draw_circle(Vector2(c.x, r.position.y + 10 + bob), 5.0, Color(0.6, 0.9, 1.0, 0.85))
+	for i in 3:
+		var yy := r.position.y + 16 + i * 6 + bob * 0.5
+		draw_circle(Vector2(c.x, yy), 2.0 + i * 0.8, Color(0.7, 0.95, 1.0, 0.55 - i * 0.12))
+	# Soft mist
+	draw_circle(Vector2(c.x - 8, r.position.y + 22), 3.0, Color(1, 1, 1, 0.25 + 0.1 * sin(_t * 3.0)))
+	draw_circle(Vector2(c.x + 8, r.position.y + 20), 2.5, Color(1, 1, 1, 0.2 + 0.1 * cos(_t * 2.5)))
+
+
+func _draw_lamp() -> void:
+	var r := clip if clip.has_area() else rect
+	var base := Rect2(r.position.x + r.size.x * 0.3, r.end.y - 10, r.size.x * 0.4, 8)
+	_rr(base, 2, Color("#5d4037"))
+	# Stem
+	draw_rect(Rect2(r.get_center().x - 2, r.position.y + 14, 4, r.size.y - 22), Color("#6d4c41"))
+	# Shade
+	var shade := Rect2(r.position.x + 2, r.position.y + 2, r.size.x - 4, 16)
+	_rr(shade, 3, Color("#ffe082"))
+	_rr(shade.grow(-2), 2, Color("#fff59d"))
+	# Calm warm glow pulse
+	var pulse := 0.18 + 0.08 * sin(_t * 1.6)
+	draw_circle(r.get_center() + Vector2(0, -2), 22.0, Color(1.0, 0.92, 0.55, pulse))
+
+
+func _iso_rug() -> void:
+	var tint := Color("#a1887f")
+	_box(rect, 0, 2, tint.darkened(0.1), tint, tint.lightened(0.05), false)
+
+
+func _iso_yoga_mat() -> void:
+	var tint := Color.from_string(str(data.get("tint", "#81c784")), Color("#81c784"))
+	_box(rect, 0, 3, tint.darkened(0.15), tint, tint.lightened(0.1), false)
+
+
+func _iso_cushion() -> void:
+	var tint := Color.from_string(str(data.get("tint", "#ce93d8")), Color("#ce93d8"))
+	var r := Rect2(rect.get_center() - Vector2(16, 12), Vector2(32, 24))
+	_box(r, 0, 10, tint.darkened(0.15), tint, tint.lightened(0.12), false)
+
+
+func _iso_fountain() -> void:
+	_box(rect, 0, 18, Color("#78909c"), Color("#90a4ae"), Color("#b0bec5"), false)
+	# Animated water blip in screen space near top of box
+	var bob := sin(_t * 4.0) * 2.0
+	var c := Iso.to_screen(rect.get_center()) - position
+	draw_circle(c + Vector2(0, -22 + bob), 4.0, Color(0.6, 0.9, 1.0, 0.85))
+
+
+func _iso_lamp() -> void:
+	var base := Rect2(rect.get_center() - Vector2(6, 6), Vector2(12, 12))
+	_box(base, 0, 28, Color("#5d4037"), Color("#6d4c41"), Color("#8d6e63"), false)
+	var pulse := 0.2 + 0.08 * sin(_t * 1.6)
+	var c := Iso.to_screen(rect.get_center()) - position
+	draw_circle(c + Vector2(0, -30), 16.0, Color(1.0, 0.92, 0.55, pulse))
+

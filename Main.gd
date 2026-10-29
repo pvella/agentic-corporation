@@ -1562,6 +1562,9 @@ func _play_fire(msg: Dictionary) -> void:
 				_desk_props[aid].queue_redraw()
 	)
 	var forced := str(msg.get("variant", _fire_preview_variant))
+	# Focus the camera on the agent being fired (HireFireFx also zooms; this anchors us).
+	if camera and camera.has_method("focus_on"):
+		camera.focus_on(Iso.to_screen(agent.global_position), clampf(camera.zoom.x * 1.2, 0.45, 2.2))
 	fx.play_fire(agent, entrance_pos, forced)
 	_fire_preview_variant = ""
 
