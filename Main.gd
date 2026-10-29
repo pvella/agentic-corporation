@@ -20,6 +20,9 @@
 ##   --open-drawer=AGENT_ID        open that agent's terminal once it spawns
 ##   --open-team=ROOM_ID           jump to a room and open its team summary once agents spawn
 ##   --dispatch=AGENT_ID:prompt    send a prompt once connected
+##   --preview-hire / --preview-fire / --preview-hire-fire
+##                                 demo the hire / fire pageantry once connected
+## Keyboard: V toggles view; Shift+H / Shift+F / Shift+B preview hire / fire / both
 ##   --zoom=1.5 --focus=x,y        start the camera zoomed in on a world point
 ##   --focus-agent=AGENT_ID        ...or on an agent (followed until the screenshot)
 ##   --view=iso|top                start in the isometric or the classic top-down view
@@ -39,6 +42,7 @@ const Ansi := preload("res://ansi.gd")
 const PropScript := preload("res://Prop.gd")
 const Office := preload("res://Office.gd")
 const Iso := preload("res://Iso.gd")
+const HireFireFxScript := preload("res://HireFireFx.gd")
 const AgentViewScript := preload("res://AgentView.gd")
 const SignTagScript := preload("res://SignTag.gd")
 const SETTINGS_PATH := "user://agent_office.cfg"
@@ -130,6 +134,16 @@ func _ready() -> void:
 	drawer.agent_requested.connect(func(id: String) -> void:
 		if agents.has(id):
 			_on_agent_clicked(agents[id]))
+	if drawer.has_signal("archive_requested"):
+		drawer.archive_requested.connect(func(id: String) -> void:
+			send_json({"action": "FIRE_AGENT", "agent_id": id})
+			drawer.close()
+		)
+	if drawer.has_signal("hire_requested"):
+		drawer.hire_requested.connect(func() -> void:
+			# Recruiter desk: demo a hire at a free desk (preview cleans up).
+			send_json({"action": "PREVIEW_HIRE_FIRE", "which": "hire"})
+		)
 	camera.zoom_changed.connect(_apply_ui_scale)
 	build_layout(Office.LEGACY_LAYOUT, true)
 	_backoff = reconnect_min
@@ -147,11 +161,23 @@ func _process(delta: float) -> void:
 
 func _unhandled_key_input(event: InputEvent) -> void:
 	var k := event as InputEventKey
-	if k and k.pressed and not k.echo and k.keycode == KEY_V:
+	if k and k.pressed and not k.echo:
 		if get_viewport().gui_get_focus_owner() is LineEdit or get_viewport().gui_get_focus_owner() is TextEdit:
 			return
-		set_view_mode(not Iso.enabled)
-		get_viewport().set_input_as_handled()
+		if k.keycode == KEY_V:
+			set_view_mode(not Iso.enabled)
+			get_viewport().set_input_as_handled()
+			return
+		# Preview hire / fire pageantry (Shift+H / Shift+F), or both (Shift+B).
+		if k.shift_pressed and k.keycode == KEY_H:
+			send_json({"action": "PREVIEW_HIRE_FIRE", "which": "hire"})
+			get_viewport().set_input_as_handled()
+		elif k.shift_pressed and k.keycode == KEY_F:
+			send_json({"action": "PREVIEW_HIRE_FIRE", "which": "fire"})
+			get_viewport().set_input_as_handled()
+		elif k.shift_pressed and k.keycode == KEY_B:
+			send_json({"action": "PREVIEW_HIRE_FIRE", "which": "both"})
+			get_viewport().set_input_as_handled()
 
 
 func _exit_tree() -> void:
@@ -585,6 +611,10 @@ func handle_message(msg: Dictionary) -> void:
 					drawer.append_system("in %s's inbox (%d unread)" % [drawer.agent.display_name, int(msg.get("unread", 0))], "#e5c07b")
 				else:
 					drawer.append_system("prompt accepted by harness (queue: %d)" % int(msg.get("queued", 0)), "#56b6c2")
+		"AGENT_HIRE":
+			_play_hire(msg)
+		"AGENT_FIRE":
+			_play_fire(msg)
 		"INBOX":
 			var agent := _get_or_spawn(str(msg.get("agent_id", "")))
 			if agent:
@@ -696,6 +726,54 @@ func _get_or_spawn(id: String) -> Agent:
 		return agents[id]
 	# Unknown agent (e.g. harness added one after our snapshot): spawn with defaults.
 	return _spawn_agent({"agent_id": id, "name": id.trim_suffix("_agent").capitalize()})
+
+
+
+func _play_hire(msg: Dictionary) -> void:
+	var id := str(msg.get("agent_id", ""))
+	if id.is_empty():
+		return
+	var agent: Agent = agents.get(id)
+	if agent == null:
+		agent = _spawn_agent(msg)
+	var desk_name := str(msg.get("desk", agent.desk if agent else ""))
+	var desk_pos := agent.global_position
+	if desk_name != "" and waypoints.has(desk_name):
+		desk_pos = (waypoints[desk_name] as Marker2D).global_position
+		_route(agent, desk_name, true)
+	var fx: Node2D = HireFireFxScript.new()
+	agents_root.add_child(fx)
+	fx.play_hire(agent, desk_pos)
+
+
+func _play_fire(msg: Dictionary) -> void:
+	var id := str(msg.get("agent_id", ""))
+	var agent: Agent = agents.get(id)
+	if agent == null:
+		return
+	# Optional delay so a hire-then-fire preview can play the beam first.
+	var after_ms := int(msg.get("after_ms", 0))
+	if after_ms > 0:
+		get_tree().create_timer(after_ms / 1000.0).timeout.connect(func() -> void:
+			_play_fire({"agent_id": id, "desk": msg.get("desk", ""), "room": msg.get("room", "")})
+		)
+		return
+	var entrance_name := "%s_Entrance" % agent.room_id if waypoints.has("%s_Entrance" % agent.room_id) else "Entrance"
+	var entrance_pos := agent.global_position
+	if waypoints.has(entrance_name):
+		entrance_pos = (waypoints[entrance_name] as Marker2D).global_position
+	elif waypoints.has("Entrance"):
+		entrance_pos = (waypoints["Entrance"] as Marker2D).global_position
+	var fx: Node2D = HireFireFxScript.new()
+	agents_root.add_child(fx)
+	fx.finished.connect(func(kind: String, aid: String) -> void:
+		if kind == "fire":
+			_remove_agent(aid)
+			if _desk_props.has(aid):
+				_desk_props[aid].owner_agent = null
+				_desk_props[aid].queue_redraw()
+	)
+	fx.play_fire(agent, entrance_pos)
 
 
 func _spawn_agent(data: Dictionary) -> Agent:
@@ -935,6 +1013,12 @@ func _parse_user_args() -> void:
 				var parts := value.split(":", true, 1)
 				if parts.size() == 2:
 					_pending_dispatch = {"action": "DISPATCH_PROMPT", "agent_id": parts[0], "prompt": parts[1]}
+			"--preview-hire":
+				_pending_dispatch = {"action": "PREVIEW_HIRE_FIRE", "which": "hire"}
+			"--preview-fire":
+				_pending_dispatch = {"action": "PREVIEW_HIRE_FIRE", "which": "fire"}
+			"--preview-hire-fire":
+				_pending_dispatch = {"action": "PREVIEW_HIRE_FIRE", "which": "both"}
 
 
 func _take_screenshot() -> void:

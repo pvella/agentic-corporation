@@ -7,6 +7,8 @@ extends CanvasLayer
 signal prompt_submitted(agent_id: String, prompt: String)
 signal closed
 signal agent_requested(agent_id: String)  ## a member was clicked in a team summary
+signal archive_requested(agent_id: String)  ## archive / fire this agent
+signal hire_requested  ## recruiter desk: open a hire preview / prompt
 
 const Ansi := preload("res://ansi.gd")
 const SLIDE_TIME := 0.28
@@ -35,11 +37,33 @@ var _showing_placeholder := false
 @onready var footer: HBoxContainer = $Panel/Margin/VBox/Footer
 
 
+var archive_button: Button
+var hire_button: Button
+
 func _ready() -> void:
 	close_button.pressed.connect(close)
 	send_button.pressed.connect(_submit)
 	prompt_input.text_submitted.connect(func(_t: String) -> void: _submit())
 	log_view.meta_clicked.connect(func(meta: Variant) -> void: agent_requested.emit(str(meta)))
+	# Archive (fire) button in the header — cartoon medics carry the agent out.
+	archive_button = Button.new()
+	archive_button.text = "Archive"
+	archive_button.tooltip_text = "Archive this bot (medics + stretcher)"
+	archive_button.visible = false
+	close_button.get_parent().add_child(archive_button)
+	close_button.get_parent().move_child(archive_button, close_button.get_index())
+	archive_button.pressed.connect(func() -> void:
+		if agent and is_instance_valid(agent):
+			archive_requested.emit(agent.agent_id)
+	)
+	# Hire button — shown for the recruiter (dr_eggbot).
+	hire_button = Button.new()
+	hire_button.text = "Hire…"
+	hire_button.tooltip_text = "Recruiter desk: preview hiring a new bot"
+	hire_button.visible = false
+	close_button.get_parent().add_child(hire_button)
+	close_button.get_parent().move_child(hire_button, close_button.get_index())
+	hire_button.pressed.connect(func() -> void: hire_requested.emit())
 	# Monospace font for the terminal body.
 	var mono := SystemFont.new()
 	mono.font_names = PackedStringArray(["DejaVu Sans Mono", "Menlo", "Consolas", "Liberation Mono", "monospace"])
@@ -73,6 +97,10 @@ func open_team(room: Dictionary, members: Array) -> void:
 	team_room = room
 	team_members = members
 	footer.visible = false
+	if archive_button:
+		archive_button.visible = false
+	if hire_button:
+		hire_button.visible = false
 	name_label.text = str(room.get("name", "Team"))
 	name_label.add_theme_color_override("font_color", Color.from_string(str(room.get("color", "#ffffff")), Color.WHITE).lightened(0.3))
 	_render_team()

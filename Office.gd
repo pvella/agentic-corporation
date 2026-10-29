@@ -3,15 +3,16 @@
 ## rugs, walls, signs). Furniture that agents can stand behind is drawn by
 ## y-sorted Prop nodes that Main creates from `props`.
 ##
-## Layout: team rooms and the shared Break Room / Meeting Room sit in two rows
-## either side of a central corridor, each with a door onto it. A filler cell
-## becomes the Lobby (main entrance). Rooms marked "isolated" (e.g. the PTC
-## wing) are built as a separate walled wing to the right, with their own door,
-## kitchenette and meeting nook, and no connection to the main building.
+## Layout: team rooms and the shared Break Room / Meeting Room / Canteen sit in
+## two rows either side of a central corridor, each with a door onto it. A filler
+## cell becomes the Lobby (main entrance). Rooms marked "isolated" are built as a
+## separate walled wing to the right, with their own door, kitchenette and meeting
+## nook, and no connection to the main building.
 ##
 ## Waypoint naming (shared with agent_harness.py):
 ##   Desk_<agent_id> (or the member's "desk"), Coffee_Machine, Water_Cooler,
-##   Vending_Machine, Sofa_1/2, Foosball_1..4, Meeting_Table_1..N, Entrance;
+##   Vending_Machine, Sofa_1/2, Foosball_1..4, Canteen_Counter, Canteen_Seat_1..6,
+##   Meeting_Table_1..N, Entrance;
 ##   isolated room <id>: <id>_Coffee, <id>_Water, <id>_Sofa_1/2,
 ##   <id>_Meeting_1..4, <id>_Entrance.
 ##   Chat spots (small talk, 3 slots facing each other, _1 west / _2 east /
@@ -122,6 +123,12 @@ func build(cfg: Dictionary) -> void:
 	top.insert(mini(1, top.size()), {"kind": "break", "name": str(shared.get("break_room", {}).get("name", "Break Room"))})
 	var seats := clampi(int(shared.get("meeting_room", {}).get("seats", 6)), 2, 8)
 	bottom.insert(mini(1, bottom.size()), {"kind": "meeting", "name": str(shared.get("meeting_room", {}).get("name", "Meeting Room")), "seats": seats})
+	var canteen_name := str(shared.get("canteen", {}).get("name", "Canteen")) if typeof(shared.get("canteen", {})) == TYPE_DICTIONARY else "Canteen"
+	# Put the canteen opposite the break room when space allows.
+	if top.size() >= bottom.size():
+		bottom.insert(mini(2, bottom.size()), {"kind": "canteen", "name": canteen_name})
+	else:
+		top.insert(mini(2, top.size()), {"kind": "canteen", "name": canteen_name})
 	var has_lobby := false
 	while bottom.size() < top.size():
 		bottom.append({"kind": "lobby" if not has_lobby else "lounge"})
@@ -207,6 +214,7 @@ func _cell_size(cell: Dictionary) -> Vector2:
 	match str(cell.kind):
 		"team": return _team_size(cell.room)
 		"break": return Vector2(480, 470)
+		"canteen": return Vector2(420, 470)
 		"meeting":
 			var per_side := ceili(int(cell.seats) / 2.0)
 			return Vector2(maxf(360.0, per_side * 84.0 + 190.0), 450)
@@ -231,6 +239,8 @@ func _build_cell(cell: Dictionary, r: Rect2, is_top: bool) -> Rect2:
 			_build_break(cell, r)
 		"meeting":
 			_build_meeting(cell, r)
+		"canteen":
+			_build_canteen(cell, r)
 		"lobby":
 			areas.append({"kind": "lobby", "rect": r, "theme": "lobby", "name": "Lobby"})
 			_prop("reception", Rect2(r.position.x + r.size.x * 0.5 - 70, r.position.y + 70, 140, 38))
@@ -316,6 +326,36 @@ func _build_break(cell: Dictionary, r: Rect2) -> void:
 	_wp("Foosball_3", Vector2(table.position.x - 22, table.position.y + 50), "right", "foosball")
 	_wp("Foosball_4", Vector2(table.end.x + 22, table.position.y + 50), "left", "foosball")
 	_prop("plant", Rect2(p.x + 14, r.end.y - 50, 34, 34))
+
+
+
+func _build_canteen(cell: Dictionary, r: Rect2) -> void:
+	areas.append({"kind": "canteen", "rect": r, "theme": "tile", "name": cell.name})
+	signs.append({"room_id": "", "name": str(cell.name), "rect": _sign_rect(r, str(cell.name)), "color": Color("#c47a4a"), "clickable": false})
+	var p := r.position
+	# Kitchen / service counter along the back wall.
+	_prop("counter", Rect2(p.x + 40, p.y + 48, 220, 36))
+	_prop("coffee", Rect2(p.x + 270, p.y + 44, 48, 40))
+	_wp("Canteen_Counter", Vector2(p.x + 150, p.y + 110), "up")
+	# Dining tables with chairs (seats face the table).
+	var tables := [
+		Vector2(p.x + 50, p.y + 180),
+		Vector2(p.x + 200, p.y + 180),
+		Vector2(p.x + 120, p.y + 300),
+	]
+	var seat_i := 1
+	for tpos in tables:
+		var table := Rect2(tpos.x, tpos.y, 72, 48)
+		_prop("table", table)
+		# Two seats per table.
+		_wp("Canteen_Seat_%d" % seat_i, Vector2(table.position.x - 18, table.get_center().y), "right", "chair")
+		seat_i += 1
+		_wp("Canteen_Seat_%d" % seat_i, Vector2(table.end.x + 18, table.get_center().y), "left", "chair")
+		seat_i += 1
+		_prop("chair", Rect2(table.position.x - 28, table.get_center().y - 12, 24, 24))
+		_prop("chair", Rect2(table.end.x + 4, table.get_center().y - 12, 24, 24))
+	_prop("plant", Rect2(r.end.x - 44, p.y + 16, 30, 30))
+	_chat("Chat_Canteen", Vector2(p.x + r.size.x * 0.5, r.end.y - 40))
 
 
 func _build_meeting(cell: Dictionary, r: Rect2) -> void:
