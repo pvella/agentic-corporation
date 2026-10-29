@@ -132,6 +132,14 @@ func build(cfg: Dictionary) -> void:
 		bottom.insert(mini(2, bottom.size()), {"kind": "canteen", "name": canteen_name})
 	else:
 		top.insert(mini(2, top.size()), {"kind": "canteen", "name": canteen_name})
+	# Server Room — knowledge drop / racks (shared amenity).
+	var server_name := "Server Room"
+	if typeof(shared.get("server_room", {})) == TYPE_DICTIONARY:
+		server_name = str(shared.get("server_room", {}).get("name", "Server Room"))
+	if bottom.size() <= top.size():
+		bottom.append({"kind": "server", "name": server_name})
+	else:
+		top.append({"kind": "server", "name": server_name})
 	var has_lobby := false
 	while bottom.size() < top.size():
 		bottom.append({"kind": "lobby" if not has_lobby else "lounge"})
@@ -224,6 +232,7 @@ func _cell_size(cell: Dictionary) -> Vector2:
 		"team": return _team_size(cell.room)
 		"break": return Vector2(480, 470)
 		"canteen": return Vector2(420, 470)
+		"server": return Vector2(380, 420)
 		"meeting":
 			var per_side := ceili(int(cell.seats) / 2.0)
 			return Vector2(maxf(360.0, per_side * 84.0 + 190.0), 450)
@@ -250,6 +259,8 @@ func _build_cell(cell: Dictionary, r: Rect2, is_top: bool) -> Rect2:
 			_build_meeting(cell, r)
 		"canteen":
 			_build_canteen(cell, r)
+		"server":
+			_build_server(cell, r)
 		"lobby":
 			areas.append({"kind": "lobby", "rect": r, "theme": "lobby", "name": "Lobby"})
 			_prop("reception", Rect2(r.position.x + r.size.x * 0.5 - 70, r.position.y + 70, 140, 38))
@@ -396,6 +407,24 @@ func _build_canteen(cell: Dictionary, r: Rect2) -> void:
 		_prop("chair", Rect2(table.end.x + 4, table.get_center().y - 12, 24, 24))
 	_prop("plant", Rect2(r.end.x - 44, p.y + 16, 30, 30))
 	_chat("Chat_Canteen", Vector2(p.x + r.size.x * 0.5, r.end.y - 40))
+
+
+
+func _build_server(cell: Dictionary, r: Rect2) -> void:
+	areas.append({"kind": "server", "rect": r, "theme": "tile", "name": cell.name})
+	signs.append({"room_id": "", "name": str(cell.name), "rect": _sign_rect(r, str(cell.name)), "color": Color("#26a69a"), "clickable": false})
+	var p := r.position
+	# Cold aisle of server racks.
+	for i in 4:
+		var rx := p.x + 28 + i * 78
+		_prop("servers", Rect2(rx, p.y + 48, 56, 120), {"set": "server", "rack_id": i})
+	# Drop zone marker in the centre aisle — files dropped on the office land here.
+	_prop("bench", Rect2(p.x + r.size.x * 0.5 - 50, p.y + 200, 100, 36), {"set": "server", "label": "DROP"})
+	_wp("Server_Room", Vector2(p.x + r.size.x * 0.5, p.y + 230), "up")
+	_wp("Server_Rack_1", Vector2(p.x + 56, p.y + 180), "up")
+	_wp("Server_Rack_2", Vector2(p.x + 210, p.y + 180), "up")
+	_prop("plant", Rect2(r.end.x - 40, r.end.y - 48, 28, 28))
+	_chat("Chat_Server", Vector2(p.x + r.size.x * 0.5, r.end.y - 36))
 
 
 func _build_meeting(cell: Dictionary, r: Rect2) -> void:

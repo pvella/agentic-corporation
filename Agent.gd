@@ -96,6 +96,9 @@ var _phone_until := 0.0
 var _ping_until := 0.0
 var _bubble_tween: Tween
 var _bubble_is_thought := false
+var _kill_mode_active: bool = false
+var _kill_hover: bool = false
+const KILL_HOVER_TINT := Color(1.0, 0.35, 0.35, 1.0)
 var _hovered := false
 var _selected := false
 var _ui_scale := 1.0
@@ -113,8 +116,16 @@ func _ready() -> void:
 	nav_agent.max_speed = move_speed
 	nav_agent.velocity_computed.connect(_on_velocity_computed)
 	click_area.input_event.connect(_on_click_area_input_event)
-	click_area.mouse_entered.connect(func() -> void: _hovered = true)
-	click_area.mouse_exited.connect(func() -> void: _hovered = false)
+	click_area.mouse_entered.connect(func() -> void:
+		_hovered = true
+		if _kill_mode_active:
+			_set_kill_hover(true)
+	)
+	click_area.mouse_exited.connect(func() -> void:
+		_hovered = false
+		if _kill_mode_active:
+			_set_kill_hover(false)
+	)
 	bubble.visible = false
 	bubble.modulate.a = 0.0
 	_anim_time = randf() * 10.0
@@ -1045,3 +1056,18 @@ func _on_click_area_input_event(_viewport: Node, event: InputEvent, _shape_idx: 
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		clicked.emit(self)
 		get_viewport().set_input_as_handled()
+
+func set_kill_mode_active(on: bool) -> void:
+	_kill_mode_active = on
+	if not on:
+		_set_kill_hover(false)
+
+
+func _set_kill_hover(on: bool) -> void:
+	_kill_hover = on
+	# Tint the whole agent (sprite + body) red while the kill cursor hovers.
+	var tint := KILL_HOVER_TINT if on else Color.WHITE
+	modulate = tint
+
+
+

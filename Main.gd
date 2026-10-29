@@ -90,6 +90,9 @@ var _sign_tags: Array[Node2D] = []
 var _view_button: Button = null
 var _add_agent_button: Button = null
 var _kill_agent_button: Button = null
+var _kill_mode: bool = false
+var _kill_cursor_tex: Texture2D = null
+const _KILL_PROTECTED_IDS: Array[String] = ["chief_of_staff", "executive_chief_of_staff_and_work_orche"]
 var _role_catalog: Array = []
 var _role_categories: Array = []
 var _fire_preview_variant := ""
@@ -205,6 +208,10 @@ func _process(delta: float) -> void:
 func _unhandled_key_input(event: InputEvent) -> void:
 	var k := event as InputEventKey
 	if k and k.pressed and not k.echo:
+		if _kill_mode and k.keycode == KEY_ESCAPE:
+			_exit_kill_mode()
+			get_viewport().set_input_as_handled()
+			return
 		if get_viewport().gui_get_focus_owner() is LineEdit or get_viewport().gui_get_focus_owner() is TextEdit:
 			return
 		if k.keycode == KEY_V and k.shift_pressed:
@@ -227,6 +234,15 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		elif k.shift_pressed and k.keycode == KEY_B:
 			send_json({"action": "PREVIEW_HIRE_FIRE", "which": "both"})
 			get_viewport().set_input_as_handled()
+
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if not _kill_mode:
+		return
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT:
+		_exit_kill_mode()
+		get_viewport().set_input_as_handled()
 
 
 func _exit_tree() -> void:
@@ -535,6 +551,8 @@ func _open_hiring_board() -> void:
 	var board_node: Node = BoardScript.new()
 	add_child(board_node)
 	board_node.setup(_role_catalog, _catalog_categories())
+	if board_node.has_method("set_hired_unique_ids"):
+		board_node.set_hired_unique_ids(_hired_unique_role_ids())
 	board_node.hire_requested.connect(func(role: Dictionary, overrides: Dictionary) -> void:
 		var merged: Dictionary = role.duplicate(true)
 		if overrides is Dictionary:
@@ -569,20 +587,27 @@ func _send_hire(hname: String, hrole: String, room: String = "special_projects",
 	}
 	if not job.is_empty():
 		payload["job"] = job
+		if str(job.get("role_id", "")) != "":
+			payload["role_id"] = str(job.get("role_id"))
 	if colour != "":
 		payload["color"] = colour
 	send_json(payload)
 
 
 func _hire_from_role(role: Dictionary) -> void:
-	var title := str(role.get("title", "New Hire"))
-	var hname := str(role.get("default_name", title))
+	var short := str(role.get("short_title", role.get("title", "New Hire")))
+	var full_title := str(role.get("title", short))
+	var hname := str(role.get("default_name", short))
+	if "…" in hname or hname.length() > 40:
+		hname = short
 	var purpose := str(role.get("purpose", ""))
 	var full := str(role.get("full_description", ""))
 	if purpose == "" and full != "":
 		purpose = full.left(400)
 	var job := {
-		"title": title,
+		"title": full_title,
+		"short_title": short,
+		"role_id": str(role.get("id", "")),
 		"department": str(role.get("department", role.get("category", ""))),
 		"purpose": purpose,
 		"responsibilities": role.get("responsibilities", []),
@@ -598,7 +623,7 @@ func _hire_from_role(role: Dictionary) -> void:
 		"performance_measures": str(role.get("performance_measures", "")),
 		"handoffs_and_workflow": str(role.get("handoffs_and_workflow", "")),
 	}
-	_send_hire(hname, title, str(role.get("room", "special_projects")), job, str(role.get("color", "")))
+	_send_hire(hname, short, str(role.get("room", "special_projects")), job, str(role.get("color", "")))
 
 
 func _view_job_description_for(agent: Agent) -> void:
@@ -648,59 +673,175 @@ func _view_job_description_for(agent: Agent) -> void:
 	board_node.open_for_role(role)
 
 
+func _dismiss_exclusive_windows() -> void:
+	# Hiring Board JD sheets set exclusive=true; a second exclusive Window
+	# fails with "another exclusive child window is already" and eats input.
+	for child in get_children():
+		if child is Window and is_instance_valid(child) and child.visible and child.exclusive:
+			child.exclusive = false
+			child.hide()
+			child.queue_free()
+
+
+func _ensure_kill_cursor() -> void:
+	if _kill_cursor_tex != null:
+		return
+	var path := "res://assets/cursor_kill.png"
+	if ResourceLoader.exists(path):
+		_kill_cursor_tex = load(path) as Texture2D
+	else:
+		# Procedural fallback: red crossed circle.
+		var img := Image.create(64, 64, false, Image.FORMAT_RGBA8)
+		img.fill(Color(0, 0, 0, 0))
+		var red := Color(0.86, 0.16, 0.16, 1)
+		for a in range(360):
+			var rad := deg_to_rad(float(a))
+			for rr in range(20, 24):
+				var x := 32 + int(cos(rad) * rr)
+				var y := 32 + int(sin(rad) * rr)
+				if x >= 0 and y >= 0 and x < 64 and y < 64:
+					img.set_pixel(x, y, red)
+		for i in range(-16, 17):
+			for w in range(-2, 3):
+				var x1 := 32 + i
+				var y1 := 32 + i + w
+				var x2 := 32 + i
+				var y2 := 32 - i + w
+				if x1 >= 0 and x1 < 64 and y1 >= 0 and y1 < 64:
+					img.set_pixel(x1, y1, red)
+				if x2 >= 0 and x2 < 64 and y2 >= 0 and y2 < 64:
+					img.set_pixel(x2, y2, red)
+		_kill_cursor_tex = ImageTexture.create_from_image(img)
+
+
+func _enter_kill_mode() -> void:
+	_dismiss_exclusive_windows()
+	_kill_mode = true
+	_ensure_kill_cursor()
+	if _kill_cursor_tex:
+		Input.set_custom_mouse_cursor(_kill_cursor_tex, Input.CURSOR_ARROW, Vector2(32, 32))
+	if _kill_agent_button:
+		_kill_agent_button.text = "Cancel Kill"
+		_kill_agent_button.modulate = Color(1.0, 0.55, 0.55)
+	for id in agents.keys():
+		var ag: Agent = agents[id]
+		if is_instance_valid(ag) and ag.has_method("set_kill_mode_active"):
+			ag.set_kill_mode_active(true)
+	_set_status("Kill mode — click an agent. Esc / right-click cancels.", Color("#ef9a9a"))
+
+
+func _exit_kill_mode() -> void:
+	if not _kill_mode:
+		return
+	_kill_mode = false
+	Input.set_custom_mouse_cursor(null)
+	if _kill_agent_button:
+		_kill_agent_button.text = "Kill Agent"
+		_kill_agent_button.modulate = Color.WHITE
+	for id in agents.keys():
+		var ag: Agent = agents[id]
+		if is_instance_valid(ag) and ag.has_method("set_kill_mode_active"):
+			ag.set_kill_mode_active(false)
+	_set_status("Kill mode cancelled", Color("#b0bec5"))
+
+
 func _on_kill_agent_pressed() -> void:
-	var dlg := AcceptDialog.new()
-	dlg.title = "Kill Agent"
-	dlg.min_size = Vector2(400, 300)
-	var vbox := VBoxContainer.new()
-	var hint := Label.new()
-	hint.text = "Random cartoon exit (Shift+F cycles previews). Soft-archives to office.archived."
-	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	vbox.add_child(hint)
-	var list := ItemList.new()
-	list.custom_minimum_size = Vector2(360, 180)
-	var ids: Array = agents.keys()
-	ids.sort()
-	var idx := 0
-	for id in ids:
+	if _kill_mode:
+		_exit_kill_mode()
+		return
+	var any := false
+	for id in agents.keys():
+		if is_instance_valid(agents[id]):
+			any = true
+			break
+	if not any:
+		_set_status("No agents to archive", Color("#ef9a9a"))
+		return
+	_enter_kill_mode()
+
+
+func _confirm_and_fire(agent: Agent) -> void:
+	var aid := agent.agent_id
+	var confirm := ConfirmationDialog.new()
+	confirm.title = "Archive Chief of Staff?"
+	confirm.dialog_text = "Archive %s? This is a protected executive role." % agent.display_name
+	confirm.ok_button_text = "Archive"
+	confirm.exclusive = true
+	add_child(confirm)
+	confirm.confirmed.connect(func() -> void:
+		_do_fire_agent(aid)
+		confirm.exclusive = false
+		confirm.queue_free()
+	)
+	confirm.canceled.connect(func() -> void:
+		confirm.exclusive = false
+		confirm.queue_free()
+		_enter_kill_mode()
+	)
+	confirm.close_requested.connect(func() -> void:
+		confirm.exclusive = false
+		confirm.queue_free()
+		_enter_kill_mode()
+	)
+	confirm.popup_centered()
+
+
+func _do_fire_agent(aid: String) -> void:
+	send_json({"action": "FIRE_AGENT", "agent_id": aid, "force": true})
+	if drawer.agent and drawer.agent.agent_id == aid:
+		drawer.close()
+	_set_status("Archiving %s…" % aid, Color("#ffd54f"))
+
+
+
+func _hired_unique_role_ids() -> Dictionary:
+	var out: Dictionary = {}
+	var catalog: Array = _role_catalog
+	var titles_live: Dictionary = {}
+	for id in agents.keys():
 		var ag: Agent = agents[id]
 		if not is_instance_valid(ag):
 			continue
-		list.add_item("%s  (%s)" % [ag.display_name, id])
-		list.set_item_metadata(idx, id)
-		idx += 1
-	vbox.add_child(list)
-	dlg.add_child(vbox)
-	add_child(dlg)
-	dlg.confirmed.connect(func() -> void:
-		var sel := list.get_selected_items()
-		if sel.is_empty():
-			dlg.queue_free()
-			return
-		var aid := str(list.get_item_metadata(sel[0]))
-		dlg.queue_free()
-		var confirm := ConfirmationDialog.new()
-		confirm.title = "Confirm archive"
-		confirm.dialog_text = "Archive %s?" % aid
-		add_child(confirm)
-		confirm.confirmed.connect(func() -> void:
-			send_json({"action": "FIRE_AGENT", "agent_id": aid, "force": true})
-			if drawer.agent and drawer.agent.agent_id == aid:
-				drawer.close()
-			confirm.queue_free()
-		)
-		confirm.canceled.connect(func() -> void: confirm.queue_free())
-		confirm.close_requested.connect(func() -> void: confirm.queue_free())
-		confirm.popup_centered()
-	)
-	dlg.canceled.connect(func() -> void: dlg.queue_free())
-	dlg.close_requested.connect(func() -> void: dlg.queue_free())
-	dlg.popup_centered()
+		titles_live[str(ag.role)] = true
+		titles_live[str(ag.display_name)] = true
+	for role in catalog:
+		if not (role is Dictionary):
+			continue
+		if not bool(role.get("unique", false)):
+			continue
+		var st := str(role.get("short_title", ""))
+		var ft := str(role.get("title", ""))
+		if titles_live.has(st) or titles_live.has(ft):
+			out[str(role.get("id", ""))] = true
+	return out
 
 
 func _on_knowledge_added(msg: Dictionary) -> void:
 	var title := str(msg.get("title", msg.get("filename", "doc")))
-	_set_status("Knowledge added: %s" % title, Color("#29b6f6"))
+	_set_status("Knowledge added: %s → Server Room" % title, Color("#29b6f6"))
+	# Visual: flash a knowledge slate onto the Server Room rack.
+	var rack_name := str(msg.get("rack", "Server_Rack_1"))
+	var pos := Vector2(720, 520)
+	if waypoints.has(rack_name) and waypoints[rack_name] is Node2D:
+		pos = (waypoints[rack_name] as Node2D).global_position
+	elif waypoints.has("Server_Room") and waypoints["Server_Room"] is Node2D:
+		pos = (waypoints["Server_Room"] as Node2D).global_position
+	var slate := ColorRect.new()
+	slate.size = Vector2(28, 36)
+	slate.position = pos + Vector2(-14, -48)
+	slate.color = Color("#26a69a")
+	slate.z_index = 40
+	add_child(slate)
+	_knowledge_racks.append({"node": slate, "title": title, "path": str(msg.get("path", ""))})
+	var label := Label.new()
+	label.text = title.left(12)
+	label.add_theme_font_size_override("font_size", 9)
+	label.position = Vector2(0, 38)
+	slate.add_child(label)
+	# Soft pulse then settle.
+	var tw := create_tween()
+	tw.tween_property(slate, "modulate", Color(1.4, 1.4, 1.4, 1.0), 0.25)
+	tw.tween_property(slate, "modulate", Color(1, 1, 1, 1), 0.4)
 
 
 func _on_agent_dm(msg: Dictionary) -> void:
@@ -1317,6 +1458,14 @@ func _update_foosball() -> void:
 
 
 func _on_agent_clicked(agent: Agent) -> void:
+	if _kill_mode:
+		_exit_kill_mode()
+		var aid := agent.agent_id
+		if aid in _KILL_PROTECTED_IDS or "chief of staff" in agent.display_name.to_lower():
+			_confirm_and_fire(agent)
+			return
+		_do_fire_agent(aid)
+		return
 	if _selected and is_instance_valid(_selected):
 		_selected.set_selected(false)
 	_selected = agent
