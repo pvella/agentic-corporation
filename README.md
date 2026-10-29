@@ -474,3 +474,11 @@ godot --headless --path . --script res://tests/smoke_test.gd    # layouts, spawn
 - Testing has been on Linux (headless, plus Xvfb with software OpenGL). macOS and Windows should work but haven't been verified. The harness's Ctrl+C handling has a Windows fallback that hasn't been tested.
 - The WebSocket has no authentication (see Security). The MCP connector does.
 - Real bots only report what they choose to report; between reports the character holds its last state (in mock mode, until `--live-hold` runs out).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+## Secrets
+
+Do not commit `.office_token`, API keys, or Keychain material. A `.gitleaks.toml` is included for pre-push scanning.
