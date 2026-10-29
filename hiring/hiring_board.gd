@@ -385,6 +385,8 @@ func _make_card(role: Dictionary) -> PanelContainer:
 		if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
 			_show_sheet(role, true)
 	)
+	if _role_already_hired(role):
+		card.modulate = Color(0.55, 0.55, 0.55, 1.0)
 	return card
 
 
@@ -498,7 +500,6 @@ func _show_sheet(role: Dictionary, from_board: bool) -> void:
 		hire_b.disabled = already
 		hire_b.focus_mode = Control.FOCUS_NONE
 		if already:
-			card.modulate = Color(0.55, 0.55, 0.55, 1.0)
 			hire_b.modulate = Color(0.7, 0.7, 0.7)
 		var hs := StyleBoxFlat.new()
 		hs.bg_color = Color("#43a047")
