@@ -83,9 +83,11 @@ func _build() -> void:
 	_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	add_child(_root)
 
+	_root.mouse_filter = Control.MOUSE_FILTER_STOP
 	_dim = ColorRect.new()
 	_dim.color = Color(0.02, 0.04, 0.08, 0.62)
 	_dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_dim.mouse_filter = Control.MOUSE_FILTER_STOP
 	_dim.gui_input.connect(func(ev: InputEvent) -> void:
 		if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
 			close()
@@ -109,7 +111,9 @@ func _build() -> void:
 	style.content_margin_bottom = 12
 	_panel.add_theme_stylebox_override("panel", style)
 	_root.add_child(_panel)
-	_panel.resized.connect(_fit_panel)
+	# Prefer viewport size_changed — panel.resized + setting size caused a CPU loop.
+	if not get_viewport().size_changed.is_connected(_fit_panel):
+		get_viewport().size_changed.connect(_fit_panel)
 	call_deferred("_fit_panel")
 
 	var outer := VBoxContainer.new()
@@ -223,22 +227,31 @@ func _fit_panel() -> void:
 	if _panel == null:
 		return
 	var vp := get_viewport().get_visible_rect().size
+	if vp.x < 64.0 or vp.y < 64.0:
+		return
 	var w := minf(960.0, vp.x - 40.0)
 	var h := minf(620.0, vp.y - 40.0)
 	# Top-left anchors + explicit position: PRESET_CENTER + position fought
 	# each other and parked the board off-screen (Add Agent looked dead).
-	_panel.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	_panel.anchor_right = 0.0
-	_panel.anchor_bottom = 0.0
-	_panel.custom_minimum_size = Vector2(w, h)
-	_panel.size = Vector2(w, h)
-	_panel.position = (vp - Vector2(w, h)) * 0.5
+	# Guard against resized↔size feedback that pegged CPU and froze the HUD.
+	var next_pos := (vp - Vector2(w, h)) * 0.5
+	var next_size := Vector2(w, h)
+	if _panel.anchors_preset != Control.PRESET_TOP_LEFT:
+		_panel.set_anchors_preset(Control.PRESET_TOP_LEFT)
+		_panel.anchor_right = 0.0
+		_panel.anchor_bottom = 0.0
+	if _panel.custom_minimum_size != next_size:
+		_panel.custom_minimum_size = next_size
+	if _panel.size.distance_to(next_size) > 0.5:
+		_panel.set_deferred("size", next_size)
+	if _panel.position.distance_to(next_pos) > 0.5:
+		_panel.set_deferred("position", next_pos)
 	var cols := 3
 	if w < 780:
 		cols = 2
 	if w < 560:
 		cols = 1
-	if _grid:
+	if _grid and _grid.columns != cols:
 		_grid.columns = cols
 
 

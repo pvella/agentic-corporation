@@ -110,6 +110,9 @@ var _start_fit := false
 var _screenshot_path: String = ""
 var _open_hiring_board_on_start := false
 var _open_hiring_sheet_on_start := false
+var _debug_activity := false
+var _debug_activity_log: Array = []
+var _debug_activity_started_ms := 0
 var _screenshot_delay: float = 6.0
 var _quit_after_screenshot: bool = false
 var _screenshot_every: float = 0.0
@@ -205,6 +208,8 @@ func _ready() -> void:
 	_connect_socket()
 	if _open_hiring_board_on_start:
 		call_deferred("_open_hiring_board")
+	if _debug_activity:
+		call_deferred("_start_debug_activity")
 	if _screenshot_path != "":
 		_take_screenshot()
 
@@ -512,23 +517,36 @@ func _load_role_catalog() -> void:
 
 
 func _add_hr_buttons() -> void:
+	# Keep HR buttons left of the expanding StatusLabel so a long roster cannot
+	# push "+ Add Agent" off-screen (looked like a dead button).
 	var hbox := roster.get_parent()
+	var hud := $HUD as CanvasLayer
+	if hud:
+		hud.layer = maxi(hud.layer, 20)
+	var insert_at := 2  # after Title + VSeparator
+	for i in hbox.get_child_count():
+		if hbox.get_child(i) == status_label:
+			insert_at = i
+			break
 	_add_agent_button = Button.new()
 	_add_agent_button.focus_mode = Control.FOCUS_NONE
+	_add_agent_button.mouse_filter = Control.MOUSE_FILTER_STOP
 	_add_agent_button.add_theme_font_size_override("font_size", 12)
 	_add_agent_button.text = "+ Add Agent"
 	_add_agent_button.tooltip_text = "Hire from roles/catalog.json or Custom"
-	_add_agent_button.pressed.connect(_on_add_agent_pressed)
+	var conn_err := _add_agent_button.pressed.connect(_on_add_agent_pressed)
+	print("[AgentOffice] Add Agent pressed-signal connect err=%s catalog=%d" % [conn_err, _role_catalog.size()])
 	hbox.add_child(_add_agent_button)
-	hbox.move_child(_add_agent_button, roster.get_index())
+	hbox.move_child(_add_agent_button, insert_at)
 	_kill_agent_button = Button.new()
 	_kill_agent_button.focus_mode = Control.FOCUS_NONE
+	_kill_agent_button.mouse_filter = Control.MOUSE_FILTER_STOP
 	_kill_agent_button.add_theme_font_size_override("font_size", 12)
 	_kill_agent_button.text = "Kill Agent"
 	_kill_agent_button.tooltip_text = "Archive an agent (random cartoon exit; soft-delete)"
 	_kill_agent_button.pressed.connect(_on_kill_agent_pressed)
 	hbox.add_child(_kill_agent_button)
-	hbox.move_child(_kill_agent_button, roster.get_index())
+	hbox.move_child(_kill_agent_button, insert_at + 1)
 
 
 func _setup_files_dropped() -> void:
@@ -543,6 +561,7 @@ func _on_files_dropped(files: PackedStringArray) -> void:
 
 
 func _on_add_agent_pressed() -> void:
+	print("[AgentOffice] Add Agent pressed — opening Hiring Board (catalog=%d)" % _role_catalog.size())
 	_open_hiring_board()
 
 
@@ -565,7 +584,8 @@ func _open_hiring_board() -> void:
 	_dismiss_exclusive_windows()
 	# One board at a time — a second CanvasLayer board stacked silently.
 	for child in get_children():
-		if child.get_script() == load("res://hiring/hiring_board.gd") and is_instance_valid(child):
+		var scr: Variant = child.get_script()
+		if scr != null and str(scr.resource_path).ends_with("hiring/hiring_board.gd") and is_instance_valid(child):
 			if child.has_method("close"):
 				child.close()
 			else:
@@ -585,6 +605,12 @@ func _open_hiring_board() -> void:
 			merged.merge(overrides, true)
 		_hire_from_role(merged)
 	)
+	var board_layer := 0
+	if board_node is CanvasLayer:
+		board_layer = (board_node as CanvasLayer).layer
+	print("[AgentOffice] Hiring Board opened visible=%s layer=%d roles=%d" % [
+		board_node.visible, board_layer, _role_catalog.size()])
+	_set_status("Hiring Board open (%d roles)" % _role_catalog.size(), Color("#80cbc4"))
 	if _open_hiring_sheet_on_start and _role_catalog.size() > 0:
 		var first: Dictionary = _role_catalog[0]
 		if board_node.has_method("open_for_role"):
@@ -855,7 +881,7 @@ func _on_knowledge_added(msg: Dictionary) -> void:
 		world = (waypoints["Server_Room"] as Node2D).global_position
 	var pos := Iso.to_screen(world)
 	var slate := ColorRect.new()
-	slate.mouse_filter = Control.MOUSE_FILTER_STOP
+	slate.mouse_filter = Control.MOUSE_FILTER_STOP  # small rack chip only
 	slate.size = Vector2(28, 36)
 	slate.position = pos + Vector2(-14, -48)
 	slate.color = Color("#26a69a")
@@ -893,10 +919,10 @@ func _on_knowledge_list(msg: Dictionary) -> void:
 				var nm := str(f.get("name", "?"))
 				var sz := int(f.get("size", 0))
 				drawer.append_system("  · %s (%d B)" % [nm, sz])
+	# Only refresh an already-open panel. Auto-spawning here left a layer-66
+	# full-rect dim (mouse_filter STOP) that ate HUD clicks including Add Agent.
 	if _knowledge_library and is_instance_valid(_knowledge_library):
 		_knowledge_library.set_files(files)
-	else:
-		_spawn_knowledge_library(files)
 
 
 func _on_knowledge_removed(msg: Dictionary) -> void:
@@ -1334,7 +1360,10 @@ func handle_message(msg: Dictionary) -> void:
 		"STATE_CHANGE":
 			var agent := _get_or_spawn(str(msg.get("agent_id", "")))
 			if agent:
-				_apply_state(agent, str(msg.get("state", "IDLE")), _str_or_empty(msg.get("target")), str(msg.get("text", "")))
+				var tgt := _str_or_empty(msg.get("target"))
+				_apply_state(agent, str(msg.get("state", "IDLE")), tgt, str(msg.get("text", "")))
+				if _debug_activity:
+					_log_debug_activity(agent, str(msg.get("state", "IDLE")), tgt)
 		"LOG_ENTRY":
 			var agent := _get_or_spawn(str(msg.get("agent_id", "")))
 			if agent:
@@ -1382,6 +1411,9 @@ func handle_message(msg: Dictionary) -> void:
 			var agent: Agent = agents.get(str(msg.get("agent_id", "")))
 			if agent and str(msg.get("action", "")) == "phone":
 				agent.glance_phone(float(msg.get("seconds", 4.0)), false)
+		"OPEN_HIRING_BOARD":
+			print("[AgentOffice] harness OPEN_HIRING_BOARD — simulating Add Agent")
+			_on_add_agent_pressed()
 		"PONG":
 			pass
 		var other:
@@ -1791,6 +1823,70 @@ func _parse_user_args() -> void:
 			"--open-hiring-sheet":
 				_open_hiring_board_on_start = true
 				_open_hiring_sheet_on_start = true
+			"--debug-activity":
+				_debug_activity = true
+
+
+
+func _start_debug_activity() -> void:
+	_debug_activity_log.clear()
+	_debug_activity_started_ms = Time.get_ticks_msec()
+	print("[AgentOffice] debug-activity: logging walks/state for 60s")
+	# Prove the HUD button signal is wired, then open the board via the same path.
+	if _add_agent_button and _add_agent_button.pressed.get_connections().size() > 0:
+		print("[AgentOffice] debug-activity: Add Agent connections=%d rect=%s" % [
+			_add_agent_button.pressed.get_connections().size(), _add_agent_button.get_global_rect()])
+		_add_agent_button.pressed.emit()
+	else:
+		push_error("[AgentOffice] debug-activity: Add Agent button missing or unconnected")
+		_on_add_agent_pressed()
+	await get_tree().create_timer(2.0).timeout
+	var board_open := false
+	for child in get_children():
+		var scr: Variant = child.get_script()
+		if scr != null and str(scr.resource_path).ends_with("hiring/hiring_board.gd") and is_instance_valid(child):
+			board_open = child.visible
+			print("[AgentOffice] debug-activity: hiring board child visible=%s" % child.visible)
+	print("[AgentOffice] debug-activity: hiring_board_visible=%s" % board_open)
+	await get_tree().create_timer(58.0).timeout
+	_flush_debug_activity()
+
+
+func _log_debug_activity(agent: Agent, state: String, target: String) -> void:
+	var elapsed := (Time.get_ticks_msec() - _debug_activity_started_ms) / 1000.0
+	var desk := agent.desk
+	var away := target != "" and target != desk
+	var entry := {
+		"t": snappedf(elapsed, 0.1),
+		"id": agent.agent_id,
+		"state": state,
+		"target": target,
+		"wp": agent.current_waypoint,
+		"pos": [snappedf(agent.global_position.x, 0.1), snappedf(agent.global_position.y, 0.1)],
+		"nav": not agent.is_at_destination(),
+		"away": away,
+	}
+	_debug_activity_log.append(entry)
+	if away or state in ["IDLE", "COLLAB"]:
+		print("[AgentOffice] walk/state t=%.1f %s %s -> %s nav=%s" % [
+			elapsed, agent.agent_id, state, target if target != "" else agent.current_waypoint,
+			entry["nav"]])
+
+
+func _flush_debug_activity() -> void:
+	var walks: Array = []
+	for e in _debug_activity_log:
+		if e.get("away", false):
+			walks.append(e)
+	print("[AgentOffice] debug-activity DONE entries=%d walks=%d" % [_debug_activity_log.size(), walks.size()])
+	for e in walks:
+		print("[AgentOffice] WALK %s" % e)
+	var out := OS.get_environment("HOME") + "/Documents/GitHub/_agent_extracts/godot_activity_60s.json"
+	var f := FileAccess.open(out, FileAccess.WRITE)
+	if f:
+		f.store_string(JSON.stringify({"entries": _debug_activity_log, "walks": walks}, "\t"))
+		f.close()
+		print("[AgentOffice] wrote %s" % out)
 
 
 func _take_screenshot() -> void:

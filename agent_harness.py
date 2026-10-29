@@ -706,6 +706,11 @@ class Hub:
         elif action == "ASK_HUMAN":
             # Client / test path: surface an ask-human dialog for an agent.
             await self._action_ask_human(ws, msg)
+        elif action == "OPEN_HIRING_BOARD":
+            # Test hook: ask the Godot client to open the Hiring Board (same as + Add Agent).
+            payload = {"type": "OPEN_HIRING_BOARD"}
+            self.emit(payload)
+            await self.reply(ws, {"type": "ACK", "action": "OPEN_HIRING_BOARD"})
         else:
             await self.reply(ws, {"type": "ERROR", "message": f"unknown action '{action}'"})
 
@@ -1255,9 +1260,9 @@ class Tempo:
 
 
 TEMPOS: dict[str, Tempo] = {
-    "calm": Tempo(work=(20, 60), log_every=(5, 12), think_chance=0.15, think=(4, 8), break_chance=0.25,
+    "calm": Tempo(work=(20, 60), log_every=(5, 12), think_chance=0.15, think=(4, 8), break_chance=0.55,
                   break_time=(15, 30), collab_every=(180, 360), collab_time=(25, 45), chat_every=(7, 12),
-                  walk_slot=6, foosball_every=(300, 600), foosball_time=(40, 80), chat_group_every=(60, 150),
+                  walk_slot=2.5, foosball_every=(300, 600), foosball_time=(40, 80), chat_group_every=(60, 150),
                   chat_time=(30, 60)),
     "normal": Tempo(work=(12, 30), log_every=(3, 7), think_chance=0.2, think=(3, 6), break_chance=0.4,
                     break_time=(10, 20), collab_every=(60, 120), collab_time=(15, 30), chat_every=(5, 9),
@@ -1465,22 +1470,37 @@ class AmbientDirector:
         return random.uniform(*span)
 
     def can_walk(self) -> bool:
-        return self.now() >= self.walk_free_at
+        # Two independent walk slots (A/B) so calm offices with many agents still move.
+        now = self.now()
+        a = getattr(self, "walk_free_at", 0.0)
+        b = getattr(self, "walk_free_at_b", 0.0)
+        return now >= a or now >= b
 
     def reserve_walk(self, factor: float = 1.0) -> None:
-        self.walk_free_at = self.now() + self.tempo.walk_slot * factor
+        now = self.now()
+        slot = self.tempo.walk_slot * factor
+        a = getattr(self, "walk_free_at", 0.0)
+        b = getattr(self, "walk_free_at_b", 0.0)
+        if now >= a:
+            self.walk_free_at = now + slot
+        else:
+            self.walk_free_at_b = now + slot
 
     def desk_span(self) -> tuple[float, float]:
         """Time at the desk between ambient activities."""
         t = self.tempo.work
         # Idle-only: shorter sits so the office still wanders (walk / canteen / chat).
-        return (t[0] * 0.45, t[1] * 0.7) if self.idle_only else t
+        # Mock/cli: also shorten vs raw tempo so calm offices are visibly alive.
+        if self.idle_only:
+            return (t[0] * 0.45, t[1] * 0.7)
+        return (t[0] * 0.55, t[1] * 0.75)
 
     def place_initial(self, agent: Agent) -> None:
         """Agents start seated at their desks (staggered session ends)."""
         agent.state, agent.target, agent.activity = ("IDLE" if self.idle_only else "WORKING"), agent.desk, "desk"
         agent.text = ""
-        agent.activity_until = self.rand(self.desk_span()) * (random.uniform(0.1, 1.0) if self.idle_only else 1.0)
+        # Always stagger so the floor does not sit frozen for a full desk_span.
+        agent.activity_until = self.rand(self.desk_span()) * random.uniform(0.08, 0.55)
         agent.next_event_at = self.rand(self.tempo.log_every) + random.uniform(0, 6)
 
     def after_prompt(self, agent: Agent) -> None:
