@@ -859,7 +859,7 @@ func _draw_fridge() -> void:
 	var cols := [Color("#e53935"), Color("#1e88e5"), Color("#43a047"), Color("#fdd835"), Color("#8e24aa")]
 	for row in 3:
 		for i in 3:
-			var c := cols[(row + i) % cols.size()]
+			var c: Color = cols[(row + i) % cols.size()]
 			draw_rect(Rect2(r.position.x + 6 + i * 10, r.position.y + 8 + row * 12, 7, 9), c)
 	draw_rect(Rect2(r.position.x + 4, r.end.y - 8, r.size.x - 8, 4), Color("#546e7a"))
 	draw_circle(Vector2(r.end.x - 8, r.position.y + 8), 2.0, Color("#69f0ae") if fmod(_t, 2.0) < 1.5 else Color("#1b5e20"))

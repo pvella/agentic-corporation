@@ -22,7 +22,9 @@
 ##   --dispatch=AGENT_ID:prompt    send a prompt once connected
 ##   --preview-hire / --preview-fire / --preview-hire-fire
 ##                                 demo the hire / fire pageantry once connected
-## Keyboard: V toggles view; Shift+H / Shift+F / Shift+B preview hire / fire / both
+## Keyboard: V toggles iso view; Shift+V toggles quiet/verbose terminal;
+##           Shift+H / Shift+F / Shift+B preview hire / fire / both
+## Terminal: /verbose /quiet; recruiter /hire Name | Role; Archive persists
 ##   --zoom=1.5 --focus=x,y        start the camera zoomed in on a world point
 ##   --focus-agent=AGENT_ID        ...or on an agent (followed until the screenshot)
 ##   --view=iso|top                start in the isometric or the classic top-down view
@@ -141,8 +143,25 @@ func _ready() -> void:
 		)
 	if drawer.has_signal("hire_requested"):
 		drawer.hire_requested.connect(func() -> void:
-			# Recruiter desk: demo a hire at a free desk (preview cleans up).
-			send_json({"action": "PREVIEW_HIRE_FIRE", "which": "hire"})
+			# Help text is shown by the drawer; real hires use /hire → hire_submit.
+			pass
+		)
+	if drawer.has_signal("hire_submit"):
+		drawer.hire_submit.connect(func(hname: String, hrole: String) -> void:
+			var slug := hname.to_lower().replace(" ", "_")
+			var cleaned := ""
+			for i in slug.length():
+				var ch := slug[i]
+				if (ch >= "a" and ch <= "z") or (ch >= "0" and ch <= "9") or ch == "_":
+					cleaned += ch
+			if cleaned.is_empty():
+				cleaned = "new_hire_%d" % Time.get_ticks_msec()
+			send_json({"action": "HIRE_AGENT", "agent_id": cleaned, "name": hname, "role": hrole,
+				"room": "special_projects"})
+		)
+	if drawer.has_signal("verbose_toggled"):
+		drawer.verbose_toggled.connect(func(verbose: bool) -> void:
+			send_json({"action": "SET_TERMINAL_VERBOSE", "verbose": verbose})
 		)
 	camera.zoom_changed.connect(_apply_ui_scale)
 	build_layout(Office.LEGACY_LAYOUT, true)
@@ -163,6 +182,10 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	var k := event as InputEventKey
 	if k and k.pressed and not k.echo:
 		if get_viewport().gui_get_focus_owner() is LineEdit or get_viewport().gui_get_focus_owner() is TextEdit:
+			return
+		if k.keycode == KEY_V and k.shift_pressed:
+			send_json({"action": "TOGGLE_TERMINAL_VERBOSE"})
+			get_viewport().set_input_as_handled()
 			return
 		if k.keycode == KEY_V:
 			set_view_mode(not Iso.enabled)
@@ -606,8 +629,16 @@ func handle_message(msg: Dictionary) -> void:
 		"COLLABORATE":
 			_apply_collaborate(msg)
 		"ACK":
-			# Quiet: terminal already shows you> … then the reply. Keep ACK off the drawer.
-			pass
+			# Quiet chat ACKs stay silent; surface mode / hire / fire confirmations.
+			var act := str(msg.get("action", ""))
+			if act == "SET_TERMINAL_VERBOSE":
+				_set_status(str(msg.get("message", "terminal mode changed")), Color("#81c784"))
+				if drawer.agent:
+					drawer.append_system(str(msg.get("message", "")), "#81c784")
+			elif act in ["HIRE_AGENT", "FIRE_AGENT"]:
+				_set_status("%s %s" % [act, str(msg.get("name", msg.get("agent_id", "")))], Color("#ffd54f"))
+				if drawer.agent:
+					drawer.append_system("%s: %s" % [act, str(msg.get("name", msg.get("agent_id", "")))], "#ffd54f")
 		"AGENT_HIRE":
 			_play_hire(msg)
 		"AGENT_FIRE":

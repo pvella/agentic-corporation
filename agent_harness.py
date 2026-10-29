@@ -98,6 +98,22 @@ SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
 DEFAULT_INBOX_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".office_inbox.json")
 DEFAULT_CLAUDE_SESSIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".office_claude")
 DEFAULT_CLAUDE_SESSIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".office_claude_sessions.json")
+
+# Read-only tools auto-allowed for office Claude runs (no permission prompts).
+DEFAULT_CLAUDE_ALLOWED_TOOLS: tuple[str, ...] = (
+    "Read",
+    "Grep",
+    "Glob",
+    "Bash(git status*)",
+    "Bash(git log*)",
+    "Bash(git diff*)",
+    "Bash(git show*)",
+    "Bash(git branch*)",
+    "Bash(gh pr list*)",
+    "Bash(gh pr view*)",
+    "Bash(gh issue list*)",
+)
+
 INBOX_CAP = 20          # pending messages per agent
 INBOX_HISTORY = 30      # delivered messages remembered per agent (for replies)
 MAX_PROMPT = 2000
@@ -309,6 +325,8 @@ class Hub:
         self.mode = mode
         self.tempo = tempo
         self.office = office  # None = legacy fixed office (client uses its built-in layout)
+        self.office_path: str | None = None  # where to persist hire/fire (set by Harness)
+        self.cmds_path: str | None = None  # agent_cmds.json to extend on hire
         self.agents: dict[str, Agent] = {}
         self.clients: set[ServerConnection] = set()
         self.dispatcher: Callable[[str, str], Awaitable[None]] | None = None
@@ -319,6 +337,11 @@ class Hub:
         # Called when a real report hands an agent back to the ambient life
         # (action "finish"); set by Harness when a director runs.
         self.on_release: Callable[[Agent], None] | None = None
+        # Quiet terminal by default: only chat (user >, …, reply). Verbose shows tools/queue.
+        self.verbose_terminal: bool = False
+        # Harness hooks so hire/fire can start workers + persist.
+        self.on_hired: Callable[[Agent], None] | None = None
+        self.on_fired: Callable[[str], None] | None = None
 
     # -- registry ----------------------------------------------------------
     def unregister(self, agent_id: str) -> Agent | None:
@@ -391,7 +414,12 @@ class Hub:
             event["text"] = text
         self.emit(event)
 
-    def log_line(self, agent_id: str, line: str, stream: str = "stdout") -> None:
+    def log_line(self, agent_id: str, line: str, stream: str = "stdout", *,
+                 important: bool = False) -> None:
+        """Office terminal line. Quiet mode drops non-important chatter (tool/queue/ambient)."""
+        if not important and not self.verbose_terminal:
+            log.debug("quiet skip %s: %s", agent_id, strip_ansi(line)[:120])
+            return
         self.emit({"type": "LOG_ENTRY", "agent_id": agent_id, "log": line, "stream": stream})
 
     def collaborate(self, agent_ids: list[str], target: str = MEETING_TARGET, text: str = "") -> None:
@@ -493,10 +521,10 @@ class Hub:
             if item is not None:
                 ref = f" \x1b[2m(re #{message_id}: {clean_line(item['text'], 40)})\x1b[0m"
         prefix = f"\x1b[1;32m{agent.name}>\x1b[0m "
-        self.log_line(agent.agent_id, prefix + lines[0] + ref)
+        self.log_line(agent.agent_id, prefix + lines[0] + ref, important=True)
         pad = " " * (len(agent.name) + 2)
         for line in lines[1:]:
-            self.log_line(agent.agent_id, pad + line)
+            self.log_line(agent.agent_id, pad + line, important=True)
         if bubble:
             self.state(agent.agent_id, agent.state, text=clean_line(" ".join(lines), 60))
         self.touch_live(agent, hold=False)
@@ -580,6 +608,15 @@ class Hub:
                                                            "message": "no office layout (legacy mode)"})
         elif action == "PING":
             await self.reply(ws, {"type": "PONG", "ts": now_ms()})
+        elif action in ("SET_TERMINAL_VERBOSE", "TOGGLE_TERMINAL_VERBOSE"):
+            if action == "TOGGLE_TERMINAL_VERBOSE":
+                self.verbose_terminal = not self.verbose_terminal
+            else:
+                self.verbose_terminal = bool(msg.get("verbose", True))
+            log.info("terminal verbose=%s", self.verbose_terminal)
+            await self.reply(ws, {"type": "ACK", "action": "SET_TERMINAL_VERBOSE",
+                                  "verbose": self.verbose_terminal,
+                                  "message": "verbose on" if self.verbose_terminal else "quiet mode (only > … reply)"})
         elif action == "HIRE_AGENT":
             await self._action_hire(ws, msg)
         elif action in ("FIRE_AGENT", "ARCHIVE_AGENT"):
@@ -588,6 +625,84 @@ class Hub:
             await self._action_preview_hire_fire(ws, msg)
         else:
             await self.reply(ws, {"type": "ERROR", "message": f"unknown action '{action}'"})
+
+
+    def save_office(self) -> None:
+        """Write current roster back to office.json (hire/fire persistence)."""
+        if not self.office or not self.office_path:
+            return
+        payload = {
+            "name": self.office.get("name", "Agentic Corporation"),
+            "_comment": "Roster persisted by agent_harness on hire/archive. desks/colors recomputed on load.",
+            "rooms": [],
+            "shared": {},
+        }
+        for room in self.office.get("rooms", []):
+            members = []
+            for m in room.get("members", []):
+                members.append({
+                    "agent_id": m["agent_id"],
+                    "name": m.get("name", m["agent_id"]),
+                    "role": m.get("role", ""),
+                    **({"color": m["color"]} if m.get("color") else {}),
+                })
+            payload["rooms"].append({
+                "id": room["id"],
+                "name": room.get("name", room["id"]),
+                "color": room.get("color", "#90a4ae"),
+                "theme": room.get("theme", "wood"),
+                "desks": max(int(room.get("desks", len(members)) or 0), len(members), 1),
+                "members": members,
+                **({"isolated": True} if room.get("isolated") else {}),
+            })
+        shared = self.office.get("shared") or {}
+        br = shared.get("break_room") or {}
+        mr = shared.get("meeting_room") or {}
+        cn = shared.get("canteen") or {}
+        payload["shared"] = {
+            "break_room": {"name": br.get("name", "Break Room")},
+            "meeting_room": {"name": mr.get("name", "Meeting Room"), "seats": int(mr.get("seats", 6) or 6)},
+            "canteen": {"name": cn.get("name", "Canteen")},
+        }
+        try:
+            with open(self.office_path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, indent=2, ensure_ascii=False)
+                fh.write("\n")
+            log.info("saved office roster -> %s (%d agents)", self.office_path, len(self.agents))
+        except OSError as exc:
+            log.error("could not save office %s: %s", self.office_path, exc)
+
+    def bind_default_cli(self, agent_id: str, role: str = "") -> None:
+        """Ensure a newly hired agent has a Claude binding in agent_cmds.json + live CliRunner."""
+        # Live map is owned by Harness via on_hired; here we only persist the file template.
+        path = self.cmds_path
+        if not path:
+            return
+        try:
+            data = {}
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as fh:
+                    data = json.load(fh)
+            if not isinstance(data, dict):
+                data = {}
+            if agent_id in data:
+                return
+            role_bit = role or agent_id.replace("_", " ").title()
+            data[agent_id] = {
+                "cmd": "claude -p --output-format text {prompt}",
+                "cwd": ".",
+                "system": (
+                    f"You are {role_bit} in the Agentic Corporation office simulation. "
+                    "Reply in character, briefly (2–6 sentences unless asked for more). "
+                    "No tool-use narration, no markdown fences unless needed for code."
+                ),
+            }
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2, ensure_ascii=False)
+                fh.write("\n")
+            log.info("added CLI binding for %s -> %s", agent_id, path)
+        except (OSError, ValueError) as exc:
+            log.error("could not update agent cmds %s: %s", path, exc)
 
     async def _action_hire(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
         """Spawn a new agent at a desk (recruiter desk / harness hire). Plays AGENT_HIRE FX."""
@@ -627,7 +742,35 @@ class Hub:
                 for m in r.get("members", []) or []:
                     if str(m.get("desk", "")) == desk or str(m.get("agent_id", "")) == agent_id:
                         room = str(r.get("id", room))
-        agent = self.hire(agent_id, name, desk, color, role=role, room=room)
+        # Attach room amenities so ambient life works for the new hire.
+        room_meta = next((r for r in (self.office or {}).get("rooms", []) if r.get("id") == room), None)
+        extra: dict[str, Any] = {"room": room}
+        if room_meta:
+            extra["break_spots"] = tuple(room_meta.get("break_spots") or SHARED_BREAK_SPOTS)
+            extra["chat_spots"] = tuple(room_meta.get("chat_spots") or SHARED_CHAT_SPOTS)
+            extra["meeting_target"] = room_meta.get("meeting_target") or MEETING_TARGET
+            extra["group"] = room if room_meta.get("isolated") else SHARED_GROUP
+        agent = self.hire(agent_id, name, desk, color, role=role, **extra)
+        # Persist into office.json roster.
+        if self.office:
+            target = room_meta
+            if target is None:
+                for r in self.office.get("rooms", []):
+                    if r.get("id") == room:
+                        target = r
+                        break
+            if target is not None:
+                target.setdefault("members", []).append({
+                    "agent_id": agent_id, "name": name, "role": role, "color": color, "desk": desk,
+                })
+                target["desks"] = max(int(target.get("desks", 0) or 0), len(target["members"]))
+            self.save_office()
+        self.bind_default_cli(agent_id, role)
+        if self.on_hired:
+            try:
+                self.on_hired(agent)
+            except Exception:
+                log.exception("on_hired failed for %s", agent_id)
         log.info("HIRE_AGENT %s (%s) at %s", agent_id, name, desk)
         await self.reply(ws, {"type": "ACK", "action": "HIRE_AGENT", "agent_id": agent_id,
                               "name": name, "desk": desk, "room": room})
@@ -645,6 +788,16 @@ class Hub:
                                   "message": "won't archive the recruiter (pass force=true to override)"})
             return
         agent = self.unregister(agent_id)
+        if self.office:
+            for r in self.office.get("rooms", []):
+                members = r.get("members") or []
+                r["members"] = [m for m in members if m.get("agent_id") != agent_id]
+            self.save_office()
+        if self.on_fired:
+            try:
+                self.on_fired(agent_id)
+            except Exception:
+                log.exception("on_fired failed for %s", agent_id)
         log.info("FIRE_AGENT / archive %s", agent_id)
         await self.reply(ws, {"type": "ACK", "action": "FIRE_AGENT", "agent_id": agent_id,
                               "name": agent.name if agent else agent_id})
@@ -1401,6 +1554,17 @@ class CliRunner:
         if "--add-dir" not in tokens and project:
             insert_at = len(tokens) - 1 if prompt and tokens and tokens[-1] == prompt else len(tokens)
             tokens[insert_at:insert_at] = ["--add-dir", project]
+
+        # Read-only allowlist so status questions (git/gh) don't block on approvals.
+        has_allowed = any(t in ("--allowedTools", "--allowed-tools") for t in tokens)
+        if not has_allowed:
+            insert_at = len(tokens) - 1 if prompt and tokens and tokens[-1] == prompt else len(tokens)
+            tokens[insert_at:insert_at] = ["--allowedTools", ",".join(DEFAULT_CLAUDE_ALLOWED_TOOLS)]
+        has_perm_prompts = "--permission-prompts" in tokens
+        if not has_perm_prompts:
+            insert_at = len(tokens) - 1 if prompt and tokens and tokens[-1] == prompt else len(tokens)
+            # Anything outside the allowlist is denied automatically (no hang).
+            tokens[insert_at:insert_at] = ["--permission-prompts", "none"]
         return tokens
 
     async def run_prompt(self, agent: Agent, prompt: str) -> None:
@@ -1414,7 +1578,7 @@ class CliRunner:
         log.info("CLI %s%s cwd=%s: %s", aid, " (continue)" if continue_session else "",
                  run_cwd, " ".join(shlex.quote(a) for a in argv))
         # Terminal: typing indicator only. User message already shown by the drawer.
-        hub.log_line(aid, "\x1b[2m…\x1b[0m")
+        hub.log_line(aid, "\x1b[2m…\x1b[0m", important=True)
         hub.state(aid, "THINKING", target=agent.desk, text="…")
 
         env = {**os.environ, "FORCE_COLOR": "0", "PYTHONUNBUFFERED": "1"}
@@ -1439,7 +1603,7 @@ class CliRunner:
             )
         except (OSError, ValueError) as exc:
             log.error("CLI %s failed to start: %s", aid, exc)
-            hub.log_line(aid, f"\x1b[31mFailed to start: {exc}\x1b[0m", stream="stderr")
+            hub.log_line(aid, f"\x1b[31mFailed to start: {exc}\x1b[0m", stream="stderr", important=True)
             hub.state(aid, "IDLE", target=random.choice(agent.break_spots), text="Failed to start")
             return
 
@@ -1477,7 +1641,7 @@ class CliRunner:
             log.error("CLI %s timed out after %.0fs", aid, self.timeout)
             await self.terminate(proc)
             code = proc.returncode if proc.returncode is not None else -1
-            hub.log_line(aid, f"\x1b[31mTimed out after {self.timeout:.0f}s\x1b[0m", stream="stderr")
+            hub.log_line(aid, f"\x1b[31mTimed out after {self.timeout:.0f}s\x1b[0m", stream="stderr", important=True)
             hub.state(aid, "IDLE", target=random.choice(agent.break_spots), text="Timed out")
             return
         except asyncio.CancelledError:
@@ -1497,11 +1661,11 @@ class CliRunner:
             hub.post_reply(agent, out_text, bubble=True)
             hub.state(aid, "IDLE", target=agent.desk, text=clean_line(out_text, 60))
         elif ok:
-            hub.log_line(aid, "\x1b[33m(empty reply)\x1b[0m")
+            hub.log_line(aid, "\x1b[33m(empty reply)\x1b[0m", important=True)
             hub.state(aid, "IDLE", target=agent.desk, text="(empty reply)")
         else:
             detail = clean_line(err_text or out_text or f"exit {code}", 200)
-            hub.log_line(aid, f"\x1b[31m{detail}\x1b[0m", stream="stderr")
+            hub.log_line(aid, f"\x1b[31m{detail}\x1b[0m", stream="stderr", important=True)
             hub.state(aid, "IDLE", target=random.choice(agent.break_spots),
                       text=f"Failed (exit {code})")
 
@@ -1656,6 +1820,12 @@ class Harness:
         self.cli = CliRunner(self.hub, commands, args.prompt_mode, args.cwd, args.cmd_timeout,
                              cwds=cmd_cwds, systems=cmd_systems) \
             if args.mode in ("cli", "live") else None
+        # Persist paths + live hire/fire hooks.
+        if office is not None:
+            self.hub.office_path = args.office or DEFAULT_OFFICE_FILE
+        self.hub.cmds_path = cmds_file
+        self.hub.on_hired = self._on_hired
+        self.hub.on_fired = self._on_fired
         if self.cli is not None and commands:
             log.info("CLI bindings: %s", ", ".join(sorted(commands)))
         elif self.cli is not None and not commands:
@@ -1680,6 +1850,43 @@ class Harness:
             for agent in self.hub.agents.values():
                 if self.director.agent_filter(agent):
                     self.director.place_initial(agent)
+
+
+    def _on_hired(self, agent: Agent) -> None:
+        """Start a worker and bind Claude for a mid-session hire."""
+        self.tasks.append(asyncio.create_task(self.worker(agent), name=f"worker-{agent.agent_id}"))
+        if self.cli is not None:
+            role = agent.role or agent.name
+            self.cli.commands[agent.agent_id] = "claude -p --output-format text {prompt}"
+            self.cli.systems[agent.agent_id] = (
+                f"You are {role} in the Agentic Corporation office simulation. "
+                "Reply in character, briefly (2–6 sentences unless asked for more). "
+                "No tool-use narration, no markdown fences unless needed for code."
+            )
+            log.info("CLI bound for new hire %s", agent.agent_id)
+        if self.director and self.director.agent_filter(agent):
+            self.director.place_initial(agent)
+        # Refresh clients so the new agent appears even before FX finishes.
+        self.hub.emit(self.hub.snapshot())
+
+    def _on_fired(self, agent_id: str) -> None:
+        if self.cli is not None:
+            self.cli.commands.pop(agent_id, None)
+            self.cli.systems.pop(agent_id, None)
+            self.cli.cwds.pop(agent_id, None)
+        path = self.hub.cmds_path
+        if path and os.path.exists(path):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    data = json.load(fh)
+                if isinstance(data, dict) and agent_id in data:
+                    data.pop(agent_id, None)
+                    with open(path, "w", encoding="utf-8") as fh:
+                        json.dump(data, fh, indent=2, ensure_ascii=False)
+                        fh.write("\n")
+                    log.info("removed CLI binding for %s from %s", agent_id, path)
+            except (OSError, ValueError) as exc:
+                log.error("could not update agent cmds on fire %s: %s", path, exc)
 
     def inbox_for(self, agent: Agent) -> bool:
         """Dashboard prompts go to the inbox for real bots: every agent without a
@@ -1708,7 +1915,7 @@ class Harness:
                     raise
                 except Exception as exc:  # keep the worker alive whatever happens
                     log.exception("runner failed for %s", agent.agent_id)
-                    self.hub.log_line(agent.agent_id, f"\x1b[31mRunner error: {exc}\x1b[0m", stream="stderr")
+                    self.hub.log_line(agent.agent_id, f"\x1b[31mRunner error: {exc}\x1b[0m", stream="stderr", important=True)
                     self.hub.state(agent.agent_id, "IDLE", text="Runner error")
                 finally:
                     agent.queue.task_done()

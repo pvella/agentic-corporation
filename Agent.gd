@@ -914,7 +914,7 @@ func _draw_back() -> void:
 ## Plate of food in front of a diner at the canteen.
 func _draw_food_plate(from_back: bool) -> void:
 	var food_cols := [Color("#ef6c00"), Color("#66bb6a"), Color("#8d6e63"), Color("#ff7043"), Color("#42a5f5"), Color("#fdd835")]
-	var idx := abs(hash(agent_id + last_text)) % food_cols.size()
+	var idx: int = absi(hash(agent_id + last_text)) % food_cols.size()
 	var col: Color = food_cols[idx]
 	# Offset toward the table based on facing.
 	var off := Vector2(0, 10)

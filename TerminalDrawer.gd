@@ -8,7 +8,9 @@ signal prompt_submitted(agent_id: String, prompt: String)
 signal closed
 signal agent_requested(agent_id: String)  ## a member was clicked in a team summary
 signal archive_requested(agent_id: String)  ## archive / fire this agent
-signal hire_requested  ## recruiter desk: open a hire preview / prompt
+signal hire_requested  ## recruiter desk: show /hire help
+signal hire_submit(name: String, role: String)  ## real hire from /hire Name | Role
+signal verbose_toggled(verbose: bool)  ## /verbose or /quiet
 
 const Ansi := preload("res://ansi.gd")
 const SLIDE_TIME := 0.28
@@ -59,11 +61,16 @@ func _ready() -> void:
 	# Hire button — shown for the recruiter (dr_eggbot).
 	hire_button = Button.new()
 	hire_button.text = "Hire…"
-	hire_button.tooltip_text = "Recruiter desk: preview hiring a new bot"
+	hire_button.tooltip_text = "Recruiter desk: hire a new bot (persists to office.json)"
 	hire_button.visible = false
 	close_button.get_parent().add_child(hire_button)
 	close_button.get_parent().move_child(hire_button, close_button.get_index())
-	hire_button.pressed.connect(func() -> void: hire_requested.emit())
+	hire_button.pressed.connect(func() -> void:
+		hire_requested.emit()
+		append_system("Type: /hire Name | Role   then Enter. Archive removes a bot for real.")
+		prompt_input.placeholder_text = "/hire Name | Role"
+		prompt_input.grab_focus()
+	)
 	# Monospace font for the terminal body.
 	var mono := SystemFont.new()
 	mono.font_names = PackedStringArray(["DejaVu Sans Mono", "Menlo", "Consolas", "Liberation Mono", "monospace"])
@@ -181,8 +188,12 @@ func open_for(a: Agent) -> void:
 	_render_all()
 	panel.visible = true
 	_animate_to(1.0)
-	prompt_input.placeholder_text = "Prompt for %s, e.g. Fix bug in auth.py" % a.display_name
+	prompt_input.placeholder_text = "Prompt for %s — /verbose for tool detail" % a.display_name
 	prompt_input.grab_focus.call_deferred()
+	if archive_button:
+		archive_button.visible = a.agent_id != "dr_eggbot"
+	if hire_button:
+		hire_button.visible = a.agent_id == "dr_eggbot"
 
 
 func close() -> void:
@@ -261,10 +272,30 @@ func _submit() -> void:
 	if text.is_empty():
 		return
 	prompt_input.clear()
+	var lower := text.to_lower()
+	# Local terminal commands (not sent to the harness as prompts).
+	if lower == "/verbose" or lower == "/quiet":
+		verbose_toggled.emit(lower == "/verbose")
+		append_system("terminal: %s" % ("verbose (tool/queue detail)" if lower == "/verbose" else "quiet (> … reply only)"))
+		return
+	if lower.begins_with("/hire"):
+		var rest := text.substr(5).strip_edges()
+		if rest.is_empty():
+			append_system("usage: /hire Name | Role   e.g. /hire Jordan Lee | Designer")
+			return
+		var parts := rest.split("|", false, 1)
+		var hname := parts[0].strip_edges()
+		var hrole := parts[1].strip_edges() if parts.size() > 1 else "New Hire"
+		if hname.is_empty():
+			append_system("usage: /hire Name | Role")
+			return
+		hire_submit.emit(hname, hrole)
+		append_system("hiring %s (%s)…" % [hname, hrole])
+		return
 	if _showing_placeholder:
 		log_view.clear()
 		_showing_placeholder = false
-	log_view.append_text("[color=#61afef][b]you>[/b][/color] %s\n" % Ansi.escape_bbcode(text))
+	log_view.append_text("[color=#61afef][b]>[/b][/color] %s\n" % Ansi.escape_bbcode(text))
 	prompt_submitted.emit(agent.agent_id, text)
 
 

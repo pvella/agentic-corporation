@@ -25,3 +25,11 @@ In `--mode live` without `--agent-cmd` / `agent_cmds.json`, typing a task in a s
 - All roster agents bound in `agent_cmds.example.json` to `claude -p` with short role system prompts
 - Per-agent Claude sessions under `.office_claude/<agent_id>/` (`--continue` + `--add-dir` project)
 - Canteen restyle: serving counter + sneeze guard + food trays, drinks fridge, coffee, microwave, menu board, bin, long tables with place settings; plate in front of eating agents
+
+## Quiet terminal + verbose toggle + real hire/archive
+
+- Default terminal is quiet: only `> message`, then `…`, then the reply (no tool/queue/harness chatter)
+- `/verbose` or Shift+V shows tool/queue detail; `/quiet` returns to quiet
+- Claude bindings get a read-only `--allowedTools` allowlist (Read/Grep/Glob + git status/log/diff + gh pr list/view) and `--permission-prompts none` so status questions do not hang on approvals
+- Recruiter (DR eggbot) **Hire…** then `/hire Name | Role` persists to `office.json` and binds Claude; **Archive** on another bot persists removal
+
