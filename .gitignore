@@ -38,3 +38,6 @@ Thumbs.db
 # Claude Code local overrides
 .claude/settings.local.json
 .claude/office-hook.log
+
+# Local CLI bindings for live/cli mode (may point at personal paths)
+agent_cmds.json

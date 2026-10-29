@@ -31,7 +31,12 @@ fi
 if [ ! -f .venv/.requirements.stamp ] || [ requirements.txt -nt .venv/.requirements.stamp ]; then
   .venv/bin/pip install -q -r requirements.txt && touch .venv/.requirements.stamp
 fi
-.venv/bin/python agent_harness.py --mcp-port 8766 "$@" &
+CMDS_FILE_ARGS=()
+if [ -f agent_cmds.json ]; then
+  CMDS_FILE_ARGS=(--agent-cmds-file agent_cmds.json)
+  echo "CLI bindings: agent_cmds.json"
+fi
+.venv/bin/python agent_harness.py --mcp-port 8766 "${CMDS_FILE_ARGS[@]}" "$@" &
 BRIDGE=$!
 sleep 2
 if [ -n "$OFFICE_MCP_TOKEN" ]; then

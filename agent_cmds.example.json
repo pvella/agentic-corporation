@@ -1,0 +1,7 @@
+{
+  "_comment": "Copy to agent_cmds.json (gitignored). Bind office sprites to real CLI runners for --mode live|cli. run-mac.command loads agent_cmds.json automatically when present. Unbound agents still queue prompts to the MCP inbox.",
+  "chief_of_staff": {
+    "cmd": "claude -p --output-format text {prompt}",
+    "cwd": "."
+  }
+}

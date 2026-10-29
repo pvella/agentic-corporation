@@ -88,6 +88,11 @@ SHARED_CHAT_SPOTS = ("Chat_Break", "Chat_Corridor")  # + Chat_<room id> per team
 IDLE_SPOTS = SHARED_BREAK_SPOTS  # backwards-compatible name
 MEETING_TARGET = "Meeting_Room"
 FOOSBALL_SPOTS = ("Foosball_1", "Foosball_2", "Foosball_3", "Foosball_4")
+CANTEEN_COUNTER = "Canteen_Counter"
+CANTEEN_SEATS = ("Canteen_Seat_1", "Canteen_Seat_2", "Canteen_Seat_3", "Canteen_Seat_4",
+                 "Canteen_Seat_5", "Canteen_Seat_6")
+CANTEEN_FOOD = ("a pie", "a salad", "sushi", "a sandwich", "noodles", "a burrito",
+                "fish and chips", "a latte and muffin", "pad thai", "a toastie")
 SHARED_GROUP = "shared"
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
 DEFAULT_INBOX_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".office_inbox.json")
@@ -314,6 +319,20 @@ class Hub:
         self.on_release: Callable[[Agent], None] | None = None
 
     # -- registry ----------------------------------------------------------
+    def unregister(self, agent_id: str) -> Agent | None:
+        agent = self.agents.pop(agent_id, None)
+        if agent is None:
+            return None
+        self.emit({"type": "AGENT_FIRE", "agent_id": agent_id, "name": agent.name,
+                   "desk": agent.desk, "room": agent.room})
+        return agent
+
+    def hire(self, agent_id: str, name: str, desk: str, color: str, role: str = "", **extra: Any) -> Agent:
+        agent = self.register(agent_id, name, desk, color, role=role, **extra)
+        self.emit({"type": "AGENT_HIRE", "agent_id": agent_id, "name": agent.name, "role": agent.role,
+                   "desk": agent.desk, "room": agent.room, "color": agent.color})
+        return agent
+
     def register(self, agent_id: str, name: str, desk: str, color: str, role: str = "", **extra: Any) -> Agent:
         agent = Agent(agent_id=agent_id, name=name, desk=desk, color=color, role=role, **extra)
         self.agents[agent_id] = agent
@@ -453,6 +472,10 @@ class Hub:
                                       f"they check in\x1b[0m \x1b[2m(#{item['id']})\x1b[0m")
         self.inbox_event(agent.agent_id)
         log.info("inbox %s += #%s", agent.agent_id, item["id"])
+        if self.mode == "live":
+            self.log_line(agent.agent_id,
+                          "\x1b[33m(live mode: no CLI bound — waiting for this bot to call "
+                          "check_office_inbox; nothing will run it automatically)\x1b[0m")
         return item
 
     def deliver_messages(self, agent: Agent) -> list[dict[str, Any]]:
@@ -560,8 +583,113 @@ class Hub:
                                                            "message": "no office layout (legacy mode)"})
         elif action == "PING":
             await self.reply(ws, {"type": "PONG", "ts": now_ms()})
+        elif action == "HIRE_AGENT":
+            await self._action_hire(ws, msg)
+        elif action in ("FIRE_AGENT", "ARCHIVE_AGENT"):
+            await self._action_fire(ws, msg)
+        elif action == "PREVIEW_HIRE_FIRE":
+            await self._action_preview_hire_fire(ws, msg)
         else:
             await self.reply(ws, {"type": "ERROR", "message": f"unknown action '{action}'"})
+
+    async def _action_hire(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        """Spawn a new agent at a desk (recruiter desk / harness hire). Plays AGENT_HIRE FX."""
+        agent_id = str(msg.get("agent_id", "")).strip()
+        name = str(msg.get("name", "")).strip() or agent_id.replace("_", " ").title()
+        desk = str(msg.get("desk", "")).strip()
+        color = str(msg.get("color", "")).strip() or "#5c6bc0"
+        role = str(msg.get("role", "")).strip() or "New Hire"
+        room = str(msg.get("room", "")).strip()
+        if not agent_id:
+            await self.reply(ws, {"type": "ERROR", "action": "HIRE_AGENT", "message": "agent_id required"})
+            return
+        if agent_id in self.agents:
+            await self.reply(ws, {"type": "ERROR", "action": "HIRE_AGENT",
+                                  "message": f"agent '{agent_id}' already exists"})
+            return
+        if not desk:
+            # Pick a free Desk_* waypoint name from the office layout if possible.
+            used = {a.desk for a in self.agents.values()}
+            office = self.office or {}
+            candidates: list[str] = []
+            for r in office.get("rooms", []) or []:
+                for m in r.get("members", []) or []:
+                    d = str(m.get("desk", "") or f"Desk_{m.get('agent_id', '')}")
+                    if d and d not in used:
+                        candidates.append(d)
+                # Also allow synthetic free desks for the room.
+                rid = str(r.get("id", "team"))
+                for i in range(1, 9):
+                    d = f"Desk_{rid}_free_{i}"
+                    if d not in used:
+                        candidates.append(d)
+            desk = candidates[0] if candidates else f"Desk_{agent_id}"
+        if not room:
+            room = "special_projects"
+            for r in (self.office or {}).get("rooms", []) or []:
+                for m in r.get("members", []) or []:
+                    if str(m.get("desk", "")) == desk or str(m.get("agent_id", "")) == agent_id:
+                        room = str(r.get("id", room))
+        agent = self.hire(agent_id, name, desk, color, role=role, room=room)
+        log.info("HIRE_AGENT %s (%s) at %s", agent_id, name, desk)
+        await self.reply(ws, {"type": "ACK", "action": "HIRE_AGENT", "agent_id": agent_id,
+                              "name": name, "desk": desk, "room": room})
+
+    async def _action_fire(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        """Archive / remove an agent. Plays AGENT_FIRE (medics + stretcher) then clears desk."""
+        agent_id = str(msg.get("agent_id", "")).strip()
+        if not agent_id or agent_id not in self.agents:
+            await self.reply(ws, {"type": "ERROR", "action": "FIRE_AGENT",
+                                  "message": f"unknown agent '{agent_id}'"})
+            return
+        # Protect the recruiter itself from accidental archive via preview.
+        if agent_id == "dr_eggbot" and not msg.get("force"):
+            await self.reply(ws, {"type": "ERROR", "action": "FIRE_AGENT",
+                                  "message": "won't archive the recruiter (pass force=true to override)"})
+            return
+        agent = self.unregister(agent_id)
+        log.info("FIRE_AGENT / archive %s", agent_id)
+        await self.reply(ws, {"type": "ACK", "action": "FIRE_AGENT", "agent_id": agent_id,
+                              "name": agent.name if agent else agent_id})
+
+    async def _action_preview_hire_fire(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        """Demo the hire and/or fire pageantry without permanently changing the roster.
+        which: hire | fire | both (default both).
+        """
+        which = str(msg.get("which", "both")).strip().lower() or "both"
+        preview_id = str(msg.get("agent_id", "preview_hire")).strip() or "preview_hire"
+        log.info("PREVIEW_HIRE_FIRE which=%s id=%s", which, preview_id)
+
+        async def _hire_temp() -> None:
+            if preview_id in self.agents:
+                self.unregister(preview_id)
+            # Place near special_projects or first free-looking desk.
+            desk = str(msg.get("desk", f"Desk_{preview_id}"))
+            self.hire(preview_id, "Preview Hire", desk, "#ffd54f",
+                      role="Temp", room=str(msg.get("room", "special_projects")))
+
+        async def _fire_temp() -> None:
+            if preview_id not in self.agents:
+                await _hire_temp()
+                await asyncio.sleep(1.8)  # let hire FX play
+            self.unregister(preview_id)
+
+        if which in ("hire", "both"):
+            await _hire_temp()
+            if which == "hire":
+                # Auto-clean after the beam so the roster stays tidy.
+                async def _cleanup() -> None:
+                    await asyncio.sleep(2.5)
+                    if preview_id in self.agents:
+                        self.agents.pop(preview_id, None)
+                        self.emit(self.snapshot())
+                asyncio.create_task(_cleanup())
+        if which in ("fire", "both"):
+            if which == "both":
+                await asyncio.sleep(1.9)
+            await _fire_temp()
+        await self.reply(ws, {"type": "ACK", "action": "PREVIEW_HIRE_FIRE", "which": which,
+                              "agent_id": preview_id})
 
 
 # ---------------------------------------------------------------------------
@@ -822,6 +950,7 @@ class AmbientDirector:
         self.next_collab_at = self.rand(tempo.collab_every) * 0.5
         self.next_foosball_at = self.rand(tempo.foosball_every) * (0.15 if idle_only else 0.5)
         self.next_chat_at = self.rand(tempo.chat_group_every) * 0.3
+        self.next_canteen_at = self.rand((90, 180))
         # spot name -> {"members": [Agent], "until", "next_at", "turn", "topic"}
         self.chats: dict[str, dict[str, Any]] = {}
 
@@ -904,12 +1033,28 @@ class AmbientDirector:
                            chat_chance=0.12 if self.idle_only else 0.3, state="IDLE")
             elif agent.activity == "meeting":
                 self._away(agent, now, MEETING_CHATTER, chat_chance=0.7, state="COLLAB")
+            elif agent.activity == "canteen":
+                # Counter -> seat -> desk.
+                seat = getattr(agent, "_canteen_seat", None)
+                food = getattr(agent, "_canteen_food", "lunch")
+                eat_until = getattr(agent, "_canteen_eat_until", agent.activity_until)
+                if seat and agent.target == CANTEEN_COUNTER and now >= agent.activity_until:
+                    self.hub.state(agent.agent_id, "IDLE", target=seat, text=f"Eating {food}")
+                    agent.activity_until = eat_until
+                    agent.target = seat
+                elif now >= agent.activity_until:
+                    agent.activity = "desk"
+                    self.hub.state(agent.agent_id, "IDLE", target=agent.desk, text="Back to it.")
+                    for attr in ("_canteen_seat", "_canteen_food", "_canteen_eat_until"):
+                        if hasattr(agent, attr):
+                            delattr(agent, attr)
             elif agent.activity == "foosball":
                 self._away(agent, now, FOOSBALL_CHATTER, chat_chance=0.6, state="IDLE")
         self._chat_tick(now)
         if not self.idle_only:
             self._maybe_meeting(now, agents)
         self._maybe_foosball(now, agents)
+        self._maybe_canteen(now, agents)
         self._maybe_chat(now, agents)
 
     # -- per-activity behaviour ----------------------------------------------
@@ -1030,6 +1175,51 @@ class AmbientDirector:
         for a in group:
             self.hub.log_line(a.agent_id, f"\x1b[35m[meeting]\x1b[0m Syncing with {names}")
 
+
+    def _local_lunchtime(self) -> bool:
+        """True around local lunch (12:00–14:00)."""
+        try:
+            hour = time.localtime().tm_hour
+        except Exception:
+            return False
+        return 12 <= hour < 14
+
+    def _maybe_canteen(self, now: float, free_agents: list[Agent]) -> None:
+        """Idle agents order at the canteen counter, sit and eat, then return."""
+        if now < self.next_canteen_at or not self.can_walk():
+            return
+        # Prefer lunch hour; otherwise a slower trickle when people have been idle.
+        lunch = self._local_lunchtime()
+        gap = self.rand((45, 90) if lunch else (180, 420))
+        self.next_canteen_at = now + (gap * 0.5 if self.idle_only else gap)
+        pool = [a for a in free_agents
+                if a.group == SHARED_GROUP and a.activity == "desk"
+                and not a.is_live()]
+        if not pool:
+            return
+        n = 1 if not lunch else min(3, len(pool))
+        diners = random.sample(pool, min(n, len(pool)))
+        seats = [s for s in CANTEEN_SEATS if s]  # client may not have all; harness still emits
+        for i, agent in enumerate(diners):
+            food = random.choice(CANTEEN_FOOD)
+            seat = seats[i % len(seats)]
+            eat_for = self.rand((25, 50) if lunch else (18, 35)) * (1.3 if self.idle_only else 1.0)
+            agent.activity = "canteen"
+            agent.activity_until = now + eat_for + 12.0
+            agent.next_event_at = now + 8.0
+            # Walk to counter first with an order bubble, then the client/route sits them.
+            self.hub.state(agent.agent_id, "IDLE", target=CANTEEN_COUNTER,
+                         text=f"I'll have {food}")
+            # Follow-up sit is handled when activity timer advances in _tick_break-like path;
+            # stash the seat on the agent via text+activity for the next tick.
+            agent.text = f"Eating {food}"
+            agent.target = seat  # director will re-emit when leaving counter phase
+            # Schedule a soft "now eating" by shortening first leg:
+            agent.activity_until = now + 8.0  # at counter
+            agent._canteen_seat = seat  # type: ignore[attr-defined]
+            agent._canteen_food = food  # type: ignore[attr-defined]
+            agent._canteen_eat_until = now + 8.0 + eat_for  # type: ignore[attr-defined]
+
     def _maybe_foosball(self, now: float, free_agents: list[Agent]) -> None:
         if now < self.next_foosball_at or not self.can_walk():
             return
@@ -1113,11 +1303,13 @@ class CliRunner:
     """Wraps a real CLI process per agent and streams its output as events."""
 
     def __init__(self, hub: Hub, commands: dict[str, str], prompt_mode: str = "arg",
-                 cwd: str | None = None, timeout: float = 0.0) -> None:
+                 cwd: str | None = None, timeout: float = 0.0,
+                 cwds: dict[str, str] | None = None) -> None:
         self.hub = hub
         self.commands = commands
         self.prompt_mode = prompt_mode
         self.cwd = cwd
+        self.cwds = dict(cwds or {})
         self.timeout = timeout
         self.procs: set[asyncio.subprocess.Process] = set()
 
@@ -1140,6 +1332,12 @@ class CliRunner:
         hub.log_line(aid, "\x1b[2m$ " + " ".join(shlex.quote(a) for a in argv) + "\x1b[0m")
         hub.state(aid, "THINKING", text=f"Starting {os.path.basename(argv[0])}...")
         env = {**os.environ, "FORCE_COLOR": "1", "CLICOLOR_FORCE": "1", "PYTHONUNBUFFERED": "1"}
+        # Project Claude Code hooks map activity onto this sprite (not the default).
+        env["OFFICE_AGENT"] = agent.name
+        run_cwd = self.cwds.get(aid) or self.cwd
+        if run_cwd in (None, "", "."):
+            run_cwd = os.getcwd()
+        env.setdefault("CLAUDE_PROJECT_DIR", run_cwd)
         use_stdin = self.prompt_mode == "stdin"
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -1147,7 +1345,7 @@ class CliRunner:
                 stdin=asyncio.subprocess.PIPE if use_stdin else asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=self.cwd,
+                cwd=run_cwd,
                 env=env,
                 limit=1 << 20,
                 start_new_session=True,  # own process group so we can kill children too
@@ -1310,6 +1508,8 @@ def normalise_office(raw: Any, source: str = "office.json") -> dict[str, Any]:
                            "foosball": list(FOOSBALL_SPOTS)},
             "meeting_room": {"name": str(mr.get("name", "Meeting Room")),
                              "seats": max(2, min(8, int(mr.get("seats", 6)))), "target": MEETING_TARGET},
+            "canteen": {"name": str((shared.get("canteen") or {}).get("name", "Canteen") if isinstance(shared.get("canteen"), dict) else "Canteen"),
+                        "counter": CANTEEN_COUNTER, "seats": list(CANTEEN_SEATS)},
         },
     }
 
@@ -1335,6 +1535,13 @@ class Harness:
             register_office(self.hub, office)
         self.mock = MockRunner(self.hub, speed=args.speed)
         commands = dict(args.agent_cmd or [])
+        cmd_cwds: dict[str, str] = {}
+        cmds_file = getattr(args, "agent_cmds_file", None)
+        if cmds_file:
+            file_pairs, file_cwds = load_agent_cmds_file(cmds_file)
+            for aid, cmd in file_pairs:
+                commands.setdefault(aid, cmd)
+            cmd_cwds.update(file_cwds)
         unknown = set(commands) - set(self.hub.agents)
         if unknown:
             raise SystemExit(f"--agent-cmd refers to unknown agents: {', '.join(sorted(unknown))}")
@@ -1342,10 +1549,13 @@ class Harness:
         inbox_path = None if str(args.inbox_file).lower() == "none" else (args.inbox_file or DEFAULT_INBOX_FILE)
         self.hub.inbox = Inbox(inbox_path)
         self.hub.inbox_for = self.inbox_for
-        self.cli = CliRunner(self.hub, commands, args.prompt_mode, args.cwd, args.cmd_timeout) \
+        self.cli = CliRunner(self.hub, commands, args.prompt_mode, args.cwd, args.cmd_timeout, cwds=cmd_cwds) \
             if args.mode in ("cli", "live") else None
-        if self.cli is not None and not commands:
-            log.warning("--mode cli without any --agent-cmd: every agent uses the mock runner")
+        if self.cli is not None and commands:
+            log.info("CLI bindings: %s", ", ".join(sorted(commands)))
+        elif self.cli is not None and not commands:
+            log.warning("%s mode without any --agent-cmd / agent_cmds.json: "
+                        "dashboard prompts go to the MCP inbox and nothing runs them", args.mode)
         self.tasks: list[asyncio.Task[Any]] = []
         self.stop_event: asyncio.Event | None = None
         self.mcp_server: Any = None  # office_mcp.OfficeMCP when enabled
@@ -1467,6 +1677,44 @@ class Harness:
             self.stop_event.set()
 
 
+
+def load_agent_cmds_file(path: str) -> tuple[list[tuple[str, str]], dict[str, str]]:
+    """Load agent_id -> command bindings from a JSON file.
+
+    Accepted shapes:
+      {"chief_of_staff": "claude -p {prompt}"}
+      {"chief_of_staff": {"cmd": "claude -p {prompt}", "cwd": "."}}
+    Keys starting with _ are comments. Returns ([(agent_id, cmd), ...], {agent_id: cwd}).
+    """
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    if not isinstance(data, dict):
+        raise argparse.ArgumentTypeError(f"{path}: expected a JSON object")
+    pairs: list[tuple[str, str]] = []
+    cwds: dict[str, str] = {}
+    for key, val in data.items():
+        if str(key).startswith("_"):
+            continue
+        aid = str(key).strip()
+        if not aid:
+            continue
+        if isinstance(val, str):
+            cmd = val.strip()
+            cwd = None
+        elif isinstance(val, dict):
+            cmd = str(val.get("cmd") or val.get("command") or "").strip()
+            raw_cwd = val.get("cwd")
+            cwd = str(raw_cwd).strip() if raw_cwd else None
+        else:
+            raise argparse.ArgumentTypeError(f"{path}: {aid}: expected string or object")
+        if not cmd:
+            raise argparse.ArgumentTypeError(f"{path}: {aid}: missing cmd")
+        pairs.append((aid, cmd))
+        if cwd:
+            cwds[aid] = cwd
+    return pairs, cwds
+
+
 def parse_agent_cmd(value: str) -> tuple[str, str]:
     if "=" not in value:
         raise argparse.ArgumentTypeError("expected agent_id='command ...'")
@@ -1488,7 +1736,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "live: no fake work, agents work only on real reports / CLI runs and otherwise "
                         "live an idle office life (see --no-ambient)")
     p.add_argument("--agent-cmd", action="append", type=parse_agent_cmd, metavar="AGENT_ID='CMD'",
-                   help="bind a shell command to an agent (cli mode); repeatable. Use {prompt} as a placeholder")
+                   help="bind a shell command to an agent (cli/live mode); repeatable. Use {prompt} as a placeholder")
+    p.add_argument("--agent-cmds-file", default=None, metavar="PATH",
+                   help="JSON file of agent_id -> cmd (or {cmd, cwd}) bindings; see agent_cmds.example.json")
     p.add_argument("--prompt-mode", choices=("arg", "stdin", "none"), default="arg",
                    help="how the prompt reaches the command when {prompt} is not used (default: arg)")
     p.add_argument("--cwd", default=None, help="working directory for CLI commands")
