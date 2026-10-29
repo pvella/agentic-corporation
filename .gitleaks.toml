@@ -1,0 +1,21 @@
+# Gitleaks config for Agentic Corporation — keep secrets out of public history.
+title = "agentic-corporation"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "office-token-file"
+description = "Office MCP bearer token file"
+regex = '''(?i)office[_-]?token'''
+path = '''(?i)\.office_token$'''
+tags = ["key", "office"]
+
+[[allowlists]]
+description = "Benign fixture / example placeholders"
+paths = [
+  '''(?i)CHANGE_NOTES\.md$''',
+  '''(?i)CREDITS\.md$''',
+  '''(?i)_diag.*''',
+  '''(?i)_jd_status/.*''',
+]
