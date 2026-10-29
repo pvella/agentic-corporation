@@ -695,6 +695,10 @@ class Hub:
             await self._action_preview_hire_fire(ws, msg)
         elif action == "ADD_KNOWLEDGE":
             await self._action_add_knowledge(ws, msg)
+        elif action == "LIST_KNOWLEDGE":
+            await self._action_list_knowledge(ws, msg)
+        elif action == "REMOVE_KNOWLEDGE":
+            await self._action_remove_knowledge(ws, msg)
         elif action == "SEND_DM":
             await self._action_send_dm(ws, msg)
         elif action == "HUMAN_REPLY":
@@ -750,6 +754,91 @@ class Hub:
         self.emit(payload)
         log.info("ADD_KNOWLEDGE %s -> %s", src_path, dest)
         await self.reply(ws, {"type": "ACK", "action": "ADD_KNOWLEDGE", "filename": dest.name, "title": title})
+
+    def _knowledge_dir(self) -> Path:
+        root = Path(self.office_path).resolve().parent if self.office_path else Path.cwd()
+        return root / "knowledge"
+
+    def _list_knowledge_files(self) -> list[dict[str, Any]]:
+        dest_dir = self._knowledge_dir()
+        if not dest_dir.is_dir():
+            return []
+        out: list[dict[str, Any]] = []
+        for p in sorted(dest_dir.iterdir(), key=lambda x: x.name.lower()):
+            if not p.is_file() or p.suffix.lower() != ".md":
+                continue
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            content = ""
+            try:
+                content = p.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                content = ""
+            out.append({
+                "name": p.name,
+                "filename": p.name,
+                "title": p.stem.replace("_", " ").replace("-", " "),
+                "path": str(p),
+                "size": int(st.st_size),
+                "mtime": float(st.st_mtime),
+                "added": float(st.st_mtime),
+                "content": content,
+            })
+        return out
+
+    async def _action_list_knowledge(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        files = self._list_knowledge_files()
+        payload = {"type": "KNOWLEDGE_LIST", "files": files, "count": len(files)}
+        await self.reply(ws, payload)
+        # Also broadcast so any open panel can refresh.
+        self.emit(payload)
+
+    async def _action_remove_knowledge(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        raw = str(msg.get("name", msg.get("filename", msg.get("path", "")))).strip()
+        if not raw:
+            await self.reply(ws, {"type": "ERROR", "action": "REMOVE_KNOWLEDGE", "message": "name required"})
+            return
+        dest_dir = self._knowledge_dir()
+        # Accept basename only; reject path traversal.
+        name = Path(raw).name
+        target = dest_dir / name
+        if not target.is_file() or target.suffix.lower() != ".md":
+            # Try stem match / case-insensitive.
+            found = None
+            if dest_dir.is_dir():
+                for p in dest_dir.iterdir():
+                    if p.is_file() and p.suffix.lower() == ".md" and (
+                        p.name == name or p.stem == Path(name).stem
+                        or p.name.lower() == name.lower()
+                    ):
+                        found = p
+                        break
+            if found is None:
+                await self.reply(ws, {"type": "ERROR", "action": "REMOVE_KNOWLEDGE",
+                                     "message": f"not found: {name}"})
+                return
+            target = found
+            name = target.name
+        try:
+            target.unlink()
+        except OSError as exc:
+            await self.reply(ws, {"type": "ERROR", "action": "REMOVE_KNOWLEDGE", "message": str(exc)})
+            return
+        title = Path(name).stem.replace("_", " ").replace("-", " ")
+        payload = {
+            "type": "KNOWLEDGE_REMOVED",
+            "filename": name,
+            "name": name,
+            "title": title,
+            "path": str(target),
+            "files": self._list_knowledge_files(),
+        }
+        self.emit(payload)
+        log.info("REMOVE_KNOWLEDGE %s", target)
+        await self.reply(ws, {"type": "ACK", "action": "REMOVE_KNOWLEDGE",
+                              "filename": name, "title": title})
 
     async def _action_send_dm(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
         to_raw = str(msg.get("to", "")).strip()
@@ -1384,7 +1473,8 @@ class AmbientDirector:
     def desk_span(self) -> tuple[float, float]:
         """Time at the desk between ambient activities."""
         t = self.tempo.work
-        return (t[0] * 1.5, t[1] * 1.5) if self.idle_only else t
+        # Idle-only: shorter sits so the office still wanders (walk / canteen / chat).
+        return (t[0] * 0.45, t[1] * 0.7) if self.idle_only else t
 
     def place_initial(self, agent: Agent) -> None:
         """Agents start seated at their desks (staggered session ends)."""
@@ -1490,7 +1580,7 @@ class AmbientDirector:
         maybe a wander to a break spot."""
         t = self.tempo
         if now >= agent.activity_until:
-            if random.random() < 0.55 and self.can_walk():
+            if random.random() < 0.72 and self.can_walk():
                 self.reserve_walk()
                 agent.activity = "break"
                 agent.activity_until = now + self.rand(t.break_time) * 1.5
@@ -2154,9 +2244,12 @@ class Harness:
                       or (args.mode == "cli" and args.ambient))
         self.director: AmbientDirector | None = None
         if ambient_on:
+            # Live/idle-only: include CLI-bound agents so they wander when not
+            # on a real report. Mock/cli: keep excluding bound bots from fake work.
             self.director = AmbientDirector(
                 self.hub, self.tempo, args.speed,
-                agent_filter=lambda a: not (self.cli and self.cli.handles(a.agent_id)),
+                agent_filter=(lambda _a: True) if args.mode == "live"
+                else (lambda a: not (self.cli and self.cli.handles(a.agent_id))),
                 idle_only=args.mode == "live")
             self.hub.on_release = self.director.after_finish
             for agent in self.hub.agents.values():

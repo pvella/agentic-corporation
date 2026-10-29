@@ -45,6 +45,7 @@ const PropScript := preload("res://Prop.gd")
 const Office := preload("res://Office.gd")
 const Iso := preload("res://Iso.gd")
 const HireFireFxScript := preload("res://HireFireFx.gd")
+const KnowledgeLibraryScript := preload("res://KnowledgeLibrary.gd")
 const AgentViewScript := preload("res://AgentView.gd")
 const SignTagScript := preload("res://SignTag.gd")
 const SETTINGS_PATH := "user://agent_office.cfg"
@@ -97,6 +98,8 @@ var _role_catalog: Array = []
 var _role_categories: Array = []
 var _fire_preview_variant := ""
 var _knowledge_racks: Array = []
+var _knowledge_library: Node = null
+var _server_clickables: Array = []
 var _human_queue: Array = []
 var _meeting_panel: Control = null
 var _human_dialog: Window = null
@@ -187,6 +190,14 @@ func _ready() -> void:
 		drawer.job_description_requested.connect(func(_aid: String = "") -> void:
 			if drawer.agent:
 				_view_job_description_for(drawer.agent)
+		)
+	if drawer.has_signal("kb_requested"):
+		drawer.kb_requested.connect(func(subcmd: String, arg: String) -> void:
+			if subcmd == "rm":
+				send_json({"action": "REMOVE_KNOWLEDGE", "name": arg})
+			else:
+				send_json({"action": "LIST_KNOWLEDGE"})
+				_open_knowledge_library()
 		)
 	camera.zoom_changed.connect(_apply_ui_scale)
 	build_layout(Office.LEGACY_LAYOUT, true)
@@ -345,6 +356,7 @@ func _build_visuals() -> void:
 	for id: String in _desk_props.keys():
 		if agents.has(id):
 			_desk_props[id].owner_agent = agents[id]
+	_add_server_rack_hotspots()
 	_build_signs()
 	office.queue_redraw()
 
@@ -362,6 +374,8 @@ func _link_prop(d: Dictionary, p: Node2D) -> void:
 		_desk_props[str(d.owner)] = p
 	elif d.kind == "foosball":
 		_foosball_props.append(p)
+	elif str(d.get("kind", "")) == "servers":
+		_make_server_clickable(p)
 
 
 ## Splits `r` along its long axis into equal pieces no longer than `max_len`.
@@ -386,7 +400,11 @@ func _build_signs() -> void:
 			var tag := _add_sign_tag(s, Iso.to_screen((s.rect as Rect2).position + Vector2(18, 20)))
 			if s.clickable:
 				var room_id := str(s.room_id)
-				tag.pressed.connect(func() -> void: open_team(room_id))
+				var sname := str(s.get("name", "")).to_lower()
+				if room_id == "__knowledge__" or sname.find("server") >= 0:
+					tag.pressed.connect(func() -> void: _open_knowledge_library())
+				else:
+					tag.pressed.connect(func() -> void: open_team(room_id))
 		for f: Dictionary in office.outer_frames:
 			var o: Rect2 = (f.rect as Rect2).grow(Office.EXT_WALL)
 			_add_sign_tag({"name": str(f.name), "style": "building"}, Iso.to_screen(o.position, Office.WALL_H_BACK + 6.0))
@@ -544,6 +562,14 @@ func _catalog_categories() -> Array:
 
 
 func _open_hiring_board() -> void:
+	_dismiss_exclusive_windows()
+	# One board at a time — a second CanvasLayer board stacked silently.
+	for child in get_children():
+		if child.get_script() == load("res://hiring/hiring_board.gd") and is_instance_valid(child):
+			if child.has_method("close"):
+				child.close()
+			else:
+				child.queue_free()
 	var BoardScript = load("res://hiring/hiring_board.gd")
 	if BoardScript == null:
 		push_error("[AgentOffice] hiring/hiring_board.gd missing")
@@ -818,30 +844,215 @@ func _hired_unique_role_ids() -> Dictionary:
 
 func _on_knowledge_added(msg: Dictionary) -> void:
 	var title := str(msg.get("title", msg.get("filename", "doc")))
+	var fname := str(msg.get("filename", msg.get("name", title)))
 	_set_status("Knowledge added: %s → Server Room" % title, Color("#29b6f6"))
-	# Visual: flash a knowledge slate onto the Server Room rack.
+	# Visual: flash a knowledge slate onto the Server Room rack (screen space).
 	var rack_name := str(msg.get("rack", "Server_Rack_1"))
-	var pos := Vector2(720, 520)
+	var world := Vector2(720, 520)
 	if waypoints.has(rack_name) and waypoints[rack_name] is Node2D:
-		pos = (waypoints[rack_name] as Node2D).global_position
+		world = (waypoints[rack_name] as Node2D).global_position
 	elif waypoints.has("Server_Room") and waypoints["Server_Room"] is Node2D:
-		pos = (waypoints["Server_Room"] as Node2D).global_position
+		world = (waypoints["Server_Room"] as Node2D).global_position
+	var pos := Iso.to_screen(world)
 	var slate := ColorRect.new()
+	slate.mouse_filter = Control.MOUSE_FILTER_STOP
 	slate.size = Vector2(28, 36)
 	slate.position = pos + Vector2(-14, -48)
 	slate.color = Color("#26a69a")
 	slate.z_index = 40
+	slate.gui_input.connect(func(ev: InputEvent) -> void:
+		if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
+			_open_knowledge_library()
+	)
 	add_child(slate)
-	_knowledge_racks.append({"node": slate, "title": title, "path": str(msg.get("path", ""))})
+	_knowledge_racks.append({"node": slate, "title": title, "path": str(msg.get("path", "")), "name": fname})
 	var label := Label.new()
 	label.text = title.left(12)
 	label.add_theme_font_size_override("font_size", 9)
 	label.position = Vector2(0, 38)
 	slate.add_child(label)
-	# Soft pulse then settle.
 	var tw := create_tween()
 	tw.tween_property(slate, "modulate", Color(1.4, 1.4, 1.4, 1.0), 0.25)
 	tw.tween_property(slate, "modulate", Color(1, 1, 1, 1), 0.4)
+	if _knowledge_library and is_instance_valid(_knowledge_library):
+		send_json({"action": "LIST_KNOWLEDGE"})
+
+
+func _on_knowledge_list(msg: Dictionary) -> void:
+	var files: Array = msg.get("files", [])
+	if not (files is Array):
+		files = []
+	if drawer and drawer.has_method("append_system"):
+		if files.is_empty():
+			drawer.append_system("knowledge/: (empty)")
+		else:
+			drawer.append_system("knowledge/ (%d):" % files.size())
+			for f in files:
+				if not (f is Dictionary):
+					continue
+				var nm := str(f.get("name", "?"))
+				var sz := int(f.get("size", 0))
+				drawer.append_system("  · %s (%d B)" % [nm, sz])
+	if _knowledge_library and is_instance_valid(_knowledge_library):
+		_knowledge_library.set_files(files)
+	else:
+		_spawn_knowledge_library(files)
+
+
+func _on_knowledge_removed(msg: Dictionary) -> void:
+	var title := str(msg.get("title", msg.get("filename", "doc")))
+	var fname := str(msg.get("filename", msg.get("name", "")))
+	_set_status("Knowledge removed: %s" % title, Color("#ef9a9a"))
+	if drawer and drawer.has_method("append_system"):
+		drawer.append_system("knowledge: removed %s" % (fname if fname != "" else title))
+	var kept: Array = []
+	for entry in _knowledge_racks:
+		var ename := str(entry.get("name", entry.get("title", "")))
+		if ename == fname or str(entry.get("title", "")) == title:
+			var n: Node = entry.get("node")
+			if n and is_instance_valid(n):
+				n.queue_free()
+		else:
+			kept.append(entry)
+	_knowledge_racks = kept
+	_play_server_spark()
+	var files: Array = msg.get("files", [])
+	if _knowledge_library and is_instance_valid(_knowledge_library):
+		if files is Array:
+			_knowledge_library.set_files(files)
+		else:
+			send_json({"action": "LIST_KNOWLEDGE"})
+
+
+func _open_knowledge_library() -> void:
+	_dismiss_exclusive_windows()
+	send_json({"action": "LIST_KNOWLEDGE"})
+	if _knowledge_library and is_instance_valid(_knowledge_library):
+		return
+	_spawn_knowledge_library([])
+
+
+func _spawn_knowledge_library(files: Array) -> void:
+	if _knowledge_library and is_instance_valid(_knowledge_library):
+		_knowledge_library.set_files(files)
+		return
+	var lib: Node = KnowledgeLibraryScript.new()
+	add_child(lib)
+	_knowledge_library = lib
+	lib.closed.connect(func() -> void:
+		if _knowledge_library == lib:
+			_knowledge_library = null
+	)
+	lib.remove_requested.connect(func(filename: String) -> void:
+		send_json({"action": "REMOVE_KNOWLEDGE", "name": filename})
+	)
+	lib.refresh_requested.connect(func() -> void:
+		send_json({"action": "LIST_KNOWLEDGE"})
+	)
+	lib.open_with(files)
+
+
+func _make_server_clickable(prop: Node2D) -> void:
+	var area := Area2D.new()
+	area.name = "KnowledgeHotspot"
+	area.input_pickable = true
+	area.monitoring = false
+	area.collision_layer = 8
+	var shape := CollisionShape2D.new()
+	var rect_shape := RectangleShape2D.new()
+	rect_shape.size = Vector2(64, 100)
+	shape.shape = rect_shape
+	shape.position = Vector2(0, -20)
+	area.add_child(shape)
+	area.input_event.connect(func(_vp: Node, ev: InputEvent, _i: int) -> void:
+		if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
+			_open_knowledge_library()
+			get_viewport().set_input_as_handled()
+	)
+	prop.add_child(area)
+	_server_clickables.append(area)
+
+
+func _add_server_rack_hotspots() -> void:
+	for rack_name in ["Server_Rack_1", "Server_Rack_2", "Server_Room"]:
+		if not waypoints.has(rack_name):
+			continue
+		var m: Node2D = waypoints[rack_name]
+		if m == null:
+			continue
+		var holder := Node2D.new()
+		holder.name = "KnowledgeHotspotHolder_%s" % rack_name
+		holder.position = Iso.to_screen(m.global_position)
+		holder.z_index = 30
+		signs_root.add_child(holder)
+		var area := Area2D.new()
+		area.name = "KnowledgeHotspot"
+		area.input_pickable = true
+		area.monitoring = false
+		area.collision_layer = 8
+		var shape := CollisionShape2D.new()
+		var rect_shape := RectangleShape2D.new()
+		rect_shape.size = Vector2(70, 90)
+		shape.shape = rect_shape
+		area.add_child(shape)
+		holder.add_child(area)
+		area.input_event.connect(func(_vp: Node, ev: InputEvent, _i: int) -> void:
+			if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
+				_open_knowledge_library()
+				get_viewport().set_input_as_handled()
+		)
+		_server_clickables.append(area)
+
+
+func _play_server_spark() -> void:
+	var world := Vector2(720, 520)
+	if waypoints.has("Server_Rack_1") and waypoints["Server_Rack_1"] is Node2D:
+		world = (waypoints["Server_Rack_1"] as Node2D).global_position
+	elif waypoints.has("Server_Room") and waypoints["Server_Room"] is Node2D:
+		world = (waypoints["Server_Room"] as Node2D).global_position
+	var pos := Iso.to_screen(world)
+	var spark := Node2D.new()
+	spark.z_index = 55
+	spark.position = pos
+	add_child(spark)
+	var bits: Array = []
+	for i in 16:
+		bits.append({
+			"p": Vector2(randf_range(-10, 10), randf_range(-24, 0)),
+			"v": Vector2(randf_range(-90, 90), randf_range(-160, -40)),
+			"life": randf_range(0.35, 0.9),
+			"c": Color(0.35, 1.0, 0.85, 1.0) if i % 2 == 0 else Color(0.7, 1.0, 0.4, 1.0),
+		})
+	spark.set_meta("bits", bits)
+	var acc := {"t": 0.0}
+	var tw := create_tween()
+	tw.set_loops(24)
+	tw.tween_callback(func() -> void:
+		if not is_instance_valid(spark):
+			return
+		var dt := 0.045
+		acc["t"] += dt
+		var bits2: Array = spark.get_meta("bits")
+		for b in bits2:
+			b["p"] = b["p"] + b["v"] * dt
+			b["v"] = b["v"] + Vector2(0, 220) * dt
+			b["life"] = float(b["life"]) - dt
+		for child in spark.get_children():
+			child.queue_free()
+		for b in bits2:
+			if float(b["life"]) <= 0.0:
+				continue
+			var dot := ColorRect.new()
+			dot.size = Vector2(3, 3)
+			dot.position = b["p"]
+			var c: Color = b["c"]
+			c.a = clampf(float(b["life"]), 0.0, 1.0)
+			dot.color = c
+			spark.add_child(dot)
+		if acc["t"] > 1.05:
+			spark.queue_free()
+	)
+	tw.tween_interval(0.045)
 
 
 func _on_agent_dm(msg: Dictionary) -> void:
@@ -1143,6 +1354,10 @@ func handle_message(msg: Dictionary) -> void:
 					drawer.append_system("%s: %s" % [act, str(msg.get("name", msg.get("agent_id", "")))], "#ffd54f")
 		"KNOWLEDGE_ADDED":
 			_on_knowledge_added(msg)
+		"KNOWLEDGE_LIST":
+			_on_knowledge_list(msg)
+		"KNOWLEDGE_REMOVED":
+			_on_knowledge_removed(msg)
 		"AGENT_DM":
 			_on_agent_dm(msg)
 		"ASK_HUMAN":

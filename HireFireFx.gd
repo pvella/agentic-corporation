@@ -10,6 +10,8 @@
 ## Preview: pass variant= name, or cycle with Shift+F / preview keys.
 extends Node2D
 
+const Iso := preload("res://Iso.gd")
+
 signal finished(kind: String, agent_id: String)
 
 const FIRE_VARIANTS := ["medics", "stomp", "anvil", "trapdoor", "ufo", "escort"]
@@ -37,6 +39,8 @@ var _wave_hand := 0.0
 var _escort_box := Vector2.ZERO
 var _puff: Array[Dictionary] = []
 var _forced_variant := ""
+var _from_world := Vector2.ZERO
+var _to_world := Vector2.ZERO
 
 static var _preview_cycle := 0
 
@@ -51,7 +55,9 @@ func play_hire(agent: Node, desk_pos: Vector2) -> void:
 	kind = "hire"
 	agent_id = str(agent.agent_id)
 	_agent = agent
-	global_position = desk_pos
+	# desk_pos is world; FX lives under agents_root (screen / iso space).
+	_from_world = desk_pos
+	global_position = Iso.to_screen(desk_pos)
 	if agent.view:
 		agent.view.modulate.a = 0.0
 	_beam_alpha = 0.0
@@ -70,8 +76,11 @@ func play_fire(agent: Node, entrance_pos: Vector2, forced: String = "") -> void:
 	kind = "fire"
 	agent_id = str(agent.agent_id)
 	_agent = agent
-	_carry_from = agent.global_position
-	_carry_to = entrance_pos
+	# Keep world coords for body motion; project FX onto agents_root screen space.
+	_from_world = agent.global_position
+	_to_world = entrance_pos
+	_carry_from = Iso.to_screen(_from_world)
+	_carry_to = Iso.to_screen(_to_world)
 	global_position = _carry_from
 	_forced_variant = forced.strip_edges()
 	if _forced_variant != "" and _forced_variant in FIRE_VARIANTS:
@@ -176,113 +185,119 @@ func _hide_agent() -> void:
 
 
 func _process_medics(_delta: float) -> void:
-	# 0: slow topple, 1: medics arrive, 2: drag to door, 3: done
+	# 0: slow topple (~2.4s), 1: medics walk in (~1.6s), 2: drag to door (~3s)
 	if _phase == 0:
 		if _agent and is_instance_valid(_agent) and _agent.view:
-			var u := clampf(_t / 0.9, 0.0, 1.0)
+			var u := clampf(_t / 2.4, 0.0, 1.0)
 			_agent.view.rotation = lerp_angle(0.0, PI / 2.0, u)
 			_agent.view.scale.y = lerpf(1.0, 0.55, u)
-		if _t >= 1.0:
+		if _t >= 2.5:
 			_phase = 1
 			_t = 0.0
-	elif _phase == 1 and _t >= 0.8:
+	elif _phase == 1 and _t >= 1.6:
 		_phase = 2
 		_t = 0.0
 		_hide_agent()
 	elif _phase == 2:
-		var u := clampf(_t / 2.2, 0.0, 1.0)
-		global_position = _carry_from.lerp(_carry_to, u)
+		var u := clampf(_t / 3.0, 0.0, 1.0)
+		var world := _from_world.lerp(_to_world, u)
+		global_position = Iso.to_screen(world)
+		_carry_from = global_position
 		if u >= 1.0:
 			_finish_fire()
 
 
 func _process_stomp(_delta: float) -> void:
-	# 0: foot descends, 1: stomp+shake, 2: flat puddle, 3: janitor mop, 4: done
-	if _phase == 0 and _t >= 0.55:
+	# 0: foot descends, 1: stomp+shake, 2: flat puddle, 3: janitor mop (~7s total)
+	if _phase == 0 and _t >= 1.4:
 		_phase = 1
 		_t = 0.0
 		_shake_amp = 18.0
 		_flat_alpha = 1.0
 		_hide_agent()
 		_spawn_puff(10)
-	elif _phase == 1 and _t >= 0.45:
+	elif _phase == 1 and _t >= 0.7:
 		_phase = 2
 		_t = 0.0
-	elif _phase == 2 and _t >= 0.35:
+	elif _phase == 2 and _t >= 0.7:
 		_phase = 3
 		_t = 0.0
 		_mop_x = -55.0
 	elif _phase == 3:
-		_mop_x = lerpf(-55.0, 55.0, clampf(_t / 1.4, 0.0, 1.0))
-		_flat_alpha = clampf(1.0 - (_t - 0.4) / 1.0, 0.0, 1.0)
-		if _t >= 1.6:
+		_mop_x = lerpf(-55.0, 55.0, clampf(_t / 3.2, 0.0, 1.0))
+		_flat_alpha = clampf(1.0 - (_t - 0.8) / 2.2, 0.0, 1.0)
+		if _t >= 3.6:
 			_finish_fire()
 
 
 func _process_anvil(_delta: float) -> void:
 	if _phase == 0:
-		_anvil_y = lerpf(-200.0, -8.0, clampf(_t / 0.55, 0.0, 1.0))
-		if _t >= 0.55:
+		_anvil_y = lerpf(-200.0, -8.0, clampf(_t / 1.8, 0.0, 1.0))
+		if _t >= 1.8:
 			_phase = 1
 			_t = 0.0
 			_shake_amp = 14.0
 			_hide_agent()
 			_spawn_puff(14)
-	elif _phase == 1 and _t >= 0.9:
+	elif _phase == 1 and _t >= 2.8:
 		_finish_fire()
+	elif _phase == 1:
+		_anvil_y = -8.0
 
 
 func _process_trapdoor(_delta: float) -> void:
 	if _phase == 0:
-		_trap_open = clampf(_t / 0.45, 0.0, 1.0)
-		_wave_hand = sin(_t * 14.0) * 10.0
+		_trap_open = clampf(_t / 1.2, 0.0, 1.0)
+		_wave_hand = sin(_t * 10.0) * 10.0
 		if _agent and is_instance_valid(_agent) and _agent.view:
 			_agent.view.position.y = lerpf(0.0, 8.0, _trap_open)
-		if _t >= 0.7:
+		if _t >= 2.2:
 			_phase = 1
 			_t = 0.0
 			_hide_agent()
 	elif _phase == 1:
-		_trap_open = clampf(1.0 - _t / 0.5, 0.0, 1.0)
-		if _t >= 0.7:
+		_trap_open = clampf(1.0 - _t / 1.4, 0.0, 1.0)
+		if _t >= 2.4:
 			_finish_fire()
 
 
 func _process_ufo(_delta: float) -> void:
 	if _phase == 0:
-		_ufo_y = lerpf(-180.0, -70.0, clampf(_t / 0.7, 0.0, 1.0))
-		_beam_alpha = clampf((_t - 0.3) / 0.4, 0.0, 1.0)
-		if _t >= 0.9:
+		_ufo_y = lerpf(-180.0, -70.0, clampf(_t / 1.6, 0.0, 1.0))
+		_beam_alpha = clampf((_t - 0.5) / 0.8, 0.0, 1.0)
+		if _t >= 1.8:
 			_phase = 1
 			_t = 0.0
 	elif _phase == 1:
 		_beam_alpha = 1.0
 		if _agent and is_instance_valid(_agent) and _agent.view:
-			_agent.view.modulate.a = clampf(1.0 - _t / 0.7, 0.0, 1.0)
-			_agent.view.position.y = -_t * 50.0
-			_agent.view.scale = Vector2.ONE * clampf(1.0 - _t / 0.9, 0.15, 1.0)
-		if _t >= 0.85:
+			_agent.view.modulate.a = clampf(1.0 - _t / 1.6, 0.0, 1.0)
+			_agent.view.position.y = -_t * 40.0
+			_agent.view.scale = Vector2.ONE * clampf(1.0 - _t / 1.8, 0.15, 1.0)
+		if _t >= 1.8:
 			_hide_agent()
 			_phase = 2
 			_t = 0.0
 	elif _phase == 2:
-		_ufo_y = lerpf(-70.0, -200.0, clampf(_t / 0.55, 0.0, 1.0))
-		_beam_alpha = clampf(1.0 - _t / 0.4, 0.0, 1.0)
-		if _t >= 0.7:
+		_ufo_y = lerpf(-70.0, -200.0, clampf(_t / 1.4, 0.0, 1.0))
+		_beam_alpha = clampf(1.0 - _t / 0.9, 0.0, 1.0)
+		if _t >= 1.6:
 			_finish_fire()
 
 
 func _process_escort(_delta: float) -> void:
-	# Guard arrives, agent picks up box, both walk to door.
-	if _phase == 0 and _t >= 0.6:
+	# Guard arrives, agent picks up box, both walk to door (~7s).
+	if _phase == 0 and _t >= 1.2:
 		_phase = 1
 		_t = 0.0
 	elif _phase == 1:
-		var u := clampf(_t / 2.4, 0.0, 1.0)
-		var pos := _carry_from.lerp(_carry_to, u)
-		global_position = pos
+		var u := clampf(_t / 5.2, 0.0, 1.0)
+		var world := _from_world.lerp(_to_world, u)
+		global_position = Iso.to_screen(world)
 		if _agent and is_instance_valid(_agent):
-			_agent.global_position = pos + Vector2(-10, 0)
+			_agent.global_position = world + Vector2(-10, 0)
+			if _agent.has_method("sync_view"):
+				_agent.sync_view()
 		if u >= 1.0:
 			_hide_agent()
 			_finish_fire()
@@ -348,7 +363,7 @@ func _draw_medics() -> void:
 		if _phase >= 1:
 			mp.y = 4
 		else:
-			mp.y = 40 - clampf(_t / 0.5, 0.0, 1.0) * 36.0
+			mp.y = 40 - clampf(_t / 1.4, 0.0, 1.0) * 36.0
 		draw_circle(mp + Vector2(0, -10), 5.0, Color("#ef9a9a"))
 		draw_rect(Rect2(mp.x - 5, mp.y - 6, 10, 14), Color("#e53935"))
 		draw_rect(Rect2(mp.x - 1, mp.y - 2, 2, 6), Color.WHITE)
@@ -359,7 +374,7 @@ func _draw_stomp() -> void:
 	# Giant cartoon foot descending / planted.
 	var foot_y := -140.0
 	if _phase == 0:
-		foot_y = lerpf(-160.0, -6.0, clampf(_t / 0.55, 0.0, 1.0))
+		foot_y = lerpf(-160.0, -6.0, clampf(_t / 1.4, 0.0, 1.0))
 	elif _phase >= 1:
 		foot_y = -6.0 if _phase == 1 else -120.0
 	if _phase <= 1:

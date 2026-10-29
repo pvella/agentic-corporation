@@ -225,9 +225,14 @@ func _fit_panel() -> void:
 	var vp := get_viewport().get_visible_rect().size
 	var w := minf(960.0, vp.x - 40.0)
 	var h := minf(620.0, vp.y - 40.0)
+	# Top-left anchors + explicit position: PRESET_CENTER + position fought
+	# each other and parked the board off-screen (Add Agent looked dead).
+	_panel.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	_panel.anchor_right = 0.0
+	_panel.anchor_bottom = 0.0
 	_panel.custom_minimum_size = Vector2(w, h)
 	_panel.size = Vector2(w, h)
-	_panel.position = (vp - _panel.size) * 0.5
+	_panel.position = (vp - Vector2(w, h)) * 0.5
 	var cols := 3
 	if w < 780:
 		cols = 2
@@ -378,7 +383,7 @@ func _show_sheet(role: Dictionary, from_board: bool) -> void:
 	_sheet.size = Vector2i(640, 520)
 	_sheet.unresizable = false
 	_sheet.transient = true
-	_sheet.exclusive = true
+	_sheet.exclusive = false
 	_sheet.close_requested.connect(func() -> void:
 		_sheet.queue_free()
 		_sheet = null
@@ -588,7 +593,7 @@ func _open_customise(role: Dictionary) -> void:
 	_custom.title = "Customise hire"
 	_custom.size = Vector2i(520, 560)
 	_custom.transient = true
-	_custom.exclusive = true
+	_custom.exclusive = false
 	_custom.close_requested.connect(func() -> void:
 		_custom.queue_free()
 		_custom = null
