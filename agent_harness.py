@@ -65,6 +65,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Iterable
+from pathlib import Path
 
 try:  # websockets >= 13: new asyncio implementation
     from websockets.asyncio.server import ServerConnection, broadcast, serve
@@ -492,6 +493,10 @@ class Hub:
         if text:
             event["text"] = text
         self.emit(event)
+        # Opening turn so the Meeting Room shows a speech bubble.
+        if agent_ids:
+            opener = text or "Let's sync."
+            self.emit({"type": "MEETING_TURN", "agent_id": agent_ids[0], "text": opener, "target": target})
 
     # -- live status reports (office_mcp.py) ---------------------------------
     def find_agent(self, name: str) -> Agent | None:
@@ -688,8 +693,130 @@ class Hub:
             await self._action_fire(ws, msg)
         elif action == "PREVIEW_HIRE_FIRE":
             await self._action_preview_hire_fire(ws, msg)
+        elif action == "ADD_KNOWLEDGE":
+            await self._action_add_knowledge(ws, msg)
+        elif action == "SEND_DM":
+            await self._action_send_dm(ws, msg)
+        elif action == "HUMAN_REPLY":
+            await self._action_human_reply(ws, msg)
+        elif action == "ASK_HUMAN":
+            # Client / test path: surface an ask-human dialog for an agent.
+            await self._action_ask_human(ws, msg)
         else:
             await self.reply(ws, {"type": "ERROR", "message": f"unknown action '{action}'"})
+
+
+
+    async def _action_add_knowledge(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        """Copy a dropped .md into knowledge/ and broadcast KNOWLEDGE_ADDED."""
+        src = str(msg.get("path", "")).strip()
+        if not src:
+            await self.reply(ws, {"type": "ERROR", "action": "ADD_KNOWLEDGE", "message": "path required"})
+            return
+        src_path = Path(src).expanduser()
+        if not src_path.is_file():
+            await self.reply(ws, {"type": "ERROR", "action": "ADD_KNOWLEDGE", "message": f"not a file: {src}"})
+            return
+        if src_path.suffix.lower() != ".md":
+            await self.reply(ws, {"type": "ERROR", "action": "ADD_KNOWLEDGE", "message": "only .md knowledge files"})
+            return
+        root = Path(self.office_path).resolve().parent if self.office_path else Path.cwd()
+        dest_dir = root / "knowledge"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / src_path.name
+        # Avoid clobber: suffix if needed
+        if dest.exists():
+            stem, suf = dest.stem, dest.suffix
+            n = 2
+            while True:
+                cand = dest_dir / f"{stem}_{n}{suf}"
+                if not cand.exists():
+                    dest = cand
+                    break
+                n += 1
+        try:
+            dest.write_bytes(src_path.read_bytes())
+        except OSError as exc:
+            await self.reply(ws, {"type": "ERROR", "action": "ADD_KNOWLEDGE", "message": str(exc)})
+            return
+        title = dest.stem.replace("_", " ").replace("-", " ")
+        payload = {
+            "type": "KNOWLEDGE_ADDED",
+            "path": str(dest),
+            "filename": dest.name,
+            "title": title,
+            "rack": "Server_Rack_1",
+        }
+        self.emit(payload)
+        log.info("ADD_KNOWLEDGE %s -> %s", src_path, dest)
+        await self.reply(ws, {"type": "ACK", "action": "ADD_KNOWLEDGE", "filename": dest.name, "title": title})
+
+    async def _action_send_dm(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        to_raw = str(msg.get("to", "")).strip()
+        text = str(msg.get("text", "")).strip()
+        from_who = str(msg.get("from", "paul")).strip() or "paul"
+        if not to_raw or not text:
+            await self.reply(ws, {"type": "ERROR", "action": "SEND_DM", "message": "to and text required"})
+            return
+        agent = self.find_agent(to_raw) or self.agents.get(to_raw)
+        if agent is None:
+            await self.reply(ws, {"type": "ERROR", "action": "SEND_DM", "message": f"unknown agent '{to_raw}'"})
+            return
+        item = self.queue_message(agent, f"[DM from {from_who}] {text}")
+        if item is None:
+            await self.reply(ws, {"type": "ERROR", "action": "SEND_DM", "message": "inbox full"})
+            return
+        self.emit({
+            "type": "AGENT_DM",
+            "to": agent.agent_id,
+            "from": from_who,
+            "text": text,
+            "message_id": item["id"],
+        })
+        await self.reply(ws, {"type": "ACK", "action": "SEND_DM", "to": agent.agent_id, "message_id": item["id"]})
+
+    async def _action_human_reply(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        agent_id = str(msg.get("agent_id", ""))
+        text = str(msg.get("text", "")).strip()
+        request_id = str(msg.get("request_id", ""))
+        if agent_id not in self.agents:
+            await self.reply(ws, {"type": "ERROR", "action": "HUMAN_REPLY", "message": f"unknown agent '{agent_id}'"})
+            return
+        if not text:
+            await self.reply(ws, {"type": "ERROR", "action": "HUMAN_REPLY", "message": "empty reply"})
+            return
+        agent = self.agents[agent_id]
+        prompt = f"[Human reply{(' #' + request_id) if request_id else ''}] {text}"
+        if self.inbox_for(agent):
+            item = self.queue_message(agent, prompt)
+            if item is None:
+                await self.reply(ws, {"type": "ERROR", "action": "HUMAN_REPLY", "message": "inbox full"})
+                return
+            await self.reply(ws, {"type": "ACK", "action": "HUMAN_REPLY", "agent_id": agent_id,
+                                  "message_id": item["id"], "inbox": True})
+            return
+        await agent.queue.put(prompt)
+        await self.reply(ws, {"type": "ACK", "action": "HUMAN_REPLY", "agent_id": agent_id,
+                              "queued": agent.queue.qsize()})
+
+    async def _action_ask_human(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        agent_id = str(msg.get("agent_id", ""))
+        prompt = str(msg.get("prompt", msg.get("text", ""))).strip()
+        if agent_id not in self.agents:
+            await self.reply(ws, {"type": "ERROR", "action": "ASK_HUMAN", "message": f"unknown agent '{agent_id}'"})
+            return
+        agent = self.agents[agent_id]
+        request_id = str(msg.get("request_id", "") or f"ask_{int(now_ms())}")
+        payload = {
+            "type": "ASK_HUMAN",
+            "agent_id": agent_id,
+            "agent_name": agent.name,
+            "prompt": prompt or f"{agent.name} needs a decision from you.",
+            "request_id": request_id,
+            "choices": msg.get("choices") or [],
+        }
+        self.emit(payload)
+        await self.reply(ws, {"type": "ACK", "action": "ASK_HUMAN", "agent_id": agent_id, "request_id": request_id})
 
 
     def save_office(self) -> None:
@@ -795,6 +922,41 @@ class Hub:
             await self.reply(ws, {"type": "ERROR", "action": "HIRE_AGENT",
                                   "message": f"agent '{agent_id}' already exists"})
             return
+
+        # UNIQUE_ROLE_GUARD: reject second hire of catalog roles marked unique
+        role_id = str(msg.get("role_id", "") or job.get("role_id", "") or "").strip()
+        if role_id or role:
+            try:
+                cat_path = Path(__file__).resolve().parent / "roles" / "catalog.json"
+                if cat_path.exists():
+                    cat = json.loads(cat_path.read_text(encoding="utf-8"))
+                    roles = cat.get("roles") or []
+                    match = None
+                    for r in roles:
+                        if role_id and r.get("id") == role_id:
+                            match = r
+                            break
+                        if role and (r.get("short_title") == role or r.get("title") == role or r.get("default_name") == role):
+                            match = r
+                            break
+                    if match and match.get("unique"):
+                        short = match.get("short_title") or match.get("title") or role
+                        for a in self.agents.values():
+                            ar = getattr(a, "role", "") or ""
+                            aj = getattr(a, "job", None) or {}
+                            if ar in (short, match.get("title"), match.get("default_name")) or (
+                                isinstance(aj, dict) and aj.get("role_id") == match.get("id")
+                            ):
+                                await self.reply(ws, {
+                                    "type": "ERROR",
+                                    "action": "HIRE_AGENT",
+                                    "message": f"Already hired: {short} (unique role)",
+                                    "code": "ALREADY_HIRED",
+                                    "role_id": match.get("id"),
+                                })
+                                return
+            except Exception:
+                log.exception("unique-role check failed")
         if not desk:
             # Pick a free Desk_* waypoint name from the office layout if possible.
             used = {a.desk for a in self.agents.values()}
@@ -1384,7 +1546,11 @@ class AmbientDirector:
             agent.next_event_at = now + self.rand(t.chat_every) * calm
             roll = random.random()
             if roll < chat_chance:
-                hub.state(aid, state, text=random.choice(chatter))
+                line = random.choice(chatter)
+                hub.state(aid, state, text=line)
+                if state == "COLLAB":
+                    hub.emit({"type": "MEETING_TURN", "agent_id": aid, "text": line,
+                              "target": getattr(agent, "meeting_target", None) or "Meeting_Room"})
             elif roll < chat_chance + (0.2 if self.idle_only else 0.3):
                 if self.idle_only:
                     self._phone(agent)
@@ -1682,12 +1848,29 @@ class CliRunner:
         hub.log_line(aid, "\x1b[2m…\x1b[0m", important=True)
         hub.state(aid, "THINKING", target=agent.desk, text="…")
 
+        # Inherit full user env so Claude can reach Keychain / ~/.claude.json.
+        # A thin harness launch (env -i / .command) often omits USER — without it
+        # `claude -p` prints "Not logged in · Please run /login" and exits 1.
+        # Never store tokens; only fill HOME/USER/PATH/CLAUDE_CONFIG_DIR.
         env = {**os.environ, "FORCE_COLOR": "0", "PYTHONUNBUFFERED": "1"}
-        # Prefer the user's local Claude install when launching from a thin PATH.
-        local_bin = os.path.expanduser("~/.local/bin")
-        path = env.get("PATH", "")
-        if local_bin not in path.split(os.pathsep):
-            env["PATH"] = local_bin + os.pathsep + path
+        home = env.get("HOME") or os.path.expanduser("~")
+        env["HOME"] = home
+        try:
+            import getpass as _getpass
+            _user = env.get("USER") or env.get("LOGNAME") or _getpass.getuser()
+        except Exception:
+            _user = env.get("USER") or env.get("LOGNAME") or Path(home).name
+        env.setdefault("USER", _user)
+        env.setdefault("LOGNAME", _user)
+        env.setdefault("SHELL", env.get("SHELL") or "/bin/zsh")
+        local_bin = str(Path(home) / ".local" / "bin")
+        parts = [p for p in env.get("PATH", "").split(os.pathsep) if p]
+        for extra in (local_bin, "/opt/homebrew/bin", "/usr/local/bin"):
+            if extra not in parts:
+                parts.insert(0, extra)
+        env["PATH"] = os.pathsep.join(parts)
+        # Do not set CLAUDE_CONFIG_DIR: default auth file is ~/.claude.json under HOME.
+        # Setting CLAUDE_CONFIG_DIR=~/.claude looks for ~/.claude/.claude.json and fails.
         env["OFFICE_AGENT"] = agent.name
         env.setdefault("CLAUDE_PROJECT_DIR", project)
         use_stdin = self.prompt_mode == "stdin"

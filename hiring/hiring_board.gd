@@ -9,6 +9,7 @@ signal closed
 const CARD_W := 200
 const CARD_H := 118
 
+var _hired_unique_ids: Dictionary = {}
 var _catalog: Array = []
 var _categories: Array = []
 var _filter_cat := ""
@@ -26,6 +27,23 @@ var _custom: Window
 var _fonts_ready := false
 var _heading_font: Font
 var _body_font: Font
+
+
+func set_hired_unique_ids(ids: Dictionary) -> void:
+	_hired_unique_ids = ids.duplicate()
+	if is_inside_tree() and _grid != null:
+		_rebuild_grid()
+
+
+func _role_card_title(role: Dictionary) -> String:
+	return str(role.get("short_title", role.get("title", role.get("default_name", "Role"))))
+
+
+func _role_already_hired(role: Dictionary) -> bool:
+	if not bool(role.get("unique", false)):
+		return false
+	return _hired_unique_ids.has(str(role.get("id", "")))
+
 
 func setup(catalog_roles: Array, categories: Array = []) -> void:
 	_catalog = catalog_roles.duplicate()
@@ -255,7 +273,7 @@ func _rebuild_grid() -> void:
 			continue
 		if _filter_q != "":
 			var blob := ("%s %s %s %s" % [
-				role.get("title", ""), cat,
+				role.get("short_title", role.get("title", "")), role.get("title", ""), cat,
 				role.get("summary", ""), role.get("purpose", "")
 			]).to_lower()
 			if _filter_q not in blob:
@@ -312,7 +330,7 @@ func _make_card(role: Dictionary) -> PanelContainer:
 	titles.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top.add_child(titles)
 	var t := Label.new()
-	t.text = str(role.get("title", "Role"))
+	t.text = _role_card_title(role)
 	t.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	t.add_theme_font_override("font", _heading_font)
 	t.add_theme_font_size_override("font_size", 12)
@@ -456,9 +474,14 @@ func _show_sheet(role: Dictionary, from_board: bool) -> void:
 			_open_customise(snap)
 		)
 		foot.add_child(custom_b)
+		var already := _role_already_hired(role)
 		var hire_b := Button.new()
-		hire_b.text = "Hire"
+		hire_b.text = "Already hired" if already else "Hire"
+		hire_b.disabled = already
 		hire_b.focus_mode = Control.FOCUS_NONE
+		if already:
+			card.modulate = Color(0.55, 0.55, 0.55, 1.0)
+			hire_b.modulate = Color(0.7, 0.7, 0.7)
 		var hs := StyleBoxFlat.new()
 		hs.bg_color = Color("#43a047")
 		hs.set_corner_radius_all(6)
