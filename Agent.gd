@@ -64,6 +64,10 @@ const PRESET_LOOKS := {
 @export var sprite_frames: SpriteFrames
 
 var role: String = ""
+## Job description dict.
+var job: Dictionary = {}
+## Pending DM / human-reply notes for next prompt.
+var pending_notes: Array = []
 var room_id: String = ""
 var state: String = "IDLE"
 var last_text: String = ""
@@ -308,6 +312,15 @@ func is_at_destination() -> bool:
 
 func is_seated_at_desk() -> bool:
 	return current_waypoint == desk and _seat == "desk" and _sit > 0.6 and is_at_destination()
+
+
+## True while the agent is sat at a canteen seat eating (harness text "Eating …").
+func is_eating() -> bool:
+	if _seat != "chair" or _sit < 0.5 or not is_at_destination():
+		return false
+	if current_waypoint.begins_with("Canteen_Seat"):
+		return true
+	return last_text.to_lower().begins_with("eating")
 
 
 func is_away_from_desk() -> bool:
@@ -642,6 +655,8 @@ func _draw_front() -> void:
 		var sw := sin(_walk_phase) * 3.5 * _walk_amount
 		_arm(L, Vector2(-13.5, sh + 7 - sw * 0.5), Vector2(-13 - absf(side) * 1.0, sh + 14 - sw))
 		_arm(R, Vector2(13.5, sh + 7 + sw * 0.5), Vector2(13 + absf(side) * 1.0, sh + 14 + sw))
+	if is_eating():
+		_draw_food_plate(false)
 	_xf_origin = Vector2.ZERO
 
 
@@ -895,7 +910,39 @@ func _draw_back() -> void:
 		var sw := sin(_walk_phase) * 3.5 * _walk_amount
 		_arm(Vector2(-11, sh), Vector2(-13.5, sh + 7 + sw * 0.5), Vector2(-13, sh + 14 + sw))
 		_arm(Vector2(11, sh), Vector2(13.5, sh + 7 - sw * 0.5), Vector2(13, sh + 14 - sw))
+	if is_eating():
+		_draw_food_plate(true)
 	_xf_origin = Vector2.ZERO
+
+
+## Plate of food in front of a diner at the canteen.
+func _draw_food_plate(from_back: bool) -> void:
+	var food_cols := [Color("#ef6c00"), Color("#66bb6a"), Color("#8d6e63"), Color("#ff7043"), Color("#42a5f5"), Color("#fdd835")]
+	var idx: int = absi(hash(agent_id + last_text)) % food_cols.size()
+	var col: Color = food_cols[idx]
+	# Offset toward the table based on facing.
+	var off := Vector2(0, 10)
+	match _pose_facing:
+		"right":
+			off = Vector2(14, 6)
+		"left":
+			off = Vector2(-14, 6)
+		"up":
+			off = Vector2(0, -8) if from_back else Vector2(0, 10)
+		"down":
+			off = Vector2(0, 10)
+	# Tray
+	_c.draw_rect(Rect2(off.x - 9, off.y - 5, 18, 12), Color("#eceff1"))
+	_c.draw_rect(Rect2(off.x - 9, off.y - 5, 18, 12), Color("#b0bec5"), false, 1.0)
+	# Plate
+	_oval(off + Vector2(-1, 0), 6.5, 4.2, Color("#fafafa"))
+	_oval(off + Vector2(-1, 0), 4.2, 2.8, col)
+	# Garnish
+	_c.draw_circle(off + Vector2(-3, -1), 1.4, Color(1, 1, 1, 0.7))
+	_c.draw_circle(off + Vector2(2, 1), 1.2, col.darkened(0.25))
+	# Cup
+	_c.draw_rect(Rect2(off.x + 5, off.y - 4, 4, 6), Color("#fff8e1"))
+	_c.draw_rect(Rect2(off.x + 5, off.y - 4, 4, 6), Color("#bcaaa4"), false, 1.0)
 
 
 func _draw_phone(p: Vector2, _back: bool) -> void:

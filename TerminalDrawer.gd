@@ -7,6 +7,12 @@ extends CanvasLayer
 signal prompt_submitted(agent_id: String, prompt: String)
 signal closed
 signal agent_requested(agent_id: String)  ## a member was clicked in a team summary
+signal archive_requested(agent_id: String)  ## archive / fire this agent
+signal hire_requested  ## recruiter desk: show /hire help
+signal hire_submit(name: String, role: String)  ## real hire from /hire Name | Role
+signal verbose_toggled(verbose: bool)  ## /verbose or /quiet
+signal job_description_requested(agent_id: String)
+signal dm_requested(to_agent: String, text: String)
 
 const Ansi := preload("res://ansi.gd")
 const SLIDE_TIME := 0.28
@@ -35,11 +41,50 @@ var _showing_placeholder := false
 @onready var footer: HBoxContainer = $Panel/Margin/VBox/Footer
 
 
+var archive_button: Button
+var hire_button: Button
+var jd_button: Button
+
 func _ready() -> void:
 	close_button.pressed.connect(close)
 	send_button.pressed.connect(_submit)
 	prompt_input.text_submitted.connect(func(_t: String) -> void: _submit())
 	log_view.meta_clicked.connect(func(meta: Variant) -> void: agent_requested.emit(str(meta)))
+	# Archive (fire) button in the header — cartoon medics carry the agent out.
+	archive_button = Button.new()
+	archive_button.text = "Archive"
+	archive_button.tooltip_text = "Archive this bot (medics + stretcher)"
+	archive_button.visible = false
+	close_button.get_parent().add_child(archive_button)
+	close_button.get_parent().move_child(archive_button, close_button.get_index())
+	archive_button.pressed.connect(func() -> void:
+		if agent and is_instance_valid(agent):
+			archive_requested.emit(agent.agent_id)
+	)
+	# Hire button — shown for the recruiter (dr_eggbot).
+	hire_button = Button.new()
+	hire_button.text = "Hire…"
+	hire_button.tooltip_text = "Recruiter desk: hire a new bot (persists to office.json)"
+	hire_button.visible = false
+	close_button.get_parent().add_child(hire_button)
+	close_button.get_parent().move_child(hire_button, close_button.get_index())
+	hire_button.pressed.connect(func() -> void:
+		hire_requested.emit()
+		append_system("Type: /hire Name | Role   then Enter. Archive removes a bot for real.")
+		prompt_input.placeholder_text = "/hire Name | Role"
+		prompt_input.grab_focus()
+	)
+	jd_button = Button.new()
+	jd_button.text = "Job description"
+	jd_button.tooltip_text = "Show this agent's job description (/jd)"
+	jd_button.visible = false
+	close_button.get_parent().add_child(jd_button)
+	close_button.get_parent().move_child(jd_button, close_button.get_index())
+	jd_button.pressed.connect(func() -> void:
+		if agent and is_instance_valid(agent):
+			_show_job_description()
+			job_description_requested.emit(agent.agent_id)
+	)
 	# Monospace font for the terminal body.
 	var mono := SystemFont.new()
 	mono.font_names = PackedStringArray(["DejaVu Sans Mono", "Menlo", "Consolas", "Liberation Mono", "monospace"])
@@ -73,6 +118,10 @@ func open_team(room: Dictionary, members: Array) -> void:
 	team_room = room
 	team_members = members
 	footer.visible = false
+	if archive_button:
+		archive_button.visible = false
+	if hire_button:
+		hire_button.visible = false
 	name_label.text = str(room.get("name", "Team"))
 	name_label.add_theme_color_override("font_color", Color.from_string(str(room.get("color", "#ffffff")), Color.WHITE).lightened(0.3))
 	_render_team()
@@ -153,8 +202,14 @@ func open_for(a: Agent) -> void:
 	_render_all()
 	panel.visible = true
 	_animate_to(1.0)
-	prompt_input.placeholder_text = "Prompt for %s, e.g. Fix bug in auth.py" % a.display_name
+	prompt_input.placeholder_text = "Prompt for %s — /jd · /verbose · /msg" % a.display_name
 	prompt_input.grab_focus.call_deferred()
+	if archive_button:
+		archive_button.visible = false
+	if hire_button:
+		hire_button.visible = false
+	if jd_button:
+		jd_button.visible = true
 
 
 func close() -> void:
@@ -233,11 +288,92 @@ func _submit() -> void:
 	if text.is_empty():
 		return
 	prompt_input.clear()
+	var lower := text.to_lower()
+	# Local terminal commands (not sent to the harness as prompts).
+	if lower == "/verbose" or lower == "/quiet":
+		verbose_toggled.emit(lower == "/verbose")
+		append_system("terminal: %s" % ("verbose (tool/queue detail)" if lower == "/verbose" else "quiet (> … reply only)"))
+		return
+	if lower == "/jd" or lower == "/job" or lower == "/jobdescription":
+		_show_job_description()
+		return
+	if lower.begins_with("/msg ") or lower.begins_with("/dm "):
+		var raw := text.strip_edges()
+		var rest := raw.substr(raw.find(" ") + 1).strip_edges()
+		var sp := rest.find(" ")
+		if sp < 0:
+			append_system("usage: /msg <agent_id_or_name> <text>")
+			return
+		var to_who := rest.substr(0, sp).strip_edges()
+		var body := rest.substr(sp + 1).strip_edges()
+		if to_who == "" or body == "":
+			append_system("usage: /msg <agent_id_or_name> <text>")
+			return
+		dm_requested.emit(to_who, body)
+		append_system("DM queued → %s: %s" % [to_who, body.left(80)])
+		return
+	if lower.begins_with("/hire"):
+		var rest := text.substr(5).strip_edges()
+		if rest.is_empty():
+			append_system("usage: /hire Name | Role   e.g. /hire Jordan Lee | Designer")
+			return
+		var parts := rest.split("|", false, 1)
+		var hname := parts[0].strip_edges()
+		var hrole := parts[1].strip_edges() if parts.size() > 1 else "New Hire"
+		if hname.is_empty():
+			append_system("usage: /hire Name | Role")
+			return
+		hire_submit.emit(hname, hrole)
+		append_system("hiring %s (%s)…" % [hname, hrole])
+		return
 	if _showing_placeholder:
 		log_view.clear()
 		_showing_placeholder = false
-	log_view.append_text("[color=#61afef][b]you>[/b][/color] %s\n" % Ansi.escape_bbcode(text))
+	log_view.append_text("[color=#61afef][b]>[/b][/color] %s\n" % Ansi.escape_bbcode(text))
 	prompt_submitted.emit(agent.agent_id, text)
+
+
+func _show_job_description() -> void:
+	if agent == null or not is_instance_valid(agent):
+		append_system("open an agent first to view their job description")
+		return
+	var job: Dictionary = agent.job if agent.job is Dictionary else {}
+	var title := str(job.get("title", agent.role if agent.role != "" else agent.display_name))
+	var lines: PackedStringArray = []
+	lines.append("—— Job description ——")
+	lines.append("Title: %s" % title)
+	var dept := str(job.get("department", ""))
+	if dept != "":
+		lines.append("Department: %s" % dept)
+	var purpose := str(job.get("purpose", ""))
+	if purpose != "":
+		lines.append("Purpose: %s" % purpose)
+	var resp: Variant = job.get("responsibilities", [])
+	if resp is Array and not resp.is_empty():
+		lines.append("Responsibilities:")
+		for item in resp:
+			lines.append("  • %s" % str(item))
+	var tools: Variant = job.get("tools", [])
+	if tools is Array and not tools.is_empty():
+		var tlist: PackedStringArray = []
+		for item in tools:
+			tlist.append(str(item))
+		lines.append("Tools: %s" % ", ".join(tlist))
+	var repos: Variant = job.get("repos", [])
+	if repos is Array and not repos.is_empty():
+		var rlist: PackedStringArray = []
+		for item in repos:
+			rlist.append(str(item))
+		lines.append("Repos: %s" % ", ".join(rlist))
+	var reports := str(job.get("reports_to", ""))
+	if reports != "":
+		lines.append("Reports to: %s" % reports)
+	if lines.size() <= 2 and purpose == "":
+		lines.append("(no job fields yet — edit office.json job{} or roles/catalog.json)")
+	lines.append("———————————————")
+	append_system("\n".join(lines))
+	if agent and is_instance_valid(agent):
+		job_description_requested.emit(agent.agent_id)
 
 
 func _animate_to(target: float) -> void:
