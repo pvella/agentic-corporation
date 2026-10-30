@@ -328,6 +328,144 @@ def path_for(a: dict, b: dict, hub_center) -> list[tuple[float, float]]:
     return out
 
 
+
+def verify_hub_amenities(hub: Rect) -> int:
+    """Mirror Office.gd _build_break/_canteen/_rec: amenity WPs must sit inside
+    their live hub zone rects (not leftover corridor-map coords) and not deep
+    inside blocking furniture (agent_radius pad).
+    """
+    AGENT_R = 11.0
+    WALL = 12.0
+    pad = 56.0
+    zone_w = (hub.w - pad * 4.0) / 3.0
+    zone_h = hub.h * 0.70
+    zone_y = hub.y + (hub.h - zone_h) * 0.5
+    break_r = Rect(hub.x + pad, zone_y, zone_w, zone_h)
+    canteen_r = Rect(break_r.end_x + pad, zone_y, zone_w, zone_h)
+    rec_r = Rect(canteen_r.end_x + pad, zone_y, zone_w, zone_h)
+    zones = {"break": break_r, "canteen": canteen_r, "rec": rec_r}
+    obstacles: list[Rect] = []
+    wps: list[tuple[str, tuple[float, float], str]] = []
+
+    def add_obs(r: Rect) -> None:
+        obstacles.append(r)
+
+    def wp(name: str, pos: tuple[float, float], kind: str) -> None:
+        wps.append((name, pos, kind))
+
+    # ---- break (Office.gd _build_break) ----
+    p, e, m = (break_r.x, break_r.y), (break_r.end_x, break_r.end_y), 14.0
+    coffee = Rect(p[0] + m, p[1] + 44, 52, 42); add_obs(coffee)
+    wp("Coffee_Machine", (coffee.x + coffee.w * 0.5, coffee.end_y + 26), "break")
+    water = Rect(e[0] - m - 40, p[1] + 44, 40, 44); add_obs(water)
+    wp("Water_Cooler", (water.x + water.w * 0.5, water.end_y + 26), "break")
+    vend = Rect(water.x - 12 - 44, p[1] + 42, 44, 40); add_obs(vend)
+    wp("Vending_Machine", (vend.x + vend.w * 0.5, vend.end_y + 28), "break")
+    sofa_w = min(156.0, break_r.w * 0.42)
+    sofa = Rect(p[0] + m, e[1] - 50 - 46, sofa_w, 46); add_obs(sofa)
+    wp("Sofa_1", (sofa.x + sofa.w * 0.30, sofa.y + 26), "break")
+    wp("Sofa_2", (sofa.x + sofa.w * 0.70, sofa.y + 26), "break")
+    table_w = min(120.0, break_r.w * 0.34)
+    table = Rect(e[0] - m - table_w, sofa.y, table_w, 58)
+    if table.x < sofa.end_x + 20.0:
+        table.x = sofa.end_x + 20.0
+        table.w = max(72.0, e[0] - m - table.x)
+    add_obs(table)
+    f1x = max(p[0] + 8.0, table.x - 14.0)
+    f2x = min(e[0] - 8.0, table.end_x + 14.0)
+    for n, x, y in (
+        ("Foosball_1", f1x, table.y + 22),
+        ("Foosball_2", f2x, table.y + 22),
+        ("Foosball_3", f1x, table.y + 50),
+        ("Foosball_4", f2x, table.y + 50),
+    ):
+        wp(n, (x, y), "break")
+    add_obs(Rect(p[0] + m, e[1] - 50, 34, 34))
+
+    # soft dividers (obstacles)
+    div_gap = 110.0
+    for dx in (break_r.end_x + pad * 0.5 - WALL * 0.5, canteen_r.end_x + pad * 0.5 - WALL * 0.5):
+        top_h = (zone_h - div_gap) * 0.5
+        add_obs(Rect(dx, break_r.y, WALL, top_h))
+        add_obs(Rect(dx, break_r.end_y - top_h, WALL, top_h))
+
+    # ---- canteen ----
+    p, e, m = (canteen_r.x, canteen_r.y), (canteen_r.end_x, canteen_r.end_y), 14.0
+    micro = Rect(e[0] - m - 36, p[1] + 52, 36, 28); add_obs(micro)
+    coffee = Rect(micro.x - 10 - 48, p[1] + 44, 48, 40); add_obs(coffee)
+    fridge = Rect(coffee.x - 10 - 40, p[1] + 36, 40, 52); add_obs(fridge)
+    counter_w = max(120.0, fridge.x - (p[0] + m) - 12.0)
+    counter = Rect(p[0] + m, p[1] + 42, counter_w, 40); add_obs(counter)
+    wp("Canteen_Counter", (counter.x + counter.w * 0.5, counter.end_y + 26), "canteen")
+    tw = min(96.0, (canteen_r.w - m * 2.0 - 40.0) * 0.42)
+    tables = [(p[0] + m + 10, p[1] + max(150.0, canteen_r.h * 0.34))]
+    if canteen_r.w >= 300.0:
+        tables.append((e[0] - m - 10 - tw, tables[0][1]))
+    tables.append((canteen_r.center()[0] - tw * 0.5, e[1] - 52 - 70))
+    seat_i = 1
+    for tpos in tables:
+        table = Rect(tpos[0], tpos[1], tw, 52); add_obs(table)
+        wp(f"Canteen_Seat_{seat_i}", (table.x - 16, table.y + table.h * 0.5), "canteen"); seat_i += 1
+        wp(f"Canteen_Seat_{seat_i}", (table.end_x + 16, table.y + table.h * 0.5), "canteen"); seat_i += 1
+    while seat_i <= 6:
+        wp(f"Canteen_Seat_{seat_i}", (canteen_r.center()[0] + (seat_i - 5) * 28.0, e[1] - 60), "canteen")
+        seat_i += 1
+
+    # ---- rec ----
+    p, e, m = (rec_r.x, rec_r.y), (rec_r.end_x, rec_r.end_y), 16.0
+    rug = Rect(p[0] + m, p[1] + 70, rec_r.w - m * 2.0, rec_r.h - 120)
+    add_obs(Rect(p[0] + m, p[1] + 48, 22, 36))  # lamp
+    add_obs(Rect(e[0] - m - 22, p[1] + 48, 22, 36))
+    add_obs(Rect(rec_r.center()[0] - 28, p[1] + 40, 56, 48))  # fountain
+    for pr in (
+        (rec_r.center()[0] - 70, p[1] + 44),
+        (rec_r.center()[0] + 40, p[1] + 44),
+        (p[0] + m, e[1] - 52),
+        (e[0] - m - 30, e[1] - 52),
+    ):
+        add_obs(Rect(pr[0], pr[1], 30, 30))
+    mat_w = min(70.0, rug.w * 0.22)
+    mat_h = min(110.0, rug.h * 0.55)
+    mat_y = rug.y + rug.h * 0.22
+    mat1 = Rect(rug.x + rug.w * 0.08, mat_y, mat_w, mat_h)
+    mat2 = Rect(rug.x + rug.w * 0.08 + mat_w + 18.0, mat_y, mat_w, mat_h)
+    wp("Yoga_Mat_1", (mat1.x + mat1.w * 0.5, mat1.y + mat1.h * 0.5 + 10), "rec")
+    wp("Yoga_Mat_2", (mat2.x + mat2.w * 0.5, mat2.y + mat2.h * 0.5 + 10), "rec")
+    cw = min(44.0, rug.w * 0.14)
+    ch = min(36.0, rug.h * 0.18)
+    c1 = Rect(rug.end_x - rug.w * 0.38, rug.y + rug.h * 0.28, cw, ch)
+    c2 = Rect(rug.end_x - rug.w * 0.22, rug.y + rug.h * 0.48, cw, ch)
+    wp("Meditation_Cushion_1", (c1.x + c1.w * 0.5, c1.y + c1.h * 0.5 - 2), "rec")
+    wp("Meditation_Cushion_2", (c2.x + c2.w * 0.5, c2.y + c2.h * 0.5 - 2), "rec")
+
+    def in_rect(r: Rect, px: float, py: float) -> bool:
+        return r.x <= px <= r.end_x and r.y <= py <= r.end_y
+
+    def in_obs(px: float, py: float, grow: float) -> bool:
+        for o in obstacles:
+            if o.x - grow <= px <= o.end_x + grow and o.y - grow <= py <= o.end_y + grow:
+                return True
+        return False
+
+    # Sofa seats sit on the sofa prop by design; foosball stands may graze the
+    # table after agent_radius inflation — only flag hard zone misses and
+    # standing amenity spots (yoga/meditate/coffee/canteen) buried in props.
+    sit_on_prop = {"Sofa_1", "Sofa_2", "Foosball_1", "Foosball_2", "Foosball_3", "Foosball_4"}
+    bad = 0
+    for name, pos, kind in wps:
+        zr = zones[kind]
+        ok_zone = in_rect(zr, pos[0], pos[1])
+        # Standing spots must stay clear of obstacles (+ agent radius).
+        check_obs = name not in sit_on_prop
+        ok_obs = (not check_obs) or (not in_obs(pos[0], pos[1], AGENT_R))
+        status = "OK" if ok_zone and ok_obs else ("OUT_OF_ZONE" if not ok_zone else "IN_OBSTACLE")
+        if status != "OK":
+            bad += 1
+        print(f"amenity wp={name} pos=({pos[0]:.1f},{pos[1]:.1f}) expect={kind} {status}")
+    print(f"amenity_waypoints_checked={len(wps)} bad={bad}")
+    return bad
+
+
 def main() -> int:
     cfg = json.loads((ROOT / "office.json").read_text())
     rooms, walls, spokes, door_w, corridor_w = build(cfg)
@@ -369,6 +507,12 @@ def main() -> int:
         print("FAIL: paths cross walls")
         return 1
     print("OK: all room-pair paths clear of wall segments")
+
+    amenity_bad = verify_hub_amenities(hub["rect"])
+    if amenity_bad:
+        print(f"FAIL: {amenity_bad} amenity waypoints outside their zone or in obstacles")
+        return 1
+    print("OK: amenity waypoints inside Break/Canteen/Rec zones")
     return 0
 
 

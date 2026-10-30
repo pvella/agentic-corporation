@@ -37,6 +37,12 @@ const BUBBLE_SECONDS := 3.0
 const BUBBLE_MAX_CHARS := 64
 const ACCEL := 240.0         ## px/s² for gentle starts and stops
 const SLOW_RADIUS := 56.0    ## start easing off this far from the target
+## Amenity seat/pose (yoga, sofa, foosball…) only if we landed this close.
+## Stuck arrivals mid-corridor must not strike a tree pose in the hallway.
+const SEAT_ARRIVE_MAX := 28.0
+const STUCK_NEAR_SEC := 3.0    ## give up quickly when already at the spot
+const STUCK_FAR_SEC := 14.0    ## wait longer while still crossing the campus
+const STUCK_FAR_DIST := 64.0   ## "still far" threshold for the patience above
 const OUTLINE := Color(0.15, 0.13, 0.19)
 const HEAD_R := 14.0
 ## How far the drawing drops when sitting, per seat type.
@@ -86,6 +92,7 @@ var _vel := Vector2.ZERO
 var _nav_active := false
 var _settling := false
 var _stuck_time := 0.0
+var _stuck_retries := 0
 var _last_pos := Vector2.ZERO
 var _target_pos := Vector2.ZERO
 var _pose_facing := "down"
@@ -241,6 +248,7 @@ func go_to_position(world_pos: Vector2) -> void:
 	_nav_active = true
 	_settling = false
 	_stuck_time = 0.0
+	_stuck_retries = 0
 
 
 ## Pops a speech (or thought) bubble above the head; auto-hides after 3s.
@@ -366,11 +374,20 @@ func _physics_process(delta: float) -> void:
 	else:
 		_on_velocity_computed(_vel)
 
-	# Stuck detection (e.g. boxed in at a busy spot): give up after 3s.
+	# Stuck detection (e.g. boxed in at a busy spot). Be patient while still
+	# far from the amenity so a jam in a spoke corridor doesn't end the walk
+	# early — that used to leave agents doing yoga in the hallway.
 	if global_position.distance_to(_last_pos) < 3.0 * delta:
 		_stuck_time += delta
-		if _stuck_time > 3.0:
-			_arrive()
+		var far := remaining > STUCK_FAR_DIST
+		var limit := STUCK_FAR_SEC if far else STUCK_NEAR_SEC
+		if _stuck_time > limit:
+			if far and _stuck_retries < 2:
+				_stuck_retries += 1
+				_stuck_time = 0.0
+				nav_agent.target_position = _target_pos  # nudge a fresh path
+			else:
+				_arrive()
 	else:
 		_stuck_time = 0.0
 	_last_pos = global_position
@@ -395,6 +412,11 @@ func _arrive() -> void:
 	var gap := global_position.distance_to(_target_pos)
 	if gap > 0.5 and gap < 10.0:
 		global_position = _target_pos
+		gap = 0.0
+	# Amenity poses only at the real spot. A stuck/partial arrival in a spoke
+	# corridor or team room must not yoga / meditate / sit foosball there.
+	if gap > SEAT_ARRIVE_MAX:
+		_pending_seat = ""
 	_finish_settle()
 
 
