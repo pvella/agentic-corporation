@@ -266,8 +266,12 @@ def format_job_system_prompt(job: dict | None, name: str = "", role: str = "") -
     purpose = str(job.get("purpose") or "").strip()
     resp = job.get("responsibilities") or []
     tools = job.get("tools") or []
+    tools_text = str(job.get("tools_text") or "").strip()
     repos = job.get("repos") or []
     reports = str(job.get("reports_to") or "").strip()
+    outputs = str(job.get("outputs_and_cadence") or "").strip()
+    rights = str(job.get("decision_rights") or "").strip()
+    measures = str(job.get("performance_measures") or "").strip()
     lines = [
         f"You are {title} in the {dept} department of the Agentic Corporation office simulation.",
     ]
@@ -275,12 +279,20 @@ def format_job_system_prompt(job: dict | None, name: str = "", role: str = "") -
         lines.append(f"Purpose: {purpose}")
     if resp:
         lines.append("Responsibilities: " + "; ".join(str(x) for x in resp))
-    if tools:
+    if tools_text:
+        lines.append(f"Tools / access: {tools_text}")
+    elif tools:
         lines.append("Tools: " + ", ".join(str(x) for x in tools))
     if repos:
         lines.append("Repos / areas: " + ", ".join(str(x) for x in repos))
     if reports:
         lines.append(f"Reports to: {reports}")
+    if outputs:
+        lines.append(f"Outputs and cadence: {outputs}")
+    if rights:
+        lines.append(f"Decision rights / boundaries: {rights}")
+    if measures:
+        lines.append(f"Success measures: {measures}")
     lines.append(
         "Reply in character, briefly (2–6 sentences unless asked for more). "
         "No tool-use narration, no markdown fences unless needed for code."
@@ -289,8 +301,6 @@ def format_job_system_prompt(job: dict | None, name: str = "", role: str = "") -
     if kb:
         lines.append(kb)
     return "\n".join(lines)
-
-
 
 
 def knowledge_one_line_summary(text: str, fallback: str = "") -> str:
@@ -389,6 +399,9 @@ def format_knowledge_system_addon(knowledge_dir: Path | None = None) -> str:
 def format_job_plain(job: dict | None, name: str = "", role: str = "") -> str:
     """Human-readable job description for the terminal /jd panel."""
     job = job or {}
+    full = str(job.get("full_description") or "").strip()
+    if full:
+        return full
     title = str(job.get("title") or role or name or "Agent").strip() or "Agent"
     dept = str(job.get("department") or "").strip()
     lines = [f"Job description — {title}"]
@@ -402,8 +415,11 @@ def format_job_plain(job: dict | None, name: str = "", role: str = "") -> str:
         lines.append("Responsibilities:")
         for x in resp:
             lines.append(f"  • {x}")
+    tools_text = str(job.get("tools_text") or "").strip()
     tools = job.get("tools") or []
-    if tools:
+    if tools_text:
+        lines.append(f"Tools / access: {tools_text}")
+    elif tools:
         lines.append("Tools: " + ", ".join(str(x) for x in tools))
     repos = job.get("repos") or []
     if repos:
@@ -411,9 +427,28 @@ def format_job_plain(job: dict | None, name: str = "", role: str = "") -> str:
     reports = str(job.get("reports_to") or "").strip()
     if reports:
         lines.append(f"Reports to: {reports}")
+    human_owner = str(job.get("human_owner") or "").strip()
+    if human_owner:
+        lines.append(f"Human owner: {human_owner}")
+    outputs = str(job.get("outputs_and_cadence") or "").strip()
+    if outputs:
+        lines.append(f"Outputs and cadence: {outputs}")
+    rights = str(job.get("decision_rights") or "").strip()
+    if rights:
+        lines.append(f"Decision rights: {rights}")
+    caps = str(job.get("capabilities_and_tests") or "").strip()
+    if caps:
+        lines.append(f"Capabilities / tests: {caps}")
+    measures = str(job.get("performance_measures") or "").strip()
+    if measures:
+        lines.append(f"Success measures: {measures}")
+    handoffs = str(job.get("handoffs_and_workflow") or "").strip()
+    if handoffs:
+        lines.append(f"Handoffs / workflow: {handoffs}")
     if len(lines) == 1:
         lines.append("(no job description yet — edit office.json job{} or roles/catalog.json)")
     return "\n".join(lines)
+
 
 @dataclass
 class Agent:
