@@ -256,7 +256,6 @@ func _process_ambulance(delta: float) -> void:
 
 
 func _process_stomp(_delta: float) -> void:
-func _process_stomp(_delta: float) -> void:
 	# 0: foot descends, 1: stomp+shake, 2: flat puddle, 3: janitor mop (~7s total)
 	if _phase == 0 and _t >= 1.4:
 		_phase = 1
@@ -533,7 +532,6 @@ func _draw_ambulance() -> void:
 			draw_rect(Rect2(mp.x + 1, mp.y + 8, 5, 8), Color("#37474f"))
 
 
-func _draw_stomp() -> void:
 func _draw_stomp() -> void:
 	# Giant cartoon foot descending / planted.
 	var foot_y := -140.0
