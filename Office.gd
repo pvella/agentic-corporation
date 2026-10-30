@@ -3,11 +3,12 @@
 ## rugs, walls, signs). Furniture that agents can stand behind is drawn by
 ## y-sorted Prop nodes that Main creates from `props`.
 ##
-## Layout: team rooms and the shared Break Room / Meeting Room / Canteen sit in
-## two rows either side of a central corridor, each with a door onto it. A filler
-## cell becomes the Lobby (main entrance). Rooms marked "isolated" are built as a
-## separate walled wing to the right, with their own door, kitchenette and meeting
-## nook, and no connection to the main building.
+## Layout: hexagonal hub-and-spoke campus. The centre hub holds the Break Room,
+## Canteen and Rec Room as open zones. Department offices plus the Meeting Room
+## and Server Room sit as satellites on an elliptical (landscape / ~16:9) ring,
+## each joined to the hub by a short corridor. The Executive (Chief of Staff)
+## satellite is larger and sits prominently on the south arc. Rooms marked
+## "isolated" remain a separate walled wing to the right.
 ##
 ## Waypoint naming (shared with agent_harness.py):
 ##   Desk_<agent_id> (or the member's "desk"), Coffee_Machine, Water_Cooler,
@@ -69,7 +70,8 @@ const THEMES := {
 # ---- Built layout (read by Main) ------------------------------------------
 var layout_name := ""
 var bounds := Rect2()            ## everything incl. outer walls (camera limits)
-var walk_rect := Rect2()         ## single traversable outline
+var walk_rect := Rect2()         ## bounding traversable AABB (legacy / debug)
+var walk_polys: Array[PackedVector2Array] = [] ## hub + corridors + satellites for nav bake
 var obstacles: Array[Rect2] = [] ## walls + furniture footprints (nav obstructions)
 var areas: Array[Dictionary] = []    ## {kind, id, name, rect, theme, color}
 var walls: Array[Rect2] = []         ## interior walls (drawn + obstacles)
@@ -121,113 +123,182 @@ func build(cfg: Dictionary) -> void:
 			if typeof(m.get("job", null)) == TYPE_DICTIONARY:
 				agent_job[aid] = m["job"]
 
-	# --- Grid of cells: top row / corridor / bottom row ----------------------
-	var top: Array = []
-	var bottom: Array = []
-	for i in team_rooms.size():
-		(top if i % 2 == 0 else bottom).append({"kind": "team", "room": team_rooms[i]})
-	top.insert(mini(1, top.size()), {"kind": "break", "name": str(shared.get("break_room", {}).get("name", "Break Room"))})
+	# --- Hex hub + satellite ring (landscape ~16:9) ---------------------------
 	var seats := clampi(int(shared.get("meeting_room", {}).get("seats", 6)), 2, 8)
-	bottom.insert(mini(1, bottom.size()), {"kind": "meeting", "name": str(shared.get("meeting_room", {}).get("name", "Meeting Room")), "seats": seats})
+	var break_name := str(shared.get("break_room", {}).get("name", "Break Room"))
+	var meeting_name := str(shared.get("meeting_room", {}).get("name", "Meeting Room"))
 	var canteen_name := str(shared.get("canteen", {}).get("name", "Canteen")) if typeof(shared.get("canteen", {})) == TYPE_DICTIONARY else "Canteen"
-	# Put the canteen opposite the break room when space allows.
-	if top.size() >= bottom.size():
-		bottom.insert(mini(2, bottom.size()), {"kind": "canteen", "name": canteen_name})
-	else:
-		top.insert(mini(2, top.size()), {"kind": "canteen", "name": canteen_name})
-	# Server Room — knowledge drop / racks (shared amenity).
 	var server_name := "Server Room"
 	if typeof(shared.get("server_room", {})) == TYPE_DICTIONARY:
 		server_name = str(shared.get("server_room", {}).get("name", "Server Room"))
-	if bottom.size() <= top.size():
-		bottom.append({"kind": "server", "name": server_name})
-	else:
-		top.append({"kind": "server", "name": server_name})
-	# Rec Room — yoga / meditation amenity.
 	var rec_name := "Rec Room"
 	if typeof(shared.get("rec_room", {})) == TYPE_DICTIONARY:
 		rec_name = str(shared.get("rec_room", {}).get("name", "Rec Room"))
-	if top.size() <= bottom.size():
-		top.append({"kind": "rec", "name": rec_name})
-	else:
-		bottom.append({"kind": "rec", "name": rec_name})
-	var has_lobby := false
-	while bottom.size() < top.size():
-		bottom.append({"kind": "lobby" if not has_lobby else "lounge"})
-		has_lobby = true
-	while top.size() < bottom.size():
-		top.append({"kind": "lounge"})
-	var cols := top.size()
-	var col_w: Array[float] = []
-	for c in cols:
-		col_w.append(maxf(_cell_size(top[c]).x, _cell_size(bottom[c]).x))
-	var h_top := 0.0
-	var h_bot := 0.0
-	for c in cols:
-		h_top = maxf(h_top, _cell_size(top[c]).y)
-		h_bot = maxf(h_bot, _cell_size(bottom[c]).y)
 
-	var x0 := ORIGIN.x + EXT_WALL
-	var y0 := ORIGIN.y + EXT_WALL + 30.0  # a little sky for the building name
-	var total_w := 0.0
-	for w in col_w:
-		total_w += w
-	total_w += WALL * (cols - 1)
-	var y_corr := y0 + h_top + WALL
-	var y_bot := y_corr + CORRIDOR + WALL
-	var b := Rect2(x0, y0, total_w, y_bot + h_bot - y0)
+	# Hub sized so Break / Canteen / Rec sit side-by-side as open zones.
+	var hub_size := Vector2(1320, 700)
+	# Place hub so the elliptical ring fits a wide landscape frame.
+	var hub := Rect2(ORIGIN + Vector2(760, 420), hub_size)
+	var hub_c := hub.get_center()
 
-	areas.append({"kind": "corridor", "rect": Rect2(x0, y_corr, total_w, CORRIDOR), "theme": "corridor", "name": ""})
-	# Small-talk spot in the corridor, on the wall line between the first two columns.
-	_chat("Chat_Corridor", Vector2(x0 + col_w[0] + (WALL * 0.5 if cols > 1 else -60.0), y_corr + CORRIDOR * 0.5 - 8))
-	var main_door := Rect2()
-	var x := x0
-	for c in cols:
-		var cell_top := Rect2(x, y0, col_w[c], h_top)
-		var cell_bot := Rect2(x, y_bot, col_w[c], h_bot)
-		_build_cell(top[c], cell_top, true)
-		var lobby_door := _build_cell(bottom[c], cell_bot, false)
-		if lobby_door.size.x > 0.0:
-			main_door = lobby_door
-		if c > 0:
-			walls.append(Rect2(x - WALL, y0, WALL, h_top))
-			walls.append(Rect2(x - WALL, y_bot, WALL, h_bot))
-		# Door gap centred on the cell (not the wall slab that overlaps the divider).
-		var door_cx := x + col_w[c] * 0.5
-		_corridor_wall(top[c], Rect2(x - (WALL if c > 0 else 0.0), y0 + h_top, col_w[c] + (WALL if c > 0 else 0.0), WALL), door_cx)
-		_corridor_wall(bottom[c], Rect2(x - (WALL if c > 0 else 0.0), y_corr + CORRIDOR, col_w[c] + (WALL if c > 0 else 0.0), WALL), door_cx)
-		x += col_w[c] + WALL
-	if main_door.size.x == 0.0:  # no lobby: entrance at the corridor's left end
-		main_door = Rect2(b.position.x - EXT_WALL, y_corr + 16, EXT_WALL, CORRIDOR - 32)
-		_wp("Entrance", Vector2(x0 + 30, y_corr + CORRIDOR * 0.5), "right")
-	outer_frames.append({"rect": b, "door": main_door, "color": Color("#59606e"), "name": layout_name})
+	# Elliptical ring radii (Rx > Ry → ~16:9 campus).
+	var ring_rx := 1400.0
+	var ring_ry := 780.0
+	var corridor_w := 78.0
 
-	# --- Isolated wings ------------------------------------------------------
-	var right := b.end.x
+	# Satellites around the hub (θ=0 east, +θ clockwise with y-down = south-positive).
+	# Executive sits south and is built larger for the Chief of Staff.
+	var sat_specs: Array = [
+		{"kind": "meeting", "name": meeting_name, "seats": seats, "theta": -PI * 0.5, "id": ""},
+		{"kind": "server", "name": server_name, "theta": -PI * 0.25, "id": ""},
+	]
+	# Map team rooms onto remaining slots; Executive forced to south.
+	var exec_room: Variant = null
+	var other_teams: Array = []
+	for r: Dictionary in team_rooms:
+		if str(r.id) == "executive":
+			exec_room = r
+		else:
+			other_teams.append(r)
+	sat_specs.append({"kind": "team", "room": exec_room if exec_room != null else {}, "theta": PI * 0.5, "prominent": true, "id": "executive"})
+	var other_thetas: Array = [0.0, PI * 0.25, PI * 0.75, PI, PI * 1.25]
+	# Prefer stable order matching office.json departments when possible.
+	var prefer := ["engineering", "product_design", "operations", "finance", "special_projects"]
+	var ordered: Array = []
+	for pid in prefer:
+		for r: Dictionary in other_teams:
+			if str(r.id) == pid and r not in ordered:
+				ordered.append(r)
+	for r: Dictionary in other_teams:
+		if r not in ordered:
+			ordered.append(r)
+	for i in ordered.size():
+		var th: float = other_thetas[i] if i < other_thetas.size() else (float(i) * TAU / maxf(1.0, float(ordered.size())))
+		sat_specs.append({"kind": "team", "room": ordered[i], "theta": th, "id": str(ordered[i].id)})
+	# If there was no executive room, the south slot used an empty dict — drop it.
+	if exec_room == null:
+		for i in range(sat_specs.size() - 1, -1, -1):
+			if bool(sat_specs[i].get("prominent", false)) and sat_specs[i].kind == "team" and (sat_specs[i].room as Dictionary).is_empty():
+				sat_specs.remove_at(i)
+
+	# --- Build hub zones (Break | Canteen | Rec), open to each other ----------
+	# Inset so zone rects stay inside the inscribed hex (avoid corner spill).
+	var pad := 56.0
+	var zone_w := (hub_size.x - pad * 4.0) / 3.0
+	var zone_h := hub_size.y * 0.70
+	var zone_y := hub.position.y + (hub_size.y - zone_h) * 0.5
+	var break_r := Rect2(hub.position.x + pad, zone_y, zone_w, zone_h)
+	var canteen_r := Rect2(break_r.end.x + pad, zone_y, zone_w, zone_h)
+	var rec_r := Rect2(canteen_r.end.x + pad, zone_y, zone_w, zone_h)
+	areas.append({"kind": "hub", "rect": hub, "theme": "lobby", "name": "Hub"})
+	_build_break({"kind": "break", "name": break_name}, break_r)
+	_build_canteen({"kind": "canteen", "name": canteen_name}, canteen_r)
+	_build_rec({"kind": "rec", "name": rec_name}, rec_r)
+	_chat("Chat_Corridor", hub_c + Vector2(0, 40))
+	_wp("Entrance", Vector2(hub_c.x, hub.end.y - 24), "up")
+	# Soft inner dividers (gaps in the middle so agents walk between zones).
+	var div_gap := 110.0
+	for dx in [break_r.end.x + pad * 0.5 - WALL * 0.5, canteen_r.end.x + pad * 0.5 - WALL * 0.5]:
+		var top_h := (zone_h - div_gap) * 0.5
+		walls.append(Rect2(dx, break_r.position.y, WALL, top_h))
+		walls.append(Rect2(dx, break_r.end.y - top_h, WALL, top_h))
+
+	walk_polys.append(_outline(hub))
+	var hub_doors: Array[Vector2] = []  # points on hub edge where spokes attach
+
+	# --- Satellites + spoke corridors ----------------------------------------
+	var campus := hub
+	for spec: Dictionary in sat_specs:
+		var theta: float = float(spec.theta)
+		var prominent := bool(spec.get("prominent", false))
+		var sat_size := Vector2(360, 360)
+		match str(spec.kind):
+			"team":
+				var room: Dictionary = spec.room
+				sat_size = _team_size(room)
+				if prominent:
+					sat_size *= Vector2(1.28, 1.18)
+			"meeting":
+				var per_side := ceili(seats / 2.0)
+				sat_size = Vector2(maxf(360.0, per_side * 84.0 + 190.0), 400)
+			"server":
+				sat_size = Vector2(380, 390)
+		# Centre of satellite on the ellipse.
+		var sc := Vector2(hub_c.x + cos(theta) * ring_rx, hub_c.y + sin(theta) * ring_ry)
+		var sat := Rect2(sc - sat_size * 0.5, sat_size)
+		# Spoke corridor: AABB from hub exit toward satellite entrance.
+		var dir := (sc - hub_c).normalized()
+		var hub_exit := _snap_to_edge(hub, _rect_exit(hub, dir))
+		var sat_exit := _snap_to_edge(sat, _rect_exit(sat, -dir))
+		hub_doors.append(hub_exit)
+		var corr := _spoke_rect(hub_exit, sat_exit, corridor_w)
+		areas.append({"kind": "corridor", "rect": corr, "theme": "corridor", "name": "",
+			"from": hub_exit, "to": sat_exit, "width": corridor_w})
+		# Oriented strip (not AABB) so nav cannot shortcut across walls.
+		walk_polys.append(_spoke_poly(hub_exit, sat_exit, corridor_w, 18.0))
+		# Door gap matches spoke width so the opening sits on the spoke junction.
+		var door_w := corridor_w + 10.0
+		_frame_walls(sat, sat_exit, door_w)
+		# Build interior.
+		match str(spec.kind):
+			"team":
+				var room2: Dictionary = spec.room
+				var content := Rect2(sat.position, _team_size(room2))
+				# Centre desks inside the (possibly enlarged) satellite.
+				_build_team(room2, sat, content)
+				if prominent:
+					# Extra plants / rug cue so the CoS office reads as the flagship.
+					_prop("plant", Rect2(sat.position.x + 12, sat.position.y + 12, 34, 34))
+					_prop("plant", Rect2(sat.end.x - 46, sat.end.y - 46, 34, 34))
+			"meeting":
+				_build_meeting({"kind": "meeting", "name": meeting_name, "seats": seats}, sat)
+			"server":
+				_build_server({"kind": "server", "name": server_name}, sat)
+		walk_polys.append(_outline(sat))
+		var frame_col := Color("#2f3a52") if prominent else Color("#59606e")
+		if prominent:
+			frame_col = Color("#5c6bc0")
+		var sat_label := str(spec.get("name", spec.get("id", spec.kind)))
+		if str(spec.kind) == "team":
+			sat_label = str((spec.room as Dictionary).get("name", spec.get("id", "Team")))
+		outer_frames.append({"rect": sat, "door": _door_rect(sat, sat_exit, door_w), "color": frame_col, "name": sat_label, "wing": false, "satellite": true, "prominent": prominent})
+		campus = campus.merge(sat).merge(corr)
+
+	# Hub outer wall with gaps at each spoke (same door width as satellites).
+	_hub_perimeter(hub, hub_doors, corridor_w + 10.0)
+	outer_frames.insert(0, {"rect": hub, "door": Rect2(hub_c.x - 50, hub.end.y, 100, EXT_WALL), "color": Color("#455a64"), "name": layout_name, "hub": true})
+
+	# --- Isolated wings (unchanged idea: separate building to the right) ------
+	var right := campus.end.x
 	for r: Dictionary in wings:
 		var wx := right + EXT_WALL * 2.0 + WING_GAP
 		var team_size := _team_size(r)
-		var wing := Rect2(wx, y0, team_size.x + AMENITY_W, b.size.y)
-		obstacles.append(Rect2(right, y0, wx - right, b.size.y))  # the gap between buildings
+		var wing := Rect2(wx, hub.position.y, team_size.x + AMENITY_W, maxf(team_size.y + 40.0, hub_size.y))
+		obstacles.append(Rect2(right, hub.position.y, wx - right, wing.size.y))
 		var door := _build_wing(r, wing)
 		outer_frames.append({"rect": wing, "door": door, "color": Color("#2f3a52"), "name": str(r.get("name", r.id)), "wing": true})
+		walk_polys.append(_outline(wing))
+		campus = campus.merge(wing)
 		right = wing.end.x
 
-	# Traversable = main building + wings. The outdoor gap is already an obstacle.
-	walk_rect = Rect2(b.position, Vector2(right - b.position.x, b.size.y))
-	bounds = Rect2(ORIGIN - Vector2(20, 20), Vector2(right + EXT_WALL + 20.0 - ORIGIN.x + 20.0, b.end.y + EXT_WALL + 50.0 - ORIGIN.y + 20.0))
+	walk_rect = campus
+	bounds = Rect2(ORIGIN - Vector2(40, 40), campus.end - ORIGIN + Vector2(80, 100))
+	# Inflate bounds to a landscape frame (~16:9) if the campus is taller than that.
+	var target_aspect := 16.0 / 9.0
+	if bounds.size.x / maxf(bounds.size.y, 1.0) < target_aspect:
+		var need_w := bounds.size.y * target_aspect
+		var extra := need_w - bounds.size.x
+		bounds.position.x -= extra * 0.5
+		bounds.size.x = need_w
 	for w in walls:
 		obstacles.append(w)
-	# Carve exterior frames into the nav mesh (door gaps left open) so agents
-	# cannot clip through the outer walls.
-	for f: Dictionary in outer_frames:
-		for piece: Rect2 in _frame_obstacle_pieces(f):
-			obstacles.append(piece)
 	queue_redraw()
+
 
 
 func _reset() -> void:
 	obstacles.clear(); areas.clear(); walls.clear(); outer_frames.clear(); props.clear()
+	walk_polys.clear()
 	waypoints.clear(); signs.clear(); rooms.clear(); meeting_groups.clear(); agent_room.clear()
 	agent_job.clear()
 	room_break_spots.clear(); desk_of.clear(); chair_backs.clear()
@@ -259,19 +330,13 @@ func _cell_size(cell: Dictionary) -> Vector2:
 		_: return Vector2(320, 450)
 
 
-func _corridor_wall(cell: Dictionary, r: Rect2, door_cx: float = INF) -> void:
+func _corridor_wall(cell: Dictionary, r: Rect2) -> void:
 	if str(cell.kind) in ["lobby", "lounge"]:
 		return  # open onto the corridor
 	var door_w := 110.0 if str(cell.kind) in ["break", "meeting", "rec"] else DOOR
-	# Align the gap to the room centre (and the corridor), not the expanded wall rect.
-	var cx := door_cx if door_cx < INF else (r.position.x + r.size.x * 0.5)
-	var left_w := maxf(0.0, cx - door_w * 0.5 - r.position.x)
-	var right_x := cx + door_w * 0.5
-	var right_w := maxf(0.0, r.end.x - right_x)
-	if left_w > 0.05:
-		walls.append(Rect2(r.position.x, r.position.y, left_w, r.size.y))
-	if right_w > 0.05:
-		walls.append(Rect2(right_x, r.position.y, right_w, r.size.y))
+	var cx := r.position.x + r.size.x * 0.5
+	walls.append(Rect2(r.position.x, r.position.y, cx - door_w * 0.5 - r.position.x, r.size.y))
+	walls.append(Rect2(cx + door_w * 0.5, r.position.y, r.end.x - cx - door_w * 0.5, r.size.y))
 
 
 ## Returns the exterior door rect for a lobby cell, otherwise an empty rect.
@@ -583,25 +648,16 @@ func _wp(name: String, pos: Vector2, facing: String, seat: String = "") -> void:
 # ===========================================================================
 # Geometry for navigation baking
 # ===========================================================================
-## Outer-frame wall pieces for nav, with the door opening left clear.
-func _frame_obstacle_pieces(f: Dictionary) -> Array[Rect2]:
-	var r: Rect2 = f.rect
-	var o := r.grow(EXT_WALL)
-	var door: Rect2 = f.door
-	var sides: Array[Rect2] = [
-		Rect2(o.position, Vector2(o.size.x, EXT_WALL)),
-		Rect2(o.position.x, r.end.y, o.size.x, EXT_WALL),
-		Rect2(o.position, Vector2(EXT_WALL, o.size.y)),
-		Rect2(r.end.x, o.position.y, EXT_WALL, o.size.y),
-	]
-	var out: Array[Rect2] = []
-	for side in sides:
-		out.append_array(_cut(side, door))
-	return out
-
-
 func get_floor_outline() -> PackedVector2Array:
+	if not walk_polys.is_empty():
+		return walk_polys[0]
 	return _outline(walk_rect)
+
+
+func get_floor_outlines() -> Array[PackedVector2Array]:
+	if not walk_polys.is_empty():
+		return walk_polys
+	return [get_floor_outline()]
 
 
 func get_obstacle_outlines() -> Array[PackedVector2Array]:
@@ -613,6 +669,230 @@ func get_obstacle_outlines() -> Array[PackedVector2Array]:
 
 func _outline(r: Rect2) -> PackedVector2Array:
 	return PackedVector2Array([r.position, Vector2(r.end.x, r.position.y), r.end, Vector2(r.position.x, r.end.y)])
+
+
+## Flat-top hexagon inscribed in rect (visual hub cue; nav still uses the rect).
+func _hub_hex(r: Rect2) -> PackedVector2Array:
+	var c := r.get_center()
+	var rx := r.size.x * 0.48
+	var ry := r.size.y * 0.48
+	var pts := PackedVector2Array()
+	for i in 6:
+		var ang := deg_to_rad(60.0 * float(i) - 30.0)  # flat-top
+		pts.append(c + Vector2(cos(ang) * rx, sin(ang) * ry))
+	return pts
+
+
+## Point where a ray from rect centre along `dir` exits the rect edge.
+func _rect_exit(r: Rect2, dir: Vector2) -> Vector2:
+	var d := dir.normalized()
+	if d.length_squared() < 0.0001:
+		return r.get_center()
+	var c := r.get_center()
+	var tx := INF
+	if absf(d.x) > 0.0001:
+		var edge_x := r.end.x if d.x > 0.0 else r.position.x
+		tx = (edge_x - c.x) / d.x
+	var ty := INF
+	if absf(d.y) > 0.0001:
+		var edge_y := r.end.y if d.y > 0.0 else r.position.y
+		ty = (edge_y - c.y) / d.y
+	var t := minf(tx, ty)
+	return c + d * t
+
+
+## Axis-aligned corridor slab covering the segment a→b with thickness `width`.
+## Used for campus bounds merging only — nav uses `_spoke_poly`.
+func _spoke_rect(a: Vector2, b: Vector2, width: float) -> Rect2:
+	var lo := Vector2(minf(a.x, b.x), minf(a.y, b.y))
+	var hi := Vector2(maxf(a.x, b.x), maxf(a.y, b.y))
+	var r := Rect2(lo, hi - lo)
+	# Ensure minimum thickness so diagonal spokes stay walkable.
+	if r.size.x < width:
+		var m := r.get_center().x
+		r.position.x = m - width * 0.5
+		r.size.x = width
+	if r.size.y < width:
+		var m2 := r.get_center().y
+		r.position.y = m2 - width * 0.5
+		r.size.y = width
+	# Slightly overlap hub/sat so campus merge covers the junction.
+	return r.grow(6.0)
+
+
+## Oriented corridor strip polygon for nav bake (room↔door↔spoke only).
+## `extend` pushes ends into the rooms so the strip meets walkable interiors
+## through the door gaps; walls carve everything else.
+func _spoke_poly(a: Vector2, b: Vector2, width: float, extend: float = 18.0) -> PackedVector2Array:
+	var d := b - a
+	if d.length_squared() < 1.0:
+		return PackedVector2Array()
+	var along := d.normalized()
+	var a2 := a - along * extend
+	var b2 := b + along * extend
+	var n := Vector2(-along.y, along.x) * (width * 0.5)
+	return PackedVector2Array([a2 + n, b2 + n, b2 - n, a2 - n])
+
+
+## Which side of rect `r` is closest to `p` (n/s/w/e).
+func _nearest_edge(r: Rect2, p: Vector2) -> String:
+	var dn := absf(p.y - r.position.y)
+	var ds := absf(p.y - r.end.y)
+	var dw := absf(p.x - r.position.x)
+	var de := absf(p.x - r.end.x)
+	var m := minf(minf(dn, ds), minf(dw, de))
+	if m == dn:
+		return "n"
+	if m == ds:
+		return "s"
+	if m == dw:
+		return "w"
+	return "e"
+
+
+## Door mat / iso cut-out aligned to the edge where `door_pt` sits.
+func _door_rect(r: Rect2, door_pt: Vector2, door_w: float) -> Rect2:
+	var edge := _nearest_edge(r, door_pt)
+	var thick := 12.0
+	var hw := door_w * 0.5
+	match edge:
+		"n":
+			return Rect2(door_pt.x - hw, r.position.y - thick * 0.5, door_w, thick)
+		"s":
+			return Rect2(door_pt.x - hw, r.end.y - thick * 0.5, door_w, thick)
+		"w":
+			return Rect2(r.position.x - thick * 0.5, door_pt.y - hw, thick, door_w)
+		_:
+			return Rect2(r.end.x - thick * 0.5, door_pt.y - hw, thick, door_w)
+
+
+## Pin a door point exactly onto its nearest edge (spoke junction).
+func _snap_to_edge(r: Rect2, door_pt: Vector2) -> Vector2:
+	var edge := _nearest_edge(r, door_pt)
+	match edge:
+		"n":
+			return Vector2(door_pt.x, r.position.y)
+		"s":
+			return Vector2(door_pt.x, r.end.y)
+		"w":
+			return Vector2(r.position.x, door_pt.y)
+		_:
+			return Vector2(r.end.x, door_pt.y)
+
+
+## Four wall segments around `r` with a door gap centred on `door_pt`.
+func _frame_walls(r: Rect2, door_pt: Vector2, door_w: float) -> void:
+	# Build perimeter via the same gap helper as the hub so near-corner spokes
+	# open a mouth on both meeting edges.
+	var gaps_n: Array = []
+	var gaps_s: Array = []
+	var gaps_w: Array = []
+	var gaps_e: Array = []
+	var edge := _nearest_edge(r, door_pt)
+	var corner_slop := door_w * 0.5 + WALL
+	match edge:
+		"n":
+			gaps_n.append(door_pt.x)
+			if door_pt.x - r.position.x <= corner_slop:
+				gaps_w.append(door_pt.y)
+			if r.end.x - door_pt.x <= corner_slop:
+				gaps_e.append(door_pt.y)
+		"s":
+			gaps_s.append(door_pt.x)
+			if door_pt.x - r.position.x <= corner_slop:
+				gaps_w.append(door_pt.y)
+			if r.end.x - door_pt.x <= corner_slop:
+				gaps_e.append(door_pt.y)
+		"w":
+			gaps_w.append(door_pt.y)
+			if door_pt.y - r.position.y <= corner_slop:
+				gaps_n.append(door_pt.x)
+			if r.end.y - door_pt.y <= corner_slop:
+				gaps_s.append(door_pt.x)
+		_:
+			gaps_e.append(door_pt.y)
+			if door_pt.y - r.position.y <= corner_slop:
+				gaps_n.append(door_pt.x)
+			if r.end.y - door_pt.y <= corner_slop:
+				gaps_s.append(door_pt.x)
+	var hw := door_w * 0.5
+	_wall_edge_with_gaps(r.position.x, r.position.y, r.end.x, r.position.y, WALL, true, gaps_n, hw)
+	_wall_edge_with_gaps(r.position.x, r.end.y - WALL, r.end.x, r.end.y - WALL, WALL, true, gaps_s, hw)
+	_wall_edge_with_gaps(r.position.x, r.position.y, r.position.x, r.end.y, WALL, false, gaps_w, hw)
+	_wall_edge_with_gaps(r.end.x - WALL, r.position.y, r.end.x - WALL, r.end.y, WALL, false, gaps_e, hw)
+
+
+## Hub perimeter walls with door gaps at each spoke attachment point.
+func _hub_perimeter(hub: Rect2, doors: Array[Vector2], door_w: float) -> void:
+	var x0 := hub.position.x
+	var y0 := hub.position.y
+	var x1 := hub.end.x
+	var y1 := hub.end.y
+	var hw := door_w * 0.5
+	# Collect door intervals per edge.
+	var north: Array = []
+	var south: Array = []
+	var west: Array = []
+	var east: Array = []
+	var corner_slop := door_w * 0.5 + WALL
+	for p: Vector2 in doors:
+		var dn := absf(p.y - y0)
+		var ds := absf(p.y - y1)
+		var dw := absf(p.x - x0)
+		var de := absf(p.x - x1)
+		var m := minf(minf(dn, ds), minf(dw, de))
+		if m == dn:
+			north.append(p.x)
+		elif m == ds:
+			south.append(p.x)
+		elif m == dw:
+			west.append(p.y)
+		else:
+			east.append(p.y)
+		# Near-corner spoke: also open the adjacent edge so the mouth is clear.
+		if m == dn or m == ds:
+			if dw <= corner_slop:
+				west.append(p.y)
+			if de <= corner_slop:
+				east.append(p.y)
+		else:
+			if dn <= corner_slop:
+				north.append(p.x)
+			if ds <= corner_slop:
+				south.append(p.x)
+	# Also leave the main Entrance open on the south edge.
+	south.append(hub.get_center().x)
+	_wall_edge_with_gaps(x0, y0, x1, y0, WALL, true, north, hw)   # north horizontal
+	_wall_edge_with_gaps(x0, y1 - WALL, x1, y1 - WALL, WALL, true, south, hw)
+	_wall_edge_with_gaps(x0, y0, x0, y1, WALL, false, west, hw)
+	_wall_edge_with_gaps(x1 - WALL, y0, x1 - WALL, y1, WALL, false, east, hw)
+
+
+func _wall_edge_with_gaps(ax: float, ay: float, bx: float, by: float, thickness: float, horizontal: bool, gaps: Array, hw: float) -> void:
+	var pts: Array = gaps.duplicate()
+	pts.sort()
+	if horizontal:
+		var x := ax
+		var y := ay
+		var end_x := bx
+		for g in pts:
+			var gx := float(g)
+			if gx - hw > x:
+				walls.append(Rect2(x, y, gx - hw - x, thickness))
+			x = maxf(x, gx + hw)
+		if end_x > x:
+			walls.append(Rect2(x, y, end_x - x, thickness))
+	else:
+		var x2 := ax
+		var y2 := ay
+		var end_y := by
+		for g in pts:
+			var gy := float(g)
+			if gy - hw > y2:
+				walls.append(Rect2(x2, y2, thickness, gy - hw - y2))
+			y2 = maxf(y2, gy + hw)
+		if end_y > y2:
+			walls.append(Rect2(x2, y2, thickness, end_y - y2))
 
 
 ## Sign rect that contains `world_pos` (for hover), or {}.
@@ -639,22 +919,32 @@ func _draw() -> void:
 		var gx := bounds.position.x + fmod(i * 137.0, bounds.size.x)
 		var gy := bounds.position.y + fmod(i * 89.0, bounds.size.y)
 		draw_circle(Vector2(gx, gy), 3.0, Color("#6e955d"))
-	# Short entrance mats only (no long path streaks past the building).
+	# Wing entrance paths only (hub/satellite doors must not paint AABB streaks).
 	for f: Dictionary in outer_frames:
-		var d: Rect2 = f.door
-		if not d.has_area():
+		if not bool(f.get("wing", false)):
 			continue
-		if d.size.x > d.size.y:
-			# South-facing door: short mat below.
-			draw_rect(Rect2(d.position.x + 8, d.end.y, d.size.x - 16, 36), Color("#cdbf9f"))
-		else:
-			# West-facing door: short mat to the left.
-			draw_rect(Rect2(d.position.x - 36, d.position.y + 6, 36, d.size.y - 12), Color("#cdbf9f"))
+		var d: Rect2 = f.door
+		if d.size.x > d.size.y and d.has_area():
+			draw_rect(Rect2(d.position.x + 10, d.position.y, d.size.x - 20, minf(180.0, bounds.end.y - d.position.y + 40.0)), Color("#cdbf9f"))
 	# Floors (a base under each building first, so door gaps aren't grass).
 	for f: Dictionary in outer_frames:
+		if bool(f.get("hub", false)):
+			continue  # hub uses hex floor; rectangular base would show as corner junk
 		draw_rect(f.rect, Color("#b3aa99"))
 	for a: Dictionary in areas:
+		if a.kind == "corridor":
+			_draw_spoke(a)
+			continue
+		if a.kind == "hub":
+			_draw_hub_floor(a)
+			continue
 		_draw_floor(a)
+	# Re-stroke hub hex so zone floors don't hide the outline.
+	for a: Dictionary in areas:
+		if a.kind == "hub":
+			var hex := _hub_hex(a.rect)
+			for i in hex.size():
+				draw_line(hex[i], hex[(i + 1) % hex.size()], Color("#455a64", 0.95), 3.0)
 	# Building names on the roof edge.
 	for f: Dictionary in outer_frames:
 		var r: Rect2 = f.rect
@@ -664,6 +954,8 @@ func _draw() -> void:
 	for w in walls:
 		_draw_wall(w, Color("#6b7280"))
 	for f: Dictionary in outer_frames:
+		if bool(f.get("hub", false)):
+			continue  # hub perimeter already in walls[]; frame would re-draw a solid rect
 		_draw_frame(f)
 	# Chair backs behind front-facing sitters (meeting top rows).
 	for cb: Dictionary in chair_backs:
@@ -737,6 +1029,36 @@ func _draw_floor(a: Dictionary) -> void:
 			x += 20.0
 
 
+
+## Hex hub floor only (no rectangular AABB fill — that left corner shading junk).
+func _draw_hub_floor(a: Dictionary) -> void:
+	var r: Rect2 = a.rect
+	var pal: Array = THEMES.get(str(a.get("theme", "lobby")), THEMES["lobby"])
+	var c1: Color = pal[0]
+	var hex := _hub_hex(r)
+	draw_colored_polygon(hex, c1)
+	for i in hex.size():
+		draw_line(hex[i], hex[(i + 1) % hex.size()], Color("#455a64", 0.9), 3.0)
+
+
+## Oriented spoke strip (AABB corridors are nav-only; do not paint their full rect).
+func _draw_spoke(a: Dictionary) -> void:
+	if not a.has("from") or not a.has("to"):
+		return
+	var a_pt: Vector2 = a["from"]
+	var b_pt: Vector2 = a["to"]
+	var w: float = float(a.get("width", 78.0))
+	var d := b_pt - a_pt
+	if d.length_squared() < 1.0:
+		return
+	var n := Vector2(-d.y, d.x).normalized() * (w * 0.42)
+	var pts := PackedVector2Array([a_pt + n, b_pt + n, b_pt - n, a_pt - n])
+	draw_colored_polygon(pts, Color("#bfb6a6"))
+	# Soft edge lines along the spoke (not the old E–W runner).
+	draw_line(a_pt + n, b_pt + n, Color("#9c5b4a", 0.35), 2.0)
+	draw_line(a_pt - n, b_pt - n, Color("#9c5b4a", 0.35), 2.0)
+
+
 func _draw_wall(w: Rect2, c: Color) -> void:
 	# Top face + a darker front face, for a hint of 3/4 depth.
 	draw_rect(w, c)
@@ -747,13 +1069,20 @@ func _draw_wall(w: Rect2, c: Color) -> void:
 func _draw_frame(f: Dictionary) -> void:
 	var r: Rect2 = f.rect
 	var c: Color = f.color
+	var d: Rect2 = f.door
+	# Satellites: walls[] already carve the door gap — do not paint a solid outer
+	# frame over it (that made doors look misaligned with the spokes).
+	if bool(f.get("satellite", false)):
+		if d.has_area():
+			draw_rect(d, Color("#8d6e63"))
+			draw_rect(d.grow(-3), Color("#a1887f"))
+		return
 	var o := r.grow(EXT_WALL)
 	var parts := [Rect2(o.position, Vector2(o.size.x, EXT_WALL)), Rect2(o.position.x, r.end.y, o.size.x, EXT_WALL),
 		Rect2(o.position, Vector2(EXT_WALL, o.size.y)), Rect2(r.end.x, o.position.y, EXT_WALL, o.size.y)]
 	for p: Rect2 in parts:
 		_draw_wall(p, c)
-	var d: Rect2 = f.door
-	if d.size.x > 0.0:
+	if d.size.x > 0.0 or d.size.y > 0.0:
 		# Door opening + mat.
 		draw_rect(d, Color("#8d6e63"))
 		draw_rect(d.grow(-3), Color("#a1887f"))
@@ -809,6 +1138,8 @@ func iso_walls() -> Array[Dictionary]:
 	for w in walls:
 		out.append({"rect": w, "h": WALL_H_INNER, "color": Color("#8a909c")})
 	for f: Dictionary in outer_frames:
+		if bool(f.get("hub", false)):
+			continue  # hub gaps live in walls[]; a second frame would cover spoke doors
 		var r: Rect2 = f.rect
 		var c: Color = f.color
 		var o := r.grow(EXT_WALL)
@@ -857,8 +1188,10 @@ func _draw_iso() -> void:
 		var gy := sb.position.y - 200 + fmod(i * 89.0, sb.size.y + 400)
 		draw_circle(Vector2(gx, gy), 3.0, Color("#6e955d"))
 		draw_circle(Vector2(gx + 9, gy + 2), 2.0, Color("#8db27a"))
-	# Building foundations: a slab edge under each building.
+	# Building foundations: a slab edge under each building (skip hub — hex floor).
 	for f: Dictionary in outer_frames:
+		if bool(f.get("hub", false)):
+			continue
 		var o: Rect2 = (f.rect as Rect2).grow(EXT_WALL)
 		var a := Vector2(o.position.x, o.end.y)
 		var b := o.end
@@ -867,24 +1200,35 @@ func _draw_iso() -> void:
 		_iso_poly([[b, 0.0], [c, 0.0], [c, -9.0], [b, -9.0]], Color("#6f685c"))
 	# Everything else on the floor plane.
 	draw_set_transform_matrix(Iso.floor_xf())
+	# Wing entrance paths only — never paint campus-wide door streaks.
 	for f: Dictionary in outer_frames:
+		if not bool(f.get("wing", false)):
+			continue
 		var d: Rect2 = f.door
-		if d.size.x > d.size.y:
-			draw_rect(Rect2(d.position.x + 10, d.position.y, d.size.x - 20, bounds.end.y - d.position.y + 600), Color("#cdbf9f"))
-		elif d.has_area():
-			draw_rect(Rect2(bounds.position.x - 600, d.position.y + 8, d.position.x - bounds.position.x + 600, d.size.y - 16), Color("#cdbf9f"))
+		if d.size.x > d.size.y and d.has_area():
+			draw_rect(Rect2(d.position.x + 10, d.position.y, d.size.x - 20, 160.0), Color("#cdbf9f"))
 	for f: Dictionary in outer_frames:
+		if bool(f.get("hub", false)):
+			continue
 		var o: Rect2 = (f.rect as Rect2).grow(EXT_WALL)
 		draw_rect(o, Color("#b3aa99"))  # base under door gaps / wall feet
 	for a: Dictionary in areas:
+		if a.kind == "corridor":
+			_draw_spoke(a)
+			continue
+		if a.kind == "hub":
+			_draw_hub_floor(a)
+			continue
 		_draw_floor(a)
 	for a: Dictionary in areas:
-		if a.kind == "corridor":
-			var r: Rect2 = a.rect
-			draw_rect(Rect2(r.position.x + 20, r.position.y + r.size.y * 0.5 - 16, r.size.x - 40, 32), Color("#9c5b4a", 0.55))
-			draw_rect(Rect2(r.position.x + 24, r.position.y + r.size.y * 0.5 - 12, r.size.x - 48, 24), Color("#b7735f", 0.45), false, 2.0)
-	# Subtle 32 px tile grid so the floor reads as Habbo-style diamonds.
+		if a.kind == "hub":
+			var hex2 := _hub_hex(a.rect)
+			for i in hex2.size():
+				draw_line(hex2[i], hex2[(i + 1) % hex2.size()], Color("#455a64", 0.95), 3.0)
+	# Subtle 32 px tile grid on rooms only (not corridors / hub AABB).
 	for a: Dictionary in areas:
+		if a.kind in ["corridor", "hub"]:
+			continue
 		var r: Rect2 = a.rect
 		var gc := Color(0, 0, 0, 0.045)
 		var x := ceilf(r.position.x / 32.0) * 32.0
@@ -895,8 +1239,10 @@ func _draw_iso() -> void:
 		while y < r.end.y:
 			draw_line(Vector2(r.position.x, y), Vector2(r.end.x, y), gc, 1.0)
 			y += 32.0
-	# Door mats.
+	# Door mats (satellites / wings only — hub has no rect frame).
 	for f: Dictionary in outer_frames:
+		if bool(f.get("hub", false)):
+			continue
 		var d: Rect2 = f.door
 		if d.has_area():
 			draw_rect(d, Color("#8d6e63"))

@@ -144,6 +144,7 @@ func _ready() -> void:
 	# Cap FPS: uncapped GL Compatibility + iso office pegged MBP ~90% CPU
 	# and made the window feel dead / unresponsive.
 	Engine.max_fps = 30
+	# Never show navmesh / agent path debug overlays in the office window.
 	NavigationServer2D.set_debug_enabled(false)
 	get_viewport().physics_object_picking = true
 	_setup_hidpi()
@@ -1212,7 +1213,8 @@ func _bake_navigation() -> void:
 	var poly := NavigationPolygon.new()
 	poly.agent_radius = nav_agent_radius
 	var source := NavigationMeshSourceGeometryData2D.new()
-	source.add_traversable_outline(office.get_floor_outline())
+	for floor_poly: PackedVector2Array in office.get_floor_outlines():
+		source.add_traversable_outline(floor_poly)
 	for outline: PackedVector2Array in office.get_obstacle_outlines():
 		source.add_obstruction_outline(outline)
 	NavigationServer2D.bake_from_source_geometry_data(poly, source)
@@ -1243,12 +1245,15 @@ func _build_room_buttons() -> void:
 		_room_buttons.append(b)
 
 
-## Opening view: the main building at a comfortable zoom (F fits everything).
+## Opening view: the hub campus at a comfortable zoom (F fits everything).
 func default_view() -> void:
 	var main_rect: Rect2 = office.outer_frames[0].rect if not office.outer_frames.is_empty() else office.bounds
-	# Centre on the upper half (the team rooms and the break room) rather than
-	# the corridor in the middle.
-	var focus := main_rect.position + main_rect.size * Vector2(0.5, 0.3)
+	# Prefer the hub centre when present; otherwise the first outer frame.
+	for f: Dictionary in office.outer_frames:
+		if bool(f.get("hub", false)):
+			main_rect = f.rect
+			break
+	var focus := main_rect.get_center()
 	camera.focus_on(Iso.to_screen(focus) + Vector2(0, -20), DEFAULT_ZOOM)
 
 
