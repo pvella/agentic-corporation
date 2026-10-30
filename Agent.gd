@@ -1,8 +1,8 @@
 ## One autonomous agent in the office: a small chibi office worker.
 ##
 ## Movement: NavigationAgent2D path-following with RVO avoidance, a relaxed
-## stroll speed, smooth acceleration/deceleration, and a short "settle" slide
-## into the exact seat on arrival. Standing agents never re-path or jitter.
+## stroll speed, and smooth acceleration/deceleration. Arrival snaps only when
+## already within a tiny radius — no free-space tween that could cross walls.
 ##
 ## Look: drawn procedurally in _draw (outlined shapes, shaded shirt, hair
 ## styles, accessories, blinking eyes). Poses: walk cycle, idle breathing,
@@ -37,7 +37,6 @@ const BUBBLE_SECONDS := 3.0
 const BUBBLE_MAX_CHARS := 64
 const ACCEL := 240.0         ## px/s² for gentle starts and stops
 const SLOW_RADIUS := 56.0    ## start easing off this far from the target
-const SETTLE_TIME := 0.35    ## slide into the exact seat on arrival
 const OUTLINE := Color(0.15, 0.13, 0.19)
 const HEAD_R := 14.0
 ## How far the drawing drops when sitting, per seat type.
@@ -391,15 +390,12 @@ func _arrive() -> void:
 	velocity = Vector2.ZERO
 	_vel = Vector2.ZERO
 	nav_agent.velocity = Vector2.ZERO
-	# Slide gently into the exact spot (seats can sit just inside furniture).
+	# Never tween/teleport across free space — that ignored nav and walked
+	# through walls. Snap only when already within a tiny radius of the seat.
 	var gap := global_position.distance_to(_target_pos)
-	if gap > 0.5 and gap < 70.0:
-		_settling = true
-		var tw := create_tween()
-		tw.tween_property(self, "global_position", _target_pos, SETTLE_TIME * clampf(gap / 20.0, 0.4, 1.5)).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
-		tw.tween_callback(_finish_settle)
-	else:
-		_finish_settle()
+	if gap > 0.5 and gap < 10.0:
+		global_position = _target_pos
+	_finish_settle()
 
 
 func _finish_settle() -> void:

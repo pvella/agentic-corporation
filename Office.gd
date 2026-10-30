@@ -142,8 +142,8 @@ func build(cfg: Dictionary) -> void:
 	var hub_c := hub.get_center()
 
 	# Elliptical ring radii (Rx > Ry → ~16:9 campus).
-	var ring_rx := 1180.0
-	var ring_ry := 620.0
+	var ring_rx := 1400.0
+	var ring_ry := 780.0
 	var corridor_w := 78.0
 
 	# Satellites around the hub (θ=0 east, +θ clockwise with y-down = south-positive).
@@ -228,15 +228,16 @@ func build(cfg: Dictionary) -> void:
 		var sat := Rect2(sc - sat_size * 0.5, sat_size)
 		# Spoke corridor: AABB from hub exit toward satellite entrance.
 		var dir := (sc - hub_c).normalized()
-		var hub_exit := _rect_exit(hub, dir)
-		var sat_exit := _rect_exit(sat, -dir)
+		var hub_exit := _snap_to_edge(hub, _rect_exit(hub, dir))
+		var sat_exit := _snap_to_edge(sat, _rect_exit(sat, -dir))
 		hub_doors.append(hub_exit)
 		var corr := _spoke_rect(hub_exit, sat_exit, corridor_w)
 		areas.append({"kind": "corridor", "rect": corr, "theme": "corridor", "name": "",
 			"from": hub_exit, "to": sat_exit, "width": corridor_w})
-		walk_polys.append(_outline(corr))
-		# Door gap width on satellite / hub walls.
-		var door_w := 100.0 if prominent else 88.0
+		# Oriented strip (not AABB) so nav cannot shortcut across walls.
+		walk_polys.append(_spoke_poly(hub_exit, sat_exit, corridor_w, 18.0))
+		# Door gap matches spoke width so the opening sits on the spoke junction.
+		var door_w := corridor_w + 10.0
 		_frame_walls(sat, sat_exit, door_w)
 		# Build interior.
 		match str(spec.kind):
@@ -260,11 +261,11 @@ func build(cfg: Dictionary) -> void:
 		var sat_label := str(spec.get("name", spec.get("id", spec.kind)))
 		if str(spec.kind) == "team":
 			sat_label = str((spec.room as Dictionary).get("name", spec.get("id", "Team")))
-		outer_frames.append({"rect": sat, "door": Rect2(sat_exit - Vector2(door_w * 0.5, 6), Vector2(door_w, 12)), "color": frame_col, "name": sat_label, "wing": false, "satellite": true, "prominent": prominent})
+		outer_frames.append({"rect": sat, "door": _door_rect(sat, sat_exit, door_w), "color": frame_col, "name": sat_label, "wing": false, "satellite": true, "prominent": prominent})
 		campus = campus.merge(sat).merge(corr)
 
-	# Hub outer wall with gaps at each spoke.
-	_hub_perimeter(hub, hub_doors, 96.0)
+	# Hub outer wall with gaps at each spoke (same door width as satellites).
+	_hub_perimeter(hub, hub_doors, corridor_w + 10.0)
 	outer_frames.insert(0, {"rect": hub, "door": Rect2(hub_c.x - 50, hub.end.y, 100, EXT_WALL), "color": Color("#455a64"), "name": layout_name, "hub": true})
 
 	# --- Isolated wings (unchanged idea: separate building to the right) ------
@@ -701,6 +702,7 @@ func _rect_exit(r: Rect2, dir: Vector2) -> Vector2:
 
 
 ## Axis-aligned corridor slab covering the segment a→b with thickness `width`.
+## Used for campus bounds merging only — nav uses `_spoke_poly`.
 func _spoke_rect(a: Vector2, b: Vector2, width: float) -> Rect2:
 	var lo := Vector2(minf(a.x, b.x), minf(a.y, b.y))
 	var hi := Vector2(maxf(a.x, b.x), maxf(a.y, b.y))
@@ -714,54 +716,110 @@ func _spoke_rect(a: Vector2, b: Vector2, width: float) -> Rect2:
 		var m2 := r.get_center().y
 		r.position.y = m2 - width * 0.5
 		r.size.y = width
-	# Slightly overlap hub/sat so nav regions connect.
+	# Slightly overlap hub/sat so campus merge covers the junction.
 	return r.grow(6.0)
+
+
+## Oriented corridor strip polygon for nav bake (room↔door↔spoke only).
+## `extend` pushes ends into the rooms so the strip meets walkable interiors
+## through the door gaps; walls carve everything else.
+func _spoke_poly(a: Vector2, b: Vector2, width: float, extend: float = 18.0) -> PackedVector2Array:
+	var d := b - a
+	if d.length_squared() < 1.0:
+		return PackedVector2Array()
+	var along := d.normalized()
+	var a2 := a - along * extend
+	var b2 := b + along * extend
+	var n := Vector2(-along.y, along.x) * (width * 0.5)
+	return PackedVector2Array([a2 + n, b2 + n, b2 - n, a2 - n])
+
+
+## Which side of rect `r` is closest to `p` (n/s/w/e).
+func _nearest_edge(r: Rect2, p: Vector2) -> String:
+	var dn := absf(p.y - r.position.y)
+	var ds := absf(p.y - r.end.y)
+	var dw := absf(p.x - r.position.x)
+	var de := absf(p.x - r.end.x)
+	var m := minf(minf(dn, ds), minf(dw, de))
+	if m == dn:
+		return "n"
+	if m == ds:
+		return "s"
+	if m == dw:
+		return "w"
+	return "e"
+
+
+## Door mat / iso cut-out aligned to the edge where `door_pt` sits.
+func _door_rect(r: Rect2, door_pt: Vector2, door_w: float) -> Rect2:
+	var edge := _nearest_edge(r, door_pt)
+	var thick := 12.0
+	var hw := door_w * 0.5
+	match edge:
+		"n":
+			return Rect2(door_pt.x - hw, r.position.y - thick * 0.5, door_w, thick)
+		"s":
+			return Rect2(door_pt.x - hw, r.end.y - thick * 0.5, door_w, thick)
+		"w":
+			return Rect2(r.position.x - thick * 0.5, door_pt.y - hw, thick, door_w)
+		_:
+			return Rect2(r.end.x - thick * 0.5, door_pt.y - hw, thick, door_w)
+
+
+## Pin a door point exactly onto its nearest edge (spoke junction).
+func _snap_to_edge(r: Rect2, door_pt: Vector2) -> Vector2:
+	var edge := _nearest_edge(r, door_pt)
+	match edge:
+		"n":
+			return Vector2(door_pt.x, r.position.y)
+		"s":
+			return Vector2(door_pt.x, r.end.y)
+		"w":
+			return Vector2(r.position.x, door_pt.y)
+		_:
+			return Vector2(r.end.x, door_pt.y)
 
 
 ## Four wall segments around `r` with a door gap centred on `door_pt`.
 func _frame_walls(r: Rect2, door_pt: Vector2, door_w: float) -> void:
-	var x0 := r.position.x
-	var y0 := r.position.y
-	var x1 := r.end.x
-	var y1 := r.end.y
-	# Decide which edge the door is on (nearest).
-	var dist := {
-		"n": absf(door_pt.y - y0),
-		"s": absf(door_pt.y - y1),
-		"w": absf(door_pt.x - x0),
-		"e": absf(door_pt.x - x1),
-	}
-	var edge := "n"
-	var best := INF
-	for k in dist.keys():
-		if float(dist[k]) < best:
-			best = float(dist[k])
-			edge = str(k)
+	# Build perimeter via the same gap helper as the hub so near-corner spokes
+	# open a mouth on both meeting edges.
+	var gaps_n: Array = []
+	var gaps_s: Array = []
+	var gaps_w: Array = []
+	var gaps_e: Array = []
+	var edge := _nearest_edge(r, door_pt)
+	var corner_slop := door_w * 0.5 + WALL
+	match edge:
+		"n":
+			gaps_n.append(door_pt.x)
+			if door_pt.x - r.position.x <= corner_slop:
+				gaps_w.append(door_pt.y)
+			if r.end.x - door_pt.x <= corner_slop:
+				gaps_e.append(door_pt.y)
+		"s":
+			gaps_s.append(door_pt.x)
+			if door_pt.x - r.position.x <= corner_slop:
+				gaps_w.append(door_pt.y)
+			if r.end.x - door_pt.x <= corner_slop:
+				gaps_e.append(door_pt.y)
+		"w":
+			gaps_w.append(door_pt.y)
+			if door_pt.y - r.position.y <= corner_slop:
+				gaps_n.append(door_pt.x)
+			if r.end.y - door_pt.y <= corner_slop:
+				gaps_s.append(door_pt.x)
+		_:
+			gaps_e.append(door_pt.y)
+			if door_pt.y - r.position.y <= corner_slop:
+				gaps_n.append(door_pt.x)
+			if r.end.y - door_pt.y <= corner_slop:
+				gaps_s.append(door_pt.x)
 	var hw := door_w * 0.5
-	# North
-	if edge == "n":
-		walls.append(Rect2(x0, y0, maxf(0.0, door_pt.x - hw - x0), WALL))
-		walls.append(Rect2(door_pt.x + hw, y0, maxf(0.0, x1 - door_pt.x - hw), WALL))
-	else:
-		walls.append(Rect2(x0, y0, r.size.x, WALL))
-	# South
-	if edge == "s":
-		walls.append(Rect2(x0, y1 - WALL, maxf(0.0, door_pt.x - hw - x0), WALL))
-		walls.append(Rect2(door_pt.x + hw, y1 - WALL, maxf(0.0, x1 - door_pt.x - hw), WALL))
-	else:
-		walls.append(Rect2(x0, y1 - WALL, r.size.x, WALL))
-	# West
-	if edge == "w":
-		walls.append(Rect2(x0, y0, WALL, maxf(0.0, door_pt.y - hw - y0)))
-		walls.append(Rect2(x0, door_pt.y + hw, WALL, maxf(0.0, y1 - door_pt.y - hw)))
-	else:
-		walls.append(Rect2(x0, y0, WALL, r.size.y))
-	# East
-	if edge == "e":
-		walls.append(Rect2(x1 - WALL, y0, WALL, maxf(0.0, door_pt.y - hw - y0)))
-		walls.append(Rect2(x1 - WALL, door_pt.y + hw, WALL, maxf(0.0, y1 - door_pt.y - hw)))
-	else:
-		walls.append(Rect2(x1 - WALL, y0, WALL, r.size.y))
+	_wall_edge_with_gaps(r.position.x, r.position.y, r.end.x, r.position.y, WALL, true, gaps_n, hw)
+	_wall_edge_with_gaps(r.position.x, r.end.y - WALL, r.end.x, r.end.y - WALL, WALL, true, gaps_s, hw)
+	_wall_edge_with_gaps(r.position.x, r.position.y, r.position.x, r.end.y, WALL, false, gaps_w, hw)
+	_wall_edge_with_gaps(r.end.x - WALL, r.position.y, r.end.x - WALL, r.end.y, WALL, false, gaps_e, hw)
 
 
 ## Hub perimeter walls with door gaps at each spoke attachment point.
@@ -776,6 +834,7 @@ func _hub_perimeter(hub: Rect2, doors: Array[Vector2], door_w: float) -> void:
 	var south: Array = []
 	var west: Array = []
 	var east: Array = []
+	var corner_slop := door_w * 0.5 + WALL
 	for p: Vector2 in doors:
 		var dn := absf(p.y - y0)
 		var ds := absf(p.y - y1)
@@ -790,6 +849,17 @@ func _hub_perimeter(hub: Rect2, doors: Array[Vector2], door_w: float) -> void:
 			west.append(p.y)
 		else:
 			east.append(p.y)
+		# Near-corner spoke: also open the adjacent edge so the mouth is clear.
+		if m == dn or m == ds:
+			if dw <= corner_slop:
+				west.append(p.y)
+			if de <= corner_slop:
+				east.append(p.y)
+		else:
+			if dn <= corner_slop:
+				north.append(p.x)
+			if ds <= corner_slop:
+				south.append(p.x)
 	# Also leave the main Entrance open on the south edge.
 	south.append(hub.get_center().x)
 	_wall_edge_with_gaps(x0, y0, x1, y0, WALL, true, north, hw)   # north horizontal
@@ -999,13 +1069,20 @@ func _draw_wall(w: Rect2, c: Color) -> void:
 func _draw_frame(f: Dictionary) -> void:
 	var r: Rect2 = f.rect
 	var c: Color = f.color
+	var d: Rect2 = f.door
+	# Satellites: walls[] already carve the door gap — do not paint a solid outer
+	# frame over it (that made doors look misaligned with the spokes).
+	if bool(f.get("satellite", false)):
+		if d.has_area():
+			draw_rect(d, Color("#8d6e63"))
+			draw_rect(d.grow(-3), Color("#a1887f"))
+		return
 	var o := r.grow(EXT_WALL)
 	var parts := [Rect2(o.position, Vector2(o.size.x, EXT_WALL)), Rect2(o.position.x, r.end.y, o.size.x, EXT_WALL),
 		Rect2(o.position, Vector2(EXT_WALL, o.size.y)), Rect2(r.end.x, o.position.y, EXT_WALL, o.size.y)]
 	for p: Rect2 in parts:
 		_draw_wall(p, c)
-	var d: Rect2 = f.door
-	if d.size.x > 0.0:
+	if d.size.x > 0.0 or d.size.y > 0.0:
 		# Door opening + mat.
 		draw_rect(d, Color("#8d6e63"))
 		draw_rect(d.grow(-3), Color("#a1887f"))
