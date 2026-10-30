@@ -10,6 +10,7 @@ signal agent_requested(agent_id: String)  ## a member was clicked in a team summ
 signal archive_requested(agent_id: String)  ## archive / fire this agent
 signal hire_requested  ## recruiter desk: show /hire help
 signal hire_submit(name: String, role: String)  ## real hire from /hire Name | Role
+signal fire_preview_requested(variant: String)  ## /fire-preview [variant]
 signal verbose_toggled(verbose: bool)  ## /verbose or /quiet
 signal job_description_requested(agent_id: String)
 signal dm_requested(to_agent: String, text: String)
@@ -336,6 +337,13 @@ func _submit() -> void:
 			return
 		dm_requested.emit(to_who, body)
 		append_system("DM queued → %s: %s" % [to_who, body.left(80)])
+		return
+	if lower.begins_with("/fire-preview") or lower.begins_with("/fire_preview"):
+		var rest := text.strip_edges()
+		var sp := rest.find(" ")
+		var variant := rest.substr(sp + 1).strip_edges() if sp >= 0 else ""
+		fire_preview_requested.emit(variant)
+		append_system("fire preview%s…" % ((": " + variant) if variant != "" else " (cycle)"))
 		return
 	if lower.begins_with("/hire"):
 		var rest := text.substr(5).strip_edges()

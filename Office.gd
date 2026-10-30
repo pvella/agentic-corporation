@@ -113,7 +113,7 @@ func build(cfg: Dictionary) -> void:
 		else:
 			team_rooms.append(r)
 			if spots.is_empty():
-				spots = ["Coffee_Machine", "Water_Cooler", "Sofa_1", "Sofa_2",
+				spots = ["Coffee_Machine", "Water_Cooler", "Vending_Machine", "Sofa_1", "Sofa_2",
 					"Yoga_Mat_1", "Yoga_Mat_2", "Meditation_Cushion_1", "Meditation_Cushion_2"]
 		room_break_spots[str(r.id)] = spots
 		for m: Dictionary in r.get("members", []):
@@ -442,64 +442,94 @@ func _desk_grid(room: Dictionary, origin: Vector2) -> void:
 		row_x[row] = cell.x + cell_w
 
 func _build_break(cell: Dictionary, r: Rect2) -> void:
+	# Furniture + waypoints derived from the live zone rect (hex hub or corridor cell),
+	# never from old absolute corridor-map coordinates.
 	areas.append({"kind": "break", "rect": r, "theme": "tile", "name": cell.name})
 	signs.append({"room_id": "", "name": str(cell.name), "rect": _sign_rect(r, str(cell.name)), "color": Color("#6f8fa8"), "clickable": false})
 	var p := r.position
-	_prop("counter", Rect2(p.x + 92, p.y + 50, 150, 34))
-	_prop("coffee", Rect2(p.x + 30, p.y + 44, 52, 42))
-	_wp("Coffee_Machine", Vector2(p.x + 56, p.y + 112), "up")
-	_prop("water", Rect2(r.end.x - 66, p.y + 44, 40, 44))
-	_prop("vending", Rect2(p.x + 264, p.y + 42, 44, 40))
-	_wp("Vending_Machine", Vector2(p.x + 286, p.y + 114), "up")
-	_chat("Chat_Break", Vector2(p.x + 190, p.y + 200))  # open floor between sofa and counter
-	_wp("Water_Cooler", Vector2(r.end.x - 46, p.y + 114), "down")
-	var sofa := Rect2(p.x + 22, p.y + 296, 156, 46)
+	var e := r.end
+	var m := 14.0
+	# Top row: coffee (L) · counter · vending · water (R) — packed from edges so a
+	# narrow hub zone (~365px) never spills into Canteen.
+	var coffee := Rect2(p.x + m, p.y + 44, 52, 42)
+	_prop("coffee", coffee)
+	_wp("Coffee_Machine", Vector2(coffee.get_center().x, coffee.end.y + 26), "up")
+	var water := Rect2(e.x - m - 40, p.y + 44, 40, 44)
+	_prop("water", water)
+	_wp("Water_Cooler", Vector2(water.get_center().x, water.end.y + 26), "down")
+	var vend := Rect2(water.position.x - 12 - 44, p.y + 42, 44, 40)
+	_prop("vending", vend)
+	_wp("Vending_Machine", Vector2(vend.get_center().x, vend.end.y + 28), "up")
+	var counter_w := minf(150.0, maxf(80.0, vend.position.x - coffee.end.x - 24.0))
+	var counter_x := coffee.end.x + (vend.position.x - coffee.end.x - counter_w) * 0.5
+	_prop("counter", Rect2(counter_x, p.y + 50, counter_w, 34))
+	_chat("Chat_Break", Vector2(r.get_center().x, p.y + r.size.y * 0.42))
+	# Bottom: sofa (L) + foosball (R), sized to the live floor.
+	var sofa_w := minf(156.0, r.size.x * 0.42)
+	var sofa := Rect2(p.x + m, e.y - 50 - 46, sofa_w, 46)
 	_prop("sofa", sofa)
-	_wp("Sofa_1", Vector2(sofa.position.x + 48, sofa.position.y + 26), "down", "sofa")
-	_wp("Sofa_2", Vector2(sofa.position.x + 108, sofa.position.y + 26), "down", "sofa")
-	var table := Rect2(r.end.x - 186, p.y + 296, 120, 58)
+	_wp("Sofa_1", Vector2(sofa.position.x + sofa.size.x * 0.30, sofa.position.y + 26), "down", "sofa")
+	_wp("Sofa_2", Vector2(sofa.position.x + sofa.size.x * 0.70, sofa.position.y + 26), "down", "sofa")
+	var table_w := minf(120.0, r.size.x * 0.34)
+	var table := Rect2(e.x - m - table_w, sofa.position.y, table_w, 58)
+	# Keep a gap between sofa and foosball when the zone is tight.
+	if table.position.x < sofa.end.x + 20.0:
+		table.position.x = sofa.end.x + 20.0
+		table.size.x = maxf(72.0, e.x - m - table.position.x)
 	_prop("foosball", table)
-	_wp("Foosball_1", Vector2(table.position.x - 22, table.position.y + 22), "right", "foosball")
-	_wp("Foosball_2", Vector2(table.end.x + 22, table.position.y + 22), "left", "foosball")
-	_wp("Foosball_3", Vector2(table.position.x - 22, table.position.y + 50), "right", "foosball")
-	_wp("Foosball_4", Vector2(table.end.x + 22, table.position.y + 50), "left", "foosball")
-	_prop("plant", Rect2(p.x + 14, r.end.y - 50, 34, 34))
+	_wp("Foosball_1", Vector2(table.position.x - 18, table.position.y + 22), "right", "foosball")
+	_wp("Foosball_2", Vector2(table.end.x + 18, table.position.y + 22), "left", "foosball")
+	_wp("Foosball_3", Vector2(table.position.x - 18, table.position.y + 50), "right", "foosball")
+	_wp("Foosball_4", Vector2(table.end.x + 18, table.position.y + 50), "left", "foosball")
+	_prop("plant", Rect2(p.x + m, e.y - 50, 34, 34))
 
 
 
 func _build_canteen(cell: Dictionary, r: Rect2) -> void:
+	# Props + seats from the live zone rect so nothing spills into Rec on a narrow hub.
 	areas.append({"kind": "canteen", "rect": r, "theme": "tile", "name": cell.name})
 	signs.append({"room_id": "", "name": str(cell.name), "rect": _sign_rect(r, str(cell.name)), "color": Color("#c47a4a"), "clickable": false})
 	var p := r.position
-	# Serving counter with sneeze guard + trays of food along the back wall.
-	_prop("counter", Rect2(p.x + 28, p.y + 42, 200, 40), {"set": "canteen"})
-	# Menu board on the wall above / beside the counter.
-	_prop("menu", Rect2(p.x + 40, p.y + 10, 72, 28), {"sort_y": p.y + 20.0})
-	# Drinks fridge, coffee machine, microwave.
-	_prop("fridge", Rect2(p.x + 240, p.y + 36, 40, 52))
-	_prop("coffee", Rect2(p.x + 290, p.y + 44, 48, 40))
-	_prop("microwave", Rect2(p.x + 348, p.y + 52, 36, 28))
-	# Bin near the exit.
-	_prop("bin", Rect2(r.end.x - 40, r.end.y - 56, 22, 22))
-	_wp("Canteen_Counter", Vector2(p.x + 130, p.y + 108), "up")
-	# Long dining tables with chairs and place settings.
-	var tables := [
-		Vector2(p.x + 36, p.y + 170),
-		Vector2(p.x + 200, p.y + 170),
-		Vector2(p.x + 100, p.y + 290),
-	]
+	var e := r.end
+	var m := 14.0
+	# Back-wall appliances packed from the right edge; counter fills the left.
+	var micro := Rect2(e.x - m - 36, p.y + 52, 36, 28)
+	_prop("microwave", micro)
+	var coffee := Rect2(micro.position.x - 10 - 48, p.y + 44, 48, 40)
+	_prop("coffee", coffee)
+	var fridge := Rect2(coffee.position.x - 10 - 40, p.y + 36, 40, 52)
+	_prop("fridge", fridge)
+	var counter_w := maxf(120.0, fridge.position.x - (p.x + m) - 12.0)
+	var counter := Rect2(p.x + m, p.y + 42, counter_w, 40)
+	_prop("counter", counter, {"set": "canteen"})
+	_prop("menu", Rect2(p.x + m + 12, p.y + 10, 72, 28), {"sort_y": p.y + 20.0})
+	_prop("bin", Rect2(e.x - m - 22, e.y - 56, 22, 22))
+	_wp("Canteen_Counter", Vector2(counter.get_center().x, counter.end.y + 26), "up")
+	# Dining tables: 2 on the upper row when wide enough, else 1; one below.
+	var tw := minf(96.0, (r.size.x - m * 2.0 - 40.0) * 0.42)
+	var tables: Array = []
+	var y1 := p.y + maxf(150.0, r.size.y * 0.34)
+	tables.append(Vector2(p.x + m + 10, y1))
+	if r.size.x >= 300.0:
+		tables.append(Vector2(e.x - m - 10 - tw, y1))
+	tables.append(Vector2(r.get_center().x - tw * 0.5, e.y - 52 - 70))
 	var seat_i := 1
 	for tpos in tables:
-		var table := Rect2(tpos.x, tpos.y, 96, 52)
+		var table := Rect2(tpos.x, tpos.y, tw, 52)
 		_prop("table", table, {"set": "canteen"})
-		_wp("Canteen_Seat_%d" % seat_i, Vector2(table.position.x - 18, table.get_center().y), "right", "chair")
+		_wp("Canteen_Seat_%d" % seat_i, Vector2(table.position.x - 16, table.get_center().y), "right", "chair")
 		seat_i += 1
-		_wp("Canteen_Seat_%d" % seat_i, Vector2(table.end.x + 18, table.get_center().y), "left", "chair")
+		_wp("Canteen_Seat_%d" % seat_i, Vector2(table.end.x + 16, table.get_center().y), "left", "chair")
 		seat_i += 1
-		_prop("chair", Rect2(table.position.x - 28, table.get_center().y - 12, 24, 24))
-		_prop("chair", Rect2(table.end.x + 4, table.get_center().y - 12, 24, 24))
-	_prop("plant", Rect2(r.end.x - 44, p.y + 16, 30, 30))
-	_chat("Chat_Canteen", Vector2(p.x + r.size.x * 0.5, r.end.y - 40))
+		_prop("chair", Rect2(table.position.x - 26, table.get_center().y - 12, 24, 24))
+		_prop("chair", Rect2(table.end.x + 2, table.get_center().y - 12, 24, 24))
+	# Ensure 6 seat names exist even when only 2 tables fit (narrow zone).
+	while seat_i <= 6:
+		var fallback := Vector2(r.get_center().x + (seat_i - 5) * 28.0, e.y - 60)
+		_wp("Canteen_Seat_%d" % seat_i, fallback, "down", "chair")
+		seat_i += 1
+	_prop("plant", Rect2(e.x - m - 30, p.y + 16, 30, 30))
+	_chat("Chat_Canteen", Vector2(r.get_center().x, e.y - 36))
 
 
 
@@ -522,36 +552,41 @@ func _build_server(cell: Dictionary, r: Rect2) -> void:
 
 
 func _build_rec(cell: Dictionary, r: Rect2) -> void:
+	# Yoga / cushions placed from the live Rec zone so they stay inside the hub
+	# Rec third (not leftover corridor-map offsets that spilled into Canteen).
 	areas.append({"kind": "rec", "rect": r, "theme": "zen", "name": cell.name})
 	signs.append({"room_id": "", "name": str(cell.name), "rect": _sign_rect(r, str(cell.name)), "color": Color("#7cb342"), "clickable": false})
 	var p := r.position
-	# Soft rug covering most of the floor (drawn as prop under mats).
-	_prop("rug", Rect2(p.x + 24, p.y + 70, r.size.x - 48, r.size.y - 120), {"sort_y": p.y + 72.0})
-	# Calm floor lamps in the corners.
-	_prop("lamp", Rect2(p.x + 18, p.y + 48, 22, 36), {"set": "rec"})
-	_prop("lamp", Rect2(r.end.x - 40, p.y + 48, 22, 36), {"set": "rec"})
-	# Water feature / fountain against the back wall.
-	_prop("fountain", Rect2(p.x + r.size.x * 0.5 - 28, p.y + 40, 56, 48), {"set": "rec"})
-	# Plants flanking the fountain.
-	_prop("plant", Rect2(p.x + r.size.x * 0.5 - 70, p.y + 44, 30, 30))
-	_prop("plant", Rect2(p.x + r.size.x * 0.5 + 40, p.y + 44, 30, 30))
-	_prop("plant", Rect2(p.x + 20, r.end.y - 52, 30, 30))
-	_prop("plant", Rect2(r.end.x - 50, r.end.y - 52, 30, 30))
-	# Yoga mats (standing poses).
-	var mat1 := Rect2(p.x + 48, p.y + 160, 70, 110)
-	var mat2 := Rect2(p.x + 140, p.y + 160, 70, 110)
+	var e := r.end
+	var m := 16.0
+	var rug := Rect2(p.x + m, p.y + 70, r.size.x - m * 2.0, r.size.y - 120)
+	_prop("rug", rug, {"sort_y": p.y + 72.0})
+	_prop("lamp", Rect2(p.x + m, p.y + 48, 22, 36), {"set": "rec"})
+	_prop("lamp", Rect2(e.x - m - 22, p.y + 48, 22, 36), {"set": "rec"})
+	_prop("fountain", Rect2(r.get_center().x - 28, p.y + 40, 56, 48), {"set": "rec"})
+	_prop("plant", Rect2(r.get_center().x - 70, p.y + 44, 30, 30))
+	_prop("plant", Rect2(r.get_center().x + 40, p.y + 44, 30, 30))
+	_prop("plant", Rect2(p.x + m, e.y - 52, 30, 30))
+	_prop("plant", Rect2(e.x - m - 30, e.y - 52, 30, 30))
+	# Mats on the left half of the rug; cushions on the right.
+	var mat_w := minf(70.0, rug.size.x * 0.22)
+	var mat_h := minf(110.0, rug.size.y * 0.55)
+	var mat_y := rug.position.y + rug.size.y * 0.22
+	var mat1 := Rect2(rug.position.x + rug.size.x * 0.08, mat_y, mat_w, mat_h)
+	var mat2 := Rect2(rug.position.x + rug.size.x * 0.08 + mat_w + 18.0, mat_y, mat_w, mat_h)
 	_prop("yoga_mat", mat1, {"set": "rec", "tint": "#81c784"})
 	_prop("yoga_mat", mat2, {"set": "rec", "tint": "#aed581"})
 	_wp("Yoga_Mat_1", Vector2(mat1.get_center().x, mat1.get_center().y + 10), "down", "yoga")
 	_wp("Yoga_Mat_2", Vector2(mat2.get_center().x, mat2.get_center().y + 10), "down", "yoga")
-	# Meditation cushions (cross-legged sit).
-	var c1 := Rect2(p.x + 250, p.y + 180, 44, 36)
-	var c2 := Rect2(p.x + 310, p.y + 230, 44, 36)
+	var cw := minf(44.0, rug.size.x * 0.14)
+	var ch := minf(36.0, rug.size.y * 0.18)
+	var c1 := Rect2(rug.end.x - rug.size.x * 0.38, rug.position.y + rug.size.y * 0.28, cw, ch)
+	var c2 := Rect2(rug.end.x - rug.size.x * 0.22, rug.position.y + rug.size.y * 0.48, cw, ch)
 	_prop("cushion", c1, {"set": "rec", "tint": "#ce93d8"})
 	_prop("cushion", c2, {"set": "rec", "tint": "#b39ddb"})
 	_wp("Meditation_Cushion_1", Vector2(c1.get_center().x, c1.get_center().y - 2), "down", "meditate")
 	_wp("Meditation_Cushion_2", Vector2(c2.get_center().x, c2.get_center().y - 2), "down", "meditate")
-	_chat("Chat_Rec", Vector2(p.x + r.size.x * 0.35, r.end.y - 40))
+	_chat("Chat_Rec", Vector2(p.x + r.size.x * 0.35, e.y - 40))
 
 
 func _build_meeting(cell: Dictionary, r: Rect2) -> void:
@@ -945,11 +980,25 @@ func _draw() -> void:
 			var hex := _hub_hex(a.rect)
 			for i in hex.size():
 				draw_line(hex[i], hex[(i + 1) % hex.size()], Color("#455a64", 0.95), 3.0)
-	# Building names on the roof edge.
+	# Building names on the roof edge (skip hub — campus title drawn centred on hub roof).
 	for f: Dictionary in outer_frames:
+		if bool(f.get("hub", false)):
+			continue
 		var r: Rect2 = f.rect
 		draw_string(_font, Vector2(r.position.x, r.position.y - EXT_WALL - 10), str(f.name).to_upper(),
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color(1, 1, 1, 0.85))
+	# Campus title: centred on the hub roof band (clear of zones / corridors / agents).
+	for f: Dictionary in outer_frames:
+		if not bool(f.get("hub", false)):
+			continue
+		var hr: Rect2 = f.rect
+		var title := str(layout_name if layout_name else f.name).to_upper()
+		var title_size := 22
+		var tw := _font.get_string_size(title, HORIZONTAL_ALIGNMENT_LEFT, -1, title_size).x
+		var tx := hr.position.x + hr.size.x * 0.5 - tw * 0.5
+		var ty := hr.position.y + 36.0
+		draw_string(_font, Vector2(tx, ty), title, HORIZONTAL_ALIGNMENT_LEFT, -1, title_size, Color(1, 1, 1, 0.92))
+		break
 	# Walls.
 	for w in walls:
 		_draw_wall(w, Color("#6b7280"))

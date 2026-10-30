@@ -506,12 +506,15 @@ class Hub:
         self.on_fired: Callable[[str], None] | None = None
 
     # -- registry ----------------------------------------------------------
-    def unregister(self, agent_id: str) -> Agent | None:
+    def unregister(self, agent_id: str, *, variant: str = "") -> Agent | None:
         agent = self.agents.pop(agent_id, None)
         if agent is None:
             return None
-        self.emit({"type": "AGENT_FIRE", "agent_id": agent_id, "name": agent.name,
-                   "desk": agent.desk, "room": agent.room})
+        payload = {"type": "AGENT_FIRE", "agent_id": agent_id, "name": agent.name,
+                   "desk": agent.desk, "room": agent.room}
+        if variant:
+            payload["variant"] = variant
+        self.emit(payload)
         return agent
 
     def hire(self, agent_id: str, name: str, desk: str, color: str, role: str = "", **extra: Any) -> Agent:
@@ -1053,11 +1056,16 @@ class Hub:
         br = shared.get("break_room") or {}
         mr = shared.get("meeting_room") or {}
         cn = shared.get("canteen") or {}
+        rr = shared.get("rec_room") or {}
+        sr = shared.get("server_room") or {}
         payload["shared"] = {
             "break_room": {"name": br.get("name", "Break Room")},
             "meeting_room": {"name": mr.get("name", "Meeting Room"), "seats": int(mr.get("seats", 6) or 6)},
             "canteen": {"name": cn.get("name", "Canteen")},
+            "rec_room": {"name": rr.get("name", "Rec Room")},
         }
+        if sr:
+            payload["shared"]["server_room"] = {"name": sr.get("name", "Server Room")}
         try:
             with open(self.office_path, "w", encoding="utf-8") as fh:
                 json.dump(payload, fh, indent=2, ensure_ascii=False)
@@ -1139,11 +1147,29 @@ class Hub:
                             break
                     if match and match.get("unique"):
                         short = match.get("short_title") or match.get("title") or role
+                        aliases = {
+                            str(short).strip().lower(),
+                            str(match.get("title") or "").strip().lower(),
+                            str(match.get("default_name") or "").strip().lower(),
+                            str(match.get("short_title") or "").strip().lower(),
+                        }
+                        aliases.discard("")
+                        mid = match.get("id")
                         for a in self.agents.values():
-                            ar = getattr(a, "role", "") or ""
+                            ar = str(getattr(a, "role", "") or "").strip().lower()
+                            an = str(getattr(a, "name", "") or getattr(a, "display_name", "") or "").strip().lower()
                             aj = getattr(a, "job", None) or {}
-                            if ar in (short, match.get("title"), match.get("default_name")) or (
-                                isinstance(aj, dict) and aj.get("role_id") == match.get("id")
+                            aj_st = str(aj.get("short_title", "") if isinstance(aj, dict) else "").strip().lower()
+                            aj_ti = str(aj.get("title", "") if isinstance(aj, dict) else "").strip().lower()
+                            aj_rid = aj.get("role_id") if isinstance(aj, dict) else None
+                            if (
+                                ar in aliases
+                                or an in aliases
+                                or aj_st in aliases
+                                or aj_ti in aliases
+                                or (mid and aj_rid == mid)
+                                or (short and short.lower() in ar)
+                                or (short and short.lower() in an)
                             ):
                                 await self.reply(ws, {
                                     "type": "ERROR",
@@ -1266,15 +1292,16 @@ class Hub:
     async def _action_preview_hire_fire(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
         """Demo the hire and/or fire pageantry without permanently changing the roster.
         which: hire | fire | both (default both).
+        Optional variant / alias (ambulance, ufo, …; medics→ambulance) forces the fire FX.
         """
         which = str(msg.get("which", "both")).strip().lower() or "both"
         preview_id = str(msg.get("agent_id", "preview_hire")).strip() or "preview_hire"
-        log.info("PREVIEW_HIRE_FIRE which=%s id=%s", which, preview_id)
+        variant = str(msg.get("variant", "") or "").strip().lower()
+        log.info("PREVIEW_HIRE_FIRE which=%s id=%s variant=%s", which, preview_id, variant or "-")
 
         async def _hire_temp() -> None:
             if preview_id in self.agents:
                 self.unregister(preview_id)
-            # Place near special_projects or first free-looking desk.
             desk = str(msg.get("desk", f"Desk_{preview_id}"))
             self.hire(preview_id, "Preview Hire", desk, "#ffd54f",
                       role="Temp", room=str(msg.get("room", "special_projects")))
@@ -1283,12 +1310,11 @@ class Hub:
             if preview_id not in self.agents:
                 await _hire_temp()
                 await asyncio.sleep(1.8)  # let hire FX play
-            self.unregister(preview_id)
+            self.unregister(preview_id, variant=variant)
 
         if which in ("hire", "both"):
             await _hire_temp()
             if which == "hire":
-                # Auto-clean after the beam so the roster stays tidy.
                 async def _cleanup() -> None:
                     await asyncio.sleep(2.5)
                     if preview_id in self.agents:
@@ -1300,7 +1326,7 @@ class Hub:
                 await asyncio.sleep(1.9)
             await _fire_temp()
         await self.reply(ws, {"type": "ACK", "action": "PREVIEW_HIRE_FIRE", "which": which,
-                              "agent_id": preview_id})
+                              "agent_id": preview_id, "variant": variant})
 
 
 # ---------------------------------------------------------------------------
@@ -2342,6 +2368,62 @@ def normalise_office(raw: Any, source: str = "office.json") -> dict[str, Any]:
     for a in archived_raw:
         if isinstance(a, dict) and a.get("agent_id"):
             archived.append(dict(a))
+    # UNIQUE_ROLE_DEDUPE at load: at most one live member per catalog unique role.
+    # Prefer agent_id "chief_of_staff" when short_title is Chief of Staff.
+    try:
+        cat_path = Path(__file__).resolve().parent / "roles" / "catalog.json"
+        if cat_path.exists():
+            cat = json.loads(cat_path.read_text(encoding="utf-8"))
+            unique_roles = [r for r in (cat.get("roles") or []) if isinstance(r, dict) and r.get("unique")]
+            for ur in unique_roles:
+                aliases = {
+                    str(ur.get("short_title") or "").strip().lower(),
+                    str(ur.get("title") or "").strip().lower(),
+                    str(ur.get("default_name") or "").strip().lower(),
+                }
+                aliases.discard("")
+                rid = ur.get("id")
+                prefer = "chief_of_staff" if str(ur.get("short_title") or "") == "Chief of Staff" else ""
+                hits: list[tuple[dict[str, Any], dict[str, Any]]] = []
+                for room in rooms:
+                    for m in room.get("members") or []:
+                        role_l = str(m.get("role") or "").strip().lower()
+                        name_l = str(m.get("name") or "").strip().lower()
+                        job = m.get("job") if isinstance(m.get("job"), dict) else {}
+                        st_l = str(job.get("short_title") or "").strip().lower()
+                        ti_l = str(job.get("title") or "").strip().lower()
+                        jrid = job.get("role_id")
+                        if (
+                            role_l in aliases
+                            or name_l in aliases
+                            or st_l in aliases
+                            or ti_l in aliases
+                            or (rid and jrid == rid)
+                            or (prefer and m.get("agent_id") == prefer)
+                        ):
+                            hits.append((room, m))
+                if len(hits) <= 1:
+                    continue
+                keep = None
+                if prefer:
+                    for room, m in hits:
+                        if m.get("agent_id") == prefer:
+                            keep = m.get("agent_id")
+                            break
+                if keep is None:
+                    keep = hits[0][1].get("agent_id")
+                for room, m in hits:
+                    if m.get("agent_id") == keep:
+                        continue
+                    entry = dict(m)
+                    entry["archived_at"] = 0
+                    entry["archived_from_room"] = room.get("id")
+                    entry["archive_reason"] = "dedupe_unique_role"
+                    archived.append(entry)
+                    room["members"] = [x for x in room["members"] if x.get("agent_id") != m.get("agent_id")]
+                    room["desks"] = max(int(room.get("desks") or 0), len(room["members"]), 1)
+    except Exception:
+        pass  # never fail office load on catalog issues
     return {
         "name": str(raw.get("name", "Agentic Corporation")),
         "rooms": rooms,

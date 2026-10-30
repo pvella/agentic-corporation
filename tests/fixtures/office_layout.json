@@ -59,7 +59,11 @@
      "Water_Cooler",
      "Vending_Machine",
      "Sofa_1",
-     "Sofa_2"
+     "Sofa_2",
+     "Yoga_Mat_1",
+     "Yoga_Mat_2",
+     "Meditation_Cushion_1",
+     "Meditation_Cushion_2"
     ],
     "chat_spots": [
      "Chat_Break",
@@ -124,7 +128,11 @@
      "Water_Cooler",
      "Vending_Machine",
      "Sofa_1",
-     "Sofa_2"
+     "Sofa_2",
+     "Yoga_Mat_1",
+     "Yoga_Mat_2",
+     "Meditation_Cushion_1",
+     "Meditation_Cushion_2"
     ],
     "chat_spots": [
      "Chat_Break",
@@ -189,7 +197,11 @@
      "Water_Cooler",
      "Vending_Machine",
      "Sofa_1",
-     "Sofa_2"
+     "Sofa_2",
+     "Yoga_Mat_1",
+     "Yoga_Mat_2",
+     "Meditation_Cushion_1",
+     "Meditation_Cushion_2"
     ],
     "chat_spots": [
      "Chat_Break",
@@ -254,6 +266,7 @@
     "meeting_target": "ptc_Meeting_Room"
    }
   ],
+  "archived": [],
   "shared": {
    "break_room": {
     "name": "Break Room",
@@ -262,7 +275,11 @@
      "Water_Cooler",
      "Vending_Machine",
      "Sofa_1",
-     "Sofa_2"
+     "Sofa_2",
+     "Yoga_Mat_1",
+     "Yoga_Mat_2",
+     "Meditation_Cushion_1",
+     "Meditation_Cushion_2"
     ],
     "foosball": [
      "Foosball_1",
@@ -275,6 +292,27 @@
     "name": "Meeting Room",
     "seats": 6,
     "target": "Meeting_Room"
+   },
+   "canteen": {
+    "name": "Canteen",
+    "counter": "Canteen_Counter",
+    "seats": [
+     "Canteen_Seat_1",
+     "Canteen_Seat_2",
+     "Canteen_Seat_3",
+     "Canteen_Seat_4",
+     "Canteen_Seat_5",
+     "Canteen_Seat_6"
+    ]
+   },
+   "rec_room": {
+    "name": "Rec Room",
+    "spots": [
+     "Yoga_Mat_1",
+     "Yoga_Mat_2",
+     "Meditation_Cushion_1",
+     "Meditation_Cushion_2"
+    ]
    }
   }
  }
