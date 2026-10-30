@@ -1460,7 +1460,7 @@ func _on_notices_requested() -> void:
 		if drawer and drawer.has_method("append_system"):
 			drawer.append_system("notices: latest %d (of %d)" % [pins.size(), _notices_store.events.size()])
 			for e in pins:
-				var tstr := _notices_store.format_time(float(e.get("ts", 0)))
+				var tstr: String = str(_notices_store.format_time(float(e.get("ts", 0))))
 				var pending := " [OPEN]" if bool(e.get("pending", false)) else ""
 				var line := "%s %s %s%s" % [tstr, str(e.get("icon", "•")), str(e.get("title", "")), pending]
 				var detail := str(e.get("detail", ""))

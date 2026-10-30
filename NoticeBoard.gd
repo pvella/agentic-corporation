@@ -83,9 +83,9 @@ func _draw() -> void:
 		draw_rect(Rect2(card.position.x, card.position.y, 3, card.size.y), col)
 		# pin dot
 		draw_circle(Vector2(card.position.x + 8, card.position.y + 3), 1.6, col)
-		var tstr := ""
+		var tstr: String = ""
 		if store and store.has_method("format_time"):
-			tstr = store.format_time(float(e.get("ts", 0)))
+			tstr = str(store.format_time(float(e.get("ts", 0))))
 		var icon := str(e.get("icon", "•"))
 		var title := str(e.get("title", "")).left(22)
 		var line := "%s %s %s" % [tstr, icon, title]
@@ -162,7 +162,7 @@ func _refresh_panel() -> void:
 		if not (e is Dictionary):
 			continue
 		var col := str(e.get("color", "#b0bec5"))
-		var tstr := store.format_time(float(e.get("ts", 0))) if store.has_method("format_time") else ""
+		var tstr: String = str(store.format_time(float(e.get("ts", 0)))) if store.has_method("format_time") else ""
 		var icon := str(e.get("icon", "•"))
 		var title := str(e.get("title", ""))
 		var detail := str(e.get("detail", ""))
