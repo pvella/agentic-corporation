@@ -1890,6 +1890,16 @@ func _start_debug_activity() -> void:
 	_flush_debug_activity()
 
 
+
+func _room_kind_match(expect: String, got: String) -> bool:
+	if expect == got:
+		return true
+	# Desk/team cells are authored as kind "room" (hex) or "wing" (corridor).
+	if expect in ["team", "room", "wing"] and got in ["team", "room", "wing"]:
+		return true
+	return false
+
+
 ## Expected amenity room kind for a waypoint name (live hex hub zones).
 func _activity_expected_kind(wp_name: String) -> String:
 	if wp_name.begins_with("Yoga_Mat") or wp_name.begins_with("Meditation_Cushion") or wp_name.begins_with("Chat_Rec"):
@@ -1904,7 +1914,7 @@ func _activity_expected_kind(wp_name: String) -> String:
 	if wp_name.begins_with("Server_"):
 		return "server"
 	if wp_name.begins_with("Desk_"):
-		return "team"
+		return "room"  # Office.gd uses kind "room" (wings use "wing")
 	return ""
 
 
@@ -1942,7 +1952,7 @@ func _debug_dump_activity_bounds() -> void:
 		var pos: Vector2 = (waypoints[n] as Node2D).global_position
 		var expect := _activity_expected_kind(n)
 		var got := _area_kind_at(pos)
-		var ok := expect == "" or got == expect
+		var ok := expect == "" or _room_kind_match(expect, got)
 		if not ok:
 			bad += 1
 		print("[AgentOffice] activity-bounds wp=%s pos=(%.1f,%.1f) expect=%s got=%s %s" % [
@@ -1957,10 +1967,10 @@ func _log_debug_activity(agent: Agent, state: String, target: String) -> void:
 	var wp := target if target != "" else agent.current_waypoint
 	var expect := _activity_expected_kind(wp)
 	var got := _area_kind_at(agent.global_position)
-	var in_room := expect == "" or got == expect or agent.is_at_destination() == false
+	var in_room := expect == "" or _room_kind_match(expect, got) or agent.is_at_destination() == false
 	# When settled on an amenity, require the agent to be inside the amenity room.
 	if expect != "" and agent.is_at_destination():
-		in_room = got == expect
+		in_room = _room_kind_match(expect, got)
 	var entry := {
 		"t": snappedf(elapsed, 0.1),
 		"id": agent.agent_id,
