@@ -477,10 +477,13 @@ func _build_break(cell: Dictionary, r: Rect2) -> void:
 		table.position.x = sofa.end.x + 20.0
 		table.size.x = maxf(72.0, e.x - m - table.position.x)
 	_prop("foosball", table)
-	_wp("Foosball_1", Vector2(table.position.x - 18, table.position.y + 22), "right", "foosball")
-	_wp("Foosball_2", Vector2(table.end.x + 18, table.position.y + 22), "left", "foosball")
-	_wp("Foosball_3", Vector2(table.position.x - 18, table.position.y + 50), "right", "foosball")
-	_wp("Foosball_4", Vector2(table.end.x + 18, table.position.y + 50), "left", "foosball")
+	# Stand just inside the live zone (narrow hub: ±18 off the table can spill past the wall).
+	var f1x := maxf(p.x + 8.0, table.position.x - 14.0)
+	var f2x := minf(e.x - 8.0, table.end.x + 14.0)
+	_wp("Foosball_1", Vector2(f1x, table.position.y + 22), "right", "foosball")
+	_wp("Foosball_2", Vector2(f2x, table.position.y + 22), "left", "foosball")
+	_wp("Foosball_3", Vector2(f1x, table.position.y + 50), "right", "foosball")
+	_wp("Foosball_4", Vector2(f2x, table.position.y + 50), "left", "foosball")
 	_prop("plant", Rect2(p.x + m, e.y - 50, 34, 34))
 
 

@@ -150,6 +150,72 @@ func play_fire(agent: Node, entrance_pos: Vector2, forced: String = "") -> void:
 	queue_redraw()
 
 
+
+func _process(delta: float) -> void:
+	_t += delta
+	if kind == "hire":
+		_process_hire(delta)
+	elif kind == "fire":
+		match variant:
+			"ambulance":
+				_process_ambulance(delta)
+			"stomp":
+				_process_stomp(delta)
+			"anvil":
+				_process_anvil(delta)
+			"trapdoor":
+				_process_trapdoor(delta)
+			"ufo":
+				_process_ufo(delta)
+			"escort":
+				_process_escort(delta)
+			_:
+				_process_ambulance(delta)
+	if _shake_amp > 0.0 and _cam:
+		_cam.offset = _cam_orig + Vector2(randf_range(-1, 1), randf_range(-1, 1)) * _shake_amp
+		_shake_amp = maxf(0.0, _shake_amp - delta * 40.0)
+		if _shake_amp <= 0.0:
+			_cam.offset = _cam_orig
+	for p in _puff:
+		p["p"] = p["p"] + p["v"] * delta
+		p["life"] -= delta
+	queue_redraw()
+
+
+func _process_hire(delta: float) -> void:
+	_beam_alpha = clampf(_t * 2.0, 0.0, 1.0) * clampf(1.4 - _t, 0.0, 1.0)
+	for s in _sparkles:
+		s["p"] = s["p"] + s["v"] * delta
+		s["life"] -= delta
+	if _agent and is_instance_valid(_agent) and _agent.view:
+		_agent.view.modulate.a = clampf((_t - 0.25) / 0.7, 0.0, 1.0)
+	if _t >= 1.6:
+		if _agent and is_instance_valid(_agent) and _agent.view:
+			_agent.view.modulate.a = 1.0
+		finished.emit("hire", agent_id)
+		queue_free()
+
+
+func _finish_fire() -> void:
+	if _cam:
+		_cam.offset = _cam_orig
+		if _did_cam_focus:
+			if _cam.has_method("focus_on"):
+				_cam.focus_on(_cam_orig_pos, _cam_orig_zoom.x)
+			else:
+				_cam.position = _cam_orig_pos
+				_cam.zoom = _cam_orig_zoom
+	finished.emit("fire", agent_id)
+	queue_free()
+
+
+func _hide_agent() -> void:
+	if _agent and is_instance_valid(_agent):
+		_agent.visible = false
+		if _agent.view:
+			_agent.view.visible = false
+
+
 func _setup_ambulance() -> void:
 	# Park at building entrance (to_world); approach from off-screen along that edge.
 	_amb_arrive = _to_world
