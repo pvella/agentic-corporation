@@ -12,6 +12,7 @@ signal hire_requested  ## recruiter desk: show /hire help
 signal hire_submit(name: String, role: String)  ## real hire from /hire Name | Role
 signal fire_preview_requested(variant: String)  ## /fire-preview [variant]
 signal verbose_toggled(verbose: bool)  ## /verbose or /quiet
+signal notices_requested  ## /notices — open / dump the hub notice board
 signal job_description_requested(agent_id: String)
 signal dm_requested(to_agent: String, text: String)
 signal kb_requested(subcommand: String, arg: String)
@@ -204,7 +205,7 @@ func open_for(a: Agent) -> void:
 	_render_all()
 	panel.visible = true
 	_animate_to(1.0)
-	prompt_input.placeholder_text = "Prompt for %s — /jd · /verbose · /msg · /kb" % a.display_name
+	prompt_input.placeholder_text = "Prompt for %s — /jd · /verbose · /msg · /kb · /notices" % a.display_name
 	prompt_input.grab_focus.call_deferred()
 	if archive_button:
 		archive_button.visible = false
@@ -289,6 +290,11 @@ func _submit() -> void:
 		return
 	var lower := text.to_lower()
 	# /kb works even with no agent selected (Server Room knowledge library).
+	# /notices works even with no agent selected (hub Notice Board).
+	if lower == "/notices" or lower == "/notice" or lower.begins_with("/notices "):
+		prompt_input.clear()
+		notices_requested.emit()
+		return
 	if lower == "/kb" or lower.begins_with("/kb "):
 		prompt_input.clear()
 		var rest := text.substr(3).strip_edges()

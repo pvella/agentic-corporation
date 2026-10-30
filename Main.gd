@@ -46,6 +46,8 @@ const Office := preload("res://Office.gd")
 const Iso := preload("res://Iso.gd")
 const HireFireFxScript := preload("res://HireFireFx.gd")
 const KnowledgeLibraryScript := preload("res://KnowledgeLibrary.gd")
+const NoticesScript := preload("res://Notices.gd")
+const NoticeBoardScript := preload("res://NoticeBoard.gd")
 const AgentViewScript := preload("res://AgentView.gd")
 const SignTagScript := preload("res://SignTag.gd")
 const SETTINGS_PATH := "user://agent_office.cfg"
@@ -99,6 +101,10 @@ var _role_categories: Array = []
 var _fire_preview_variant := ""
 var _knowledge_racks: Array = []
 var _knowledge_library: Node = null
+var _notices_store = null  ## Notices
+var _notice_board: Node2D = null
+var _meeting_active: Dictionary = {}  ## target -> {agents: PackedStringArray, text: String}
+var _agent_prev_state: Dictionary = {}  ## agent_id -> last notable state
 var _server_clickables: Array = []
 var _human_queue: Array = []
 var _meeting_panel: Control = null
@@ -217,6 +223,11 @@ func _ready() -> void:
 				send_json({"action": "LIST_KNOWLEDGE"})
 				_open_knowledge_library()
 		)
+	if _notices_store == null:
+		_notices_store = NoticesScript.new()
+		_notices_store.load_from_disk()
+	if drawer.has_signal("notices_requested"):
+		drawer.notices_requested.connect(_on_notices_requested)
 	camera.zoom_changed.connect(_apply_ui_scale)
 	build_layout(Office.LEGACY_LAYOUT, true)
 	_backoff = reconnect_min
@@ -378,6 +389,7 @@ func _build_visuals() -> void:
 			_desk_props[id].owner_agent = agents[id]
 	_add_server_rack_hotspots()
 	_build_signs()
+	_place_notice_board()
 	office.queue_redraw()
 
 
@@ -896,6 +908,8 @@ func _on_knowledge_added(msg: Dictionary) -> void:
 	var title := str(msg.get("title", msg.get("filename", "doc")))
 	var fname := str(msg.get("filename", msg.get("name", title)))
 	_set_status("Knowledge added: %s → Server Room" % title, Color("#29b6f6"))
+	_notice("knowledge_add", "Knowledge + %s" % title, "Server Room",
+		{"icon": "📄", "color": "#29b6f6", "meta": {"filename": fname}})
 	# Visual: flash a knowledge slate onto the Server Room rack (screen space).
 	var rack_name := str(msg.get("rack", "Server_Rack_1"))
 	var world := Vector2(720, 520)
@@ -953,6 +967,8 @@ func _on_knowledge_removed(msg: Dictionary) -> void:
 	var title := str(msg.get("title", msg.get("filename", "doc")))
 	var fname := str(msg.get("filename", msg.get("name", "")))
 	_set_status("Knowledge removed: %s" % title, Color("#ef9a9a"))
+	_notice("knowledge_remove", "Knowledge − %s" % title, "removed from Server Room",
+		{"icon": "🗑", "color": "#ef9a9a", "meta": {"filename": fname}})
 	if drawer and drawer.has_method("append_system"):
 		drawer.append_system("knowledge: removed %s" % (fname if fname != "" else title))
 	var kept: Array = []
@@ -1116,6 +1132,12 @@ func _on_agent_dm(msg: Dictionary) -> void:
 
 func _on_ask_human(msg: Dictionary) -> void:
 	_human_queue.append(msg)
+	var aname := str(msg.get("agent_name", msg.get("agent_id", "agent")))
+	var prompt := str(msg.get("prompt", msg.get("text", ""))).left(100)
+	_notice("ask_human", "We need to talk — %s" % aname, prompt,
+		{"icon": "!", "color": "#ffb74d", "pending": true,
+		 "meta": {"agent_id": str(msg.get("agent_id", "")),
+				 "request_id": str(msg.get("request_id", ""))}})
 	var aid := str(msg.get("agent_id", ""))
 	var agent: Agent = agents.get(aid)
 	if agent:
@@ -1182,6 +1204,11 @@ func _submit_human_reply(agent_id: String, text: String, request_id: String) -> 
 	if text == "":
 		return
 	send_json({"action": "HUMAN_REPLY", "agent_id": agent_id, "text": text, "request_id": request_id})
+	if _notices_store:
+		if request_id:
+			_notices_store.resolve_ask(request_id)
+		else:
+			_notices_store.resolve_all_pending_asks_for(agent_id)
 	if not _human_queue.is_empty():
 		_human_queue.pop_front()
 	_show_next_human_prompt()
@@ -1377,6 +1404,73 @@ func _handle_raw(raw: String) -> void:
 	handle_message(msg)
 
 
+
+func _place_notice_board() -> void:
+	## Cork board on the canteen north wall (left of the menu). No walkmesh / door / hex changes.
+	if _notice_board and is_instance_valid(_notice_board):
+		_notice_board.queue_free()
+		_notice_board = null
+	if _notices_store == null:
+		_notices_store = NoticesScript.new()
+		_notices_store.load_from_disk()
+	var canteen: Dictionary = {}
+	for a in office.areas:
+		if str(a.get("kind", "")) == "canteen":
+			canteen = a
+			break
+	if canteen.is_empty():
+		for a in office.areas:
+			if str(a.get("kind", "")) == "hub":
+				canteen = a
+				break
+	if canteen.is_empty():
+		return
+	var r: Rect2 = canteen.rect
+	# North wall, just right of the canteen menu board (menu sits at x≈p+m+12).
+	var anchor := Vector2(r.position.x + 110.0, r.position.y + 16.0)
+	var board: Node2D = NoticeBoardScript.new()
+	signs_root.add_child(board)
+	board.setup(anchor, _notices_store)
+	if board.has_signal("open_requested"):
+		board.open_requested.connect(func() -> void: pass)
+	_notice_board = board
+	# Scale with other hub placards when the camera zooms.
+	if _notice_board not in _sign_tags:
+		_sign_tags.append(_notice_board)
+	var z := camera.zoom.x if camera else 1.0
+	_notice_board.scale = Vector2.ONE * _ui_scale_for(z)
+
+
+func _notice(kind: String, title: String, detail: String = "", opts: Dictionary = {}) -> void:
+	if _notices_store == null:
+		_notices_store = NoticesScript.new()
+		_notices_store.load_from_disk()
+	_notices_store.add(kind, title, detail, opts)
+
+
+func _on_notices_requested() -> void:
+	if _notices_store == null:
+		_notices_store = NoticesScript.new()
+		_notices_store.load_from_disk()
+	var pins: Array = _notices_store.latest(12)
+	if pins.is_empty():
+		if drawer and drawer.has_method("append_system"):
+			drawer.append_system("notices: (none yet)")
+	else:
+		if drawer and drawer.has_method("append_system"):
+			drawer.append_system("notices: latest %d (of %d)" % [pins.size(), _notices_store.events.size()])
+			for e in pins:
+				var tstr := _notices_store.format_time(float(e.get("ts", 0)))
+				var pending := " [OPEN]" if bool(e.get("pending", false)) else ""
+				var line := "%s %s %s%s" % [tstr, str(e.get("icon", "•")), str(e.get("title", "")), pending]
+				var detail := str(e.get("detail", ""))
+				if detail:
+					line += " — %s" % detail
+				drawer.append_system(line, str(e.get("color", "#7f848e")))
+	if _notice_board and is_instance_valid(_notice_board) and _notice_board.has_method("open_full_list"):
+		_notice_board.open_full_list()
+
+
 func handle_message(msg: Dictionary) -> void:
 	match String(msg.get("type", "")):
 		"OFFICE_LAYOUT":
@@ -1423,7 +1517,18 @@ func handle_message(msg: Dictionary) -> void:
 			_on_meeting_turn(msg)
 		"AGENT_HIRE":
 			_play_hire(msg)
+			var hname := str(msg.get("name", msg.get("agent_id", "agent")))
+			var hrole := str(msg.get("role", ""))
+			_notice("hire", "Hired %s" % hname, hrole if hrole else "new agent",
+				{"icon": "✦", "color": "#ffd54f", "meta": {"agent_id": str(msg.get("agent_id", ""))}})
 		"AGENT_FIRE":
+			var fname := str(msg.get("name", msg.get("agent_id", "agent")))
+			var variant := str(msg.get("variant", _fire_preview_variant))
+			var how := NoticesScript.fire_variant_label(variant)
+			var ficon := "🚑" if how == "ambulance" else ("🛸" if how == "UFO" else "☠")
+			_notice("fire", "Killed %s" % fname, "via %s" % how,
+				{"icon": ficon, "color": "#ef5350",
+				 "meta": {"agent_id": str(msg.get("agent_id", "")), "variant": variant}})
 			_play_fire(msg)
 		"INBOX":
 			var agent := _get_or_spawn(str(msg.get("agent_id", "")))
@@ -1434,6 +1539,10 @@ func handle_message(msg: Dictionary) -> void:
 			push_warning("Harness error: %s" % str(msg.get("message", "")))
 			if drawer.agent:
 				drawer.append_system("harness error: %s" % str(msg.get("message", "")), "#e06c75")
+			var emsg := str(msg.get("message", "error"))
+			var eact := str(msg.get("action", ""))
+			_notice("error", "Error%s" % ((" · " + eact) if eact else ""), emsg.left(120),
+				{"icon": "⚠", "color": "#e06c75"})
 		"AMBIENT":
 			# Idle-life cue from the harness (no log line, nothing to do with work).
 			var agent: Agent = agents.get(str(msg.get("agent_id", "")))
@@ -1495,15 +1604,65 @@ func _apply_snapshot(msg: Dictionary) -> void:
 
 
 func _apply_state(agent: Agent, state: String, target: String, text: String) -> void:
+	var prev := str(_agent_prev_state.get(agent.agent_id, ""))
+	var st := state.to_upper()
 	agent.set_state(state)
 	if not target.is_empty():
 		_route(agent, target)
-	elif state.to_upper() in ["THINKING", "WORKING", "ERROR"] and agent.is_away_from_desk():
+	elif st in ["THINKING", "WORKING", "ERROR"] and agent.is_away_from_desk():
 		agent.glance_phone(4.0)  # an update while away from the desk: check the phone
 	if not text.is_empty():
-		agent.show_bubble(Ansi.strip(text), state.to_upper() == "THINKING")
+		agent.show_bubble(Ansi.strip(text), st == "THINKING")
+	# Notice board: task outcomes (skip idle chatter / ambient moves).
+	if st == "ERROR":
+		var fail_txt := text if text else "task failed"
+		_notice("task_fail", "%s failed" % agent.display_name, fail_txt.left(100),
+			{"icon": "✖", "color": "#e57373", "meta": {"agent_id": agent.agent_id}})
+	elif st == "IDLE" and prev in ["WORKING", "THINKING"]:
+		var low := text.to_lower()
+		if "done" in low or low.begins_with("done") or "coffee" in low:
+			_notice("task_ok", "%s finished" % agent.display_name, text.left(100) if text else "Done",
+				{"icon": "✔", "color": "#81c784", "meta": {"agent_id": agent.agent_id}})
+	# Meeting end: last collaborator leaves COLLAB.
+	if prev in ["COLLAB", "COLLABORATE"] and st not in ["COLLAB", "COLLABORATE"]:
+		_maybe_finish_meeting(agent)
+	if st in ["WORKING", "THINKING", "ERROR", "COLLAB", "COLLABORATE", "IDLE"]:
+		_agent_prev_state[agent.agent_id] = st
 	drawer.on_agent_changed(agent)
 	_update_counts()
+
+
+
+func _maybe_finish_meeting(leaving: Agent) -> void:
+	var still := 0
+	for aid in agents.keys():
+		var a: Agent = agents[aid]
+		if a == null or not is_instance_valid(a) or a == leaving:
+			continue
+		var s := str(_agent_prev_state.get(aid, "")).to_upper()
+		if s in ["COLLAB", "COLLABORATE"]:
+			still += 1
+	if still > 0:
+		return
+	var participants: PackedStringArray = []
+	var topic := ""
+	var key := ""
+	for k in _meeting_active.keys():
+		key = str(k)
+		var info: Dictionary = _meeting_active[k]
+		var ags: Variant = info.get("agents", [])
+		if ags is PackedStringArray:
+			participants = ags
+		elif ags is Array:
+			for n in ags:
+				participants.append(str(n))
+		topic = str(info.get("text", ""))
+		break
+	if key != "":
+		_meeting_active.erase(key)
+	var who := " & ".join(participants) if participants.size() > 0 else leaving.display_name
+	_notice("meeting_end", "Meeting finished", ("%s · %s" % [who, topic.left(60)]).strip_edges(),
+		{"icon": "✓", "color": "#b39ddb", "meta": {"agents": participants}})
 
 
 func _apply_collaborate(msg: Dictionary) -> void:
@@ -1512,11 +1671,18 @@ func _apply_collaborate(msg: Dictionary) -> void:
 	if target.is_empty():
 		target = "Meeting_Room"
 	var names: PackedStringArray = []
+	var id_list: Array = []
 	for id: Variant in ids:
+		id_list.append(str(id))
 		var a := _get_or_spawn(str(id))
 		if a:
 			names.append(a.display_name)
 	var text := str(msg.get("text", ""))
+	_meeting_active[target] = {"agents": names, "ids": id_list, "text": text}
+	_notice("meeting_start", "Meeting started", "%s · %s" % [" & ".join(names), text.left(60)],
+		{"icon": "🤝", "color": "#ce93d8", "meta": {"target": target, "agents": names}})
+	for idv in id_list:
+		_agent_prev_state[str(idv)] = "COLLAB"
 	for i in ids.size():
 		var agent: Agent = agents.get(str(ids[i]))
 		if agent == null:

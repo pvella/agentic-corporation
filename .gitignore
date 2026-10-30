@@ -34,6 +34,8 @@ Thumbs.db
 .office_token
 .office_inbox.json
 .office_inbox.json.tmp
+.office_notices.json
+.office_notices.json.tmp
 
 # Claude Code local overrides
 .claude/settings.local.json
