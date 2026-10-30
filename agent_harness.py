@@ -84,7 +84,8 @@ __version__ = "0.2.0"
 log = logging.getLogger("agent_harness")
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(\x07|\x1b\\)")
-SHARED_BREAK_SPOTS = ("Coffee_Machine", "Water_Cooler", "Vending_Machine", "Sofa_1", "Sofa_2")
+REC_SPOTS = ("Yoga_Mat_1", "Yoga_Mat_2", "Meditation_Cushion_1", "Meditation_Cushion_2")
+SHARED_BREAK_SPOTS = ("Coffee_Machine", "Water_Cooler", "Vending_Machine", "Sofa_1", "Sofa_2") + REC_SPOTS
 SHARED_CHAT_SPOTS = ("Chat_Break", "Chat_Corridor")  # + Chat_<room id> per team room
 IDLE_SPOTS = SHARED_BREAK_SPOTS  # backwards-compatible name
 MEETING_TARGET = "Meeting_Room"
@@ -284,6 +285,104 @@ def format_job_system_prompt(job: dict | None, name: str = "", role: str = "") -
         "Reply in character, briefly (2–6 sentences unless asked for more). "
         "No tool-use narration, no markdown fences unless needed for code."
     )
+    kb = format_knowledge_system_addon()
+    if kb:
+        lines.append(kb)
+    return "\n".join(lines)
+
+
+
+
+def knowledge_one_line_summary(text: str, fallback: str = "") -> str:
+    """First markdown heading or first non-empty paragraph, single line."""
+    lines = (text or "").replace("\r\n", "\n").split("\n")
+    heading = ""
+    para: list[str] = []
+    for raw in lines:
+        s = raw.strip()
+        if not s:
+            if para:
+                break
+            continue
+        if s.startswith("#"):
+            heading = s.lstrip("#").strip()
+            break
+        para.append(s)
+    summary = heading or " ".join(para) or fallback
+    summary = " ".join(summary.split())
+    if len(summary) > 140:
+        summary = summary[:137].rstrip() + "..."
+    return summary
+
+
+def regenerate_knowledge_index(knowledge_dir: Path) -> Path:
+    """Write knowledge/INDEX.md (filename + one-line summary). Skip INDEX itself."""
+    knowledge_dir.mkdir(parents=True, exist_ok=True)
+    entries: list[tuple[str, str]] = []
+    for path in sorted(knowledge_dir.iterdir(), key=lambda x: x.name.lower()):
+        if not path.is_file() or path.suffix.lower() != ".md":
+            continue
+        if path.name.upper() == "INDEX.MD":
+            continue
+        try:
+            body = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            body = ""
+        summary = knowledge_one_line_summary(body, fallback=path.stem.replace("_", " ").replace("-", " "))
+        entries.append((path.name, summary))
+    lines = [
+        "# Shared company knowledge",
+        "",
+        "Auto-generated index. Agents: use the Read tool on `knowledge/<file>` when a task touches a topic below.",
+        "",
+    ]
+    if not entries:
+        lines.append("_No knowledge files yet._")
+    else:
+        for name, summary in entries:
+            lines.append(f"- `{name}` — {summary}")
+        lines.append("")
+    index_path = knowledge_dir / "INDEX.md"
+    index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return index_path
+
+
+def format_knowledge_system_addon(knowledge_dir: Path | None = None) -> str:
+    """Appended to every agent Claude system prompt: shared knowledge lives in knowledge/."""
+    root = knowledge_dir
+    if root is None:
+        root = Path(__file__).resolve().parent / "knowledge"
+    else:
+        root = Path(knowledge_dir)
+    if not root.is_dir():
+        return (
+            "Shared company knowledge lives in the knowledge/ folder. "
+            "The index is empty right now. When files appear, Read knowledge/<file> for details."
+        )
+    # Ensure index exists / is fresh enough for listing
+    regenerate_knowledge_index(root)
+    items: list[str] = []
+    for path in sorted(root.iterdir(), key=lambda x: x.name.lower()):
+        if not path.is_file() or path.suffix.lower() != ".md":
+            continue
+        if path.name.upper() == "INDEX.MD":
+            continue
+        try:
+            body = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            body = ""
+        summary = knowledge_one_line_summary(body, fallback=path.stem.replace("_", " "))
+        items.append(f"- {path.name}: {summary}")
+    lines = [
+        "Shared company knowledge lives in the knowledge/ folder (see knowledge/INDEX.md).",
+        "Below is the index (names and one-line summaries only). "
+        "When a task touches a listed topic, use the Read tool on knowledge/<filename> before answering.",
+    ]
+    if items:
+        lines.append("Knowledge index:")
+        lines.extend(items)
+    else:
+        lines.append("Knowledge index: (empty)")
     return "\n".join(lines)
 
 
@@ -407,12 +506,15 @@ class Hub:
         self.on_fired: Callable[[str], None] | None = None
 
     # -- registry ----------------------------------------------------------
-    def unregister(self, agent_id: str) -> Agent | None:
+    def unregister(self, agent_id: str, *, variant: str = "") -> Agent | None:
         agent = self.agents.pop(agent_id, None)
         if agent is None:
             return None
-        self.emit({"type": "AGENT_FIRE", "agent_id": agent_id, "name": agent.name,
-                   "desk": agent.desk, "room": agent.room})
+        payload = {"type": "AGENT_FIRE", "agent_id": agent_id, "name": agent.name,
+                   "desk": agent.desk, "room": agent.room}
+        if variant:
+            payload["variant"] = variant
+        self.emit(payload)
         return agent
 
     def hire(self, agent_id: str, name: str, desk: str, color: str, role: str = "", **extra: Any) -> Agent:
@@ -756,6 +858,7 @@ class Hub:
             "title": title,
             "rack": "Server_Rack_1",
         }
+        regenerate_knowledge_index(dest_dir)
         self.emit(payload)
         log.info("ADD_KNOWLEDGE %s -> %s", src_path, dest)
         await self.reply(ws, {"type": "ACK", "action": "ADD_KNOWLEDGE", "filename": dest.name, "title": title})
@@ -772,6 +875,8 @@ class Hub:
         for p in sorted(dest_dir.iterdir(), key=lambda x: x.name.lower()):
             if not p.is_file() or p.suffix.lower() != ".md":
                 continue
+            if p.name.upper() == "INDEX.MD":
+                continue
             try:
                 st = p.stat()
             except OSError:
@@ -785,6 +890,7 @@ class Hub:
                 "name": p.name,
                 "filename": p.name,
                 "title": p.stem.replace("_", " ").replace("-", " "),
+                "summary": knowledge_one_line_summary(content, fallback=p.stem.replace("_", " ").replace("-", " ")),
                 "path": str(p),
                 "size": int(st.st_size),
                 "mtime": float(st.st_mtime),
@@ -840,6 +946,7 @@ class Hub:
             "path": str(target),
             "files": self._list_knowledge_files(),
         }
+        regenerate_knowledge_index(dest_dir)
         self.emit(payload)
         log.info("REMOVE_KNOWLEDGE %s", target)
         await self.reply(ws, {"type": "ACK", "action": "REMOVE_KNOWLEDGE",
@@ -949,11 +1056,16 @@ class Hub:
         br = shared.get("break_room") or {}
         mr = shared.get("meeting_room") or {}
         cn = shared.get("canteen") or {}
+        rr = shared.get("rec_room") or {}
+        sr = shared.get("server_room") or {}
         payload["shared"] = {
             "break_room": {"name": br.get("name", "Break Room")},
             "meeting_room": {"name": mr.get("name", "Meeting Room"), "seats": int(mr.get("seats", 6) or 6)},
             "canteen": {"name": cn.get("name", "Canteen")},
+            "rec_room": {"name": rr.get("name", "Rec Room")},
         }
+        if sr:
+            payload["shared"]["server_room"] = {"name": sr.get("name", "Server Room")}
         try:
             with open(self.office_path, "w", encoding="utf-8") as fh:
                 json.dump(payload, fh, indent=2, ensure_ascii=False)
@@ -1035,11 +1147,29 @@ class Hub:
                             break
                     if match and match.get("unique"):
                         short = match.get("short_title") or match.get("title") or role
+                        aliases = {
+                            str(short).strip().lower(),
+                            str(match.get("title") or "").strip().lower(),
+                            str(match.get("default_name") or "").strip().lower(),
+                            str(match.get("short_title") or "").strip().lower(),
+                        }
+                        aliases.discard("")
+                        mid = match.get("id")
                         for a in self.agents.values():
-                            ar = getattr(a, "role", "") or ""
+                            ar = str(getattr(a, "role", "") or "").strip().lower()
+                            an = str(getattr(a, "name", "") or getattr(a, "display_name", "") or "").strip().lower()
                             aj = getattr(a, "job", None) or {}
-                            if ar in (short, match.get("title"), match.get("default_name")) or (
-                                isinstance(aj, dict) and aj.get("role_id") == match.get("id")
+                            aj_st = str(aj.get("short_title", "") if isinstance(aj, dict) else "").strip().lower()
+                            aj_ti = str(aj.get("title", "") if isinstance(aj, dict) else "").strip().lower()
+                            aj_rid = aj.get("role_id") if isinstance(aj, dict) else None
+                            if (
+                                ar in aliases
+                                or an in aliases
+                                or aj_st in aliases
+                                or aj_ti in aliases
+                                or (mid and aj_rid == mid)
+                                or (short and short.lower() in ar)
+                                or (short and short.lower() in an)
                             ):
                                 await self.reply(ws, {
                                     "type": "ERROR",
@@ -1162,15 +1292,16 @@ class Hub:
     async def _action_preview_hire_fire(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
         """Demo the hire and/or fire pageantry without permanently changing the roster.
         which: hire | fire | both (default both).
+        Optional variant / alias (ambulance, ufo, …; medics→ambulance) forces the fire FX.
         """
         which = str(msg.get("which", "both")).strip().lower() or "both"
         preview_id = str(msg.get("agent_id", "preview_hire")).strip() or "preview_hire"
-        log.info("PREVIEW_HIRE_FIRE which=%s id=%s", which, preview_id)
+        variant = str(msg.get("variant", "") or "").strip().lower()
+        log.info("PREVIEW_HIRE_FIRE which=%s id=%s variant=%s", which, preview_id, variant or "-")
 
         async def _hire_temp() -> None:
             if preview_id in self.agents:
                 self.unregister(preview_id)
-            # Place near special_projects or first free-looking desk.
             desk = str(msg.get("desk", f"Desk_{preview_id}"))
             self.hire(preview_id, "Preview Hire", desk, "#ffd54f",
                       role="Temp", room=str(msg.get("room", "special_projects")))
@@ -1179,12 +1310,11 @@ class Hub:
             if preview_id not in self.agents:
                 await _hire_temp()
                 await asyncio.sleep(1.8)  # let hire FX play
-            self.unregister(preview_id)
+            self.unregister(preview_id, variant=variant)
 
         if which in ("hire", "both"):
             await _hire_temp()
             if which == "hire":
-                # Auto-clean after the beam so the roster stays tidy.
                 async def _cleanup() -> None:
                     await asyncio.sleep(2.5)
                     if preview_id in self.agents:
@@ -1196,7 +1326,7 @@ class Hub:
                 await asyncio.sleep(1.9)
             await _fire_temp()
         await self.reply(ws, {"type": "ACK", "action": "PREVIEW_HIRE_FIRE", "which": which,
-                              "agent_id": preview_id})
+                              "agent_id": preview_id, "variant": variant})
 
 
 # ---------------------------------------------------------------------------
@@ -1388,6 +1518,8 @@ def role_profile(agent: Agent) -> RoleProfile:
 BREAK_CHATTER = ["Anyone seen the CI logs?", "This coffee is compiling...", "Need a refactor break.",
                  "Ship it!", "Who broke main?", "Tabs or spaces?", "Nice weather for a deploy."]
 FOOSBALL_CHATTER = ["Goal!", "GOAL!", "Spin it!", "Rematch?", "Nice save!", "Best of five?"]
+YOGA_CHATTER = ["Tree pose…", "Breathe in…", "Stretch it out.", "Downward dog.", "Namaste."]
+MEDITATE_CHATTER = ["…", "Om.", "Clearing the mind.", "Just breathing.", "Peace."]
 MEETING_CHATTER = ["Agreed.", "What about edge cases?", "Let's split the PR.", "I'll write the tests.",
                    "Can we cache that?", "Ship behind a flag?", "Who owns the migration?"]
 # Office small talk: (opener, reply) pairs, then a few follow-ups. Kept light,
@@ -1433,7 +1565,8 @@ class AmbientDirector:
 
     Idle-only (live mode): no fake work at all. Agents that aren't busy with a
     real report sit at their desk with the screen dark, wander to the coffee
-    machine, water cooler, vending machine or sofa, play foosball, gather in
+    machine, water cooler, vending machine, sofa or Rec Room (yoga/meditation),
+    play foosball, gather in
     pairs or threes for small talk and glance at their phones (AMBIENT events,
     no log lines). A real report always wins: the agent is skipped while the
     report's hold runs, and "finish" hands it straight back (Hub.on_release).
@@ -1458,6 +1591,7 @@ class AmbientDirector:
         self.next_foosball_at = self.rand(tempo.foosball_every) * (0.15 if idle_only else 0.5)
         self.next_chat_at = self.rand(tempo.chat_group_every) * 0.3
         self.next_canteen_at = self.rand((90, 180))
+        self.next_rec_at = 25.0
         # spot name -> {"members": [Agent], "until", "next_at", "turn", "topic"}
         self.chats: dict[str, dict[str, Any]] = {}
 
@@ -1573,11 +1707,16 @@ class AmbientDirector:
                             delattr(agent, attr)
             elif agent.activity == "foosball":
                 self._away(agent, now, FOOSBALL_CHATTER, chat_chance=0.6, state="IDLE")
+            elif agent.activity == "yoga":
+                self._away(agent, now, YOGA_CHATTER, chat_chance=0.25, state="IDLE")
+            elif agent.activity == "meditation":
+                self._away(agent, now, MEDITATE_CHATTER, chat_chance=0.18, state="IDLE")
         self._chat_tick(now)
         if not self.idle_only:
             self._maybe_meeting(now, agents)
         self._maybe_foosball(now, agents)
         self._maybe_canteen(now, agents)
+        self._maybe_rec(now, agents)
         self._maybe_chat(now, agents)
 
     # -- per-activity behaviour ----------------------------------------------
@@ -1595,6 +1734,37 @@ class AmbientDirector:
         self.hub.emit({"type": "AMBIENT", "agent_id": agent.agent_id, "action": "phone",
                        "seconds": round(random.uniform(3.0, 6.0), 1)})
 
+
+    def _start_rec_or_break(self, agent: Agent, now: float, spot: str | None = None) -> None:
+        """Walk to a break/rec spot. Rec Room spots get yoga/meditation for 20–40s."""
+        if spot is None:
+            spot = random.choice(agent.break_spots)
+        hub, aid = self.hub, agent.agent_id
+        if spot.startswith("Yoga_"):
+            agent.activity = "yoga"
+            agent.activity_until = now + random.uniform(20.0, 40.0)
+            agent.next_event_at = now + random.uniform(6.0, 12.0)
+            hub.state(aid, "IDLE", target=spot, text="Yoga break.")
+            hub.emit({"type": "AMBIENT", "agent_id": aid, "action": "yoga",
+                      "seconds": round(agent.activity_until - now, 1)})
+            hub.log_line(aid, "\x1b[35m[rec]\x1b[0m Walking to the Rec Room for yoga.")
+        elif spot.startswith("Meditation_"):
+            agent.activity = "meditation"
+            agent.activity_until = now + random.uniform(20.0, 40.0)
+            agent.next_event_at = now + random.uniform(8.0, 14.0)
+            hub.state(aid, "IDLE", target=spot, text="Meditating.")
+            hub.emit({"type": "AMBIENT", "agent_id": aid, "action": "meditate",
+                      "seconds": round(agent.activity_until - now, 1)})
+            hub.log_line(aid, "\x1b[35m[rec]\x1b[0m Heading to the Rec Room to meditate.")
+        else:
+            agent.activity = "break"
+            agent.activity_until = now + self.rand(self.tempo.break_time) * (1.5 if self.idle_only else 1.0)
+            agent.next_event_at = now + self.rand(self.tempo.chat_every)
+            text = {"Coffee": "Coffee time.", "Water": "Grabbing some water.", "Sofa": "Quick breather.",
+                    "Vending": "Snack run."}
+            hub.state(aid, "IDLE", target=spot,
+                      text=next((v for k, v in text.items() if k in spot), "Short break."))
+
     def _idle_desk(self, agent: Agent, now: float) -> None:
         """Idle-only desk time: seated, screen dark, the odd phone glance, then
         maybe a wander to a break spot."""
@@ -1602,11 +1772,7 @@ class AmbientDirector:
         if now >= agent.activity_until:
             if random.random() < 0.72 and self.can_walk():
                 self.reserve_walk()
-                agent.activity = "break"
-                agent.activity_until = now + self.rand(t.break_time) * 1.5
-                agent.next_event_at = now + self.rand(t.chat_every)
-                spot = random.choice(agent.break_spots)
-                self.hub.state(agent.agent_id, "IDLE", target=spot)
+                self._start_rec_or_break(agent, now)
                 return
             agent.activity_until = now + self.rand(self.desk_span()) * 0.5
         if now >= agent.next_event_at:
@@ -1623,14 +1789,7 @@ class AmbientDirector:
         if now >= agent.activity_until and not agent.thinking_until:
             if random.random() < t.break_chance and self.can_walk():
                 self.reserve_walk()
-                agent.activity = "break"
-                agent.activity_until = now + self.rand(t.break_time)
-                agent.next_event_at = now + self.rand(t.chat_every)
-                spot = random.choice(agent.break_spots)
-                text = {"Coffee": "Coffee time.", "Water": "Grabbing some water.", "Sofa": "Quick breather.",
-                        "Vending": "Snack run."}
-                hub.state(aid, "IDLE", target=spot,
-                          text=next((v for k, v in text.items() if k in spot), "Short break."))
+                self._start_rec_or_break(agent, now)
                 return
             # Keep working: start a fresh session in place (no walking).
             agent.activity_until = now + self.rand(t.work)
@@ -1746,6 +1905,24 @@ class AmbientDirector:
             agent._canteen_seat = seat  # type: ignore[attr-defined]
             agent._canteen_food = food  # type: ignore[attr-defined]
             agent._canteen_eat_until = now + 8.0 + eat_for  # type: ignore[attr-defined]
+
+
+    def _maybe_rec(self, now: float, free_agents: list[Agent]) -> None:
+        """Occasionally send an idle agent to the Rec Room for yoga or meditation (20–40s)."""
+        if not hasattr(self, "next_rec_at"):
+            self.next_rec_at = now + random.uniform(40.0, 90.0)
+        if now < self.next_rec_at or not self.can_walk():
+            return
+        self.next_rec_at = now + self.rand((90, 180) if self.idle_only else (150, 320))
+        pool = [a for a in free_agents
+                if a.group == SHARED_GROUP and a.activity == "desk" and not a.is_live()]
+        if not pool:
+            return
+        agent = random.choice(pool)
+        spots = [s for s in REC_SPOTS if s in agent.break_spots] or list(REC_SPOTS)
+        spot = random.choice(spots)
+        self.reserve_walk()
+        self._start_rec_or_break(agent, now, spot)
 
     def _maybe_foosball(self, now: float, free_agents: list[Agent]) -> None:
         if now < self.next_foosball_at or not self.can_walk():
@@ -1928,9 +2105,18 @@ class CliRunner:
             tokens[insert_at:insert_at] = ["--continue"]
 
         # Allow tools to see the real project when we run from a session subdir.
-        if "--add-dir" not in tokens and project:
-            insert_at = len(tokens) - 1 if prompt and tokens and tokens[-1] == prompt else len(tokens)
-            tokens[insert_at:insert_at] = ["--add-dir", project]
+        if project:
+            dirs = []
+            if "--add-dir" not in tokens:
+                dirs.append(project)
+            kb = str(Path(project) / "knowledge")
+            if Path(kb).is_dir() and kb not in tokens:
+                dirs.append(kb)
+            if dirs:
+                insert_at = len(tokens) - 1 if prompt and tokens and tokens[-1] == prompt else len(tokens)
+                for d in dirs:
+                    tokens[insert_at:insert_at] = ["--add-dir", d]
+                    insert_at += 2
 
         # Read-only allowlist so status questions (git/gh) don't block on approvals.
         has_allowed = any(t in ("--allowedTools", "--allowed-tools") for t in tokens)
@@ -2182,6 +2368,62 @@ def normalise_office(raw: Any, source: str = "office.json") -> dict[str, Any]:
     for a in archived_raw:
         if isinstance(a, dict) and a.get("agent_id"):
             archived.append(dict(a))
+    # UNIQUE_ROLE_DEDUPE at load: at most one live member per catalog unique role.
+    # Prefer agent_id "chief_of_staff" when short_title is Chief of Staff.
+    try:
+        cat_path = Path(__file__).resolve().parent / "roles" / "catalog.json"
+        if cat_path.exists():
+            cat = json.loads(cat_path.read_text(encoding="utf-8"))
+            unique_roles = [r for r in (cat.get("roles") or []) if isinstance(r, dict) and r.get("unique")]
+            for ur in unique_roles:
+                aliases = {
+                    str(ur.get("short_title") or "").strip().lower(),
+                    str(ur.get("title") or "").strip().lower(),
+                    str(ur.get("default_name") or "").strip().lower(),
+                }
+                aliases.discard("")
+                rid = ur.get("id")
+                prefer = "chief_of_staff" if str(ur.get("short_title") or "") == "Chief of Staff" else ""
+                hits: list[tuple[dict[str, Any], dict[str, Any]]] = []
+                for room in rooms:
+                    for m in room.get("members") or []:
+                        role_l = str(m.get("role") or "").strip().lower()
+                        name_l = str(m.get("name") or "").strip().lower()
+                        job = m.get("job") if isinstance(m.get("job"), dict) else {}
+                        st_l = str(job.get("short_title") or "").strip().lower()
+                        ti_l = str(job.get("title") or "").strip().lower()
+                        jrid = job.get("role_id")
+                        if (
+                            role_l in aliases
+                            or name_l in aliases
+                            or st_l in aliases
+                            or ti_l in aliases
+                            or (rid and jrid == rid)
+                            or (prefer and m.get("agent_id") == prefer)
+                        ):
+                            hits.append((room, m))
+                if len(hits) <= 1:
+                    continue
+                keep = None
+                if prefer:
+                    for room, m in hits:
+                        if m.get("agent_id") == prefer:
+                            keep = m.get("agent_id")
+                            break
+                if keep is None:
+                    keep = hits[0][1].get("agent_id")
+                for room, m in hits:
+                    if m.get("agent_id") == keep:
+                        continue
+                    entry = dict(m)
+                    entry["archived_at"] = 0
+                    entry["archived_from_room"] = room.get("id")
+                    entry["archive_reason"] = "dedupe_unique_role"
+                    archived.append(entry)
+                    room["members"] = [x for x in room["members"] if x.get("agent_id") != m.get("agent_id")]
+                    room["desks"] = max(int(room.get("desks") or 0), len(room["members"]), 1)
+    except Exception:
+        pass  # never fail office load on catalog issues
     return {
         "name": str(raw.get("name", "Agentic Corporation")),
         "rooms": rooms,
@@ -2193,6 +2435,8 @@ def normalise_office(raw: Any, source: str = "office.json") -> dict[str, Any]:
                              "seats": max(2, min(8, int(mr.get("seats", 6)))), "target": MEETING_TARGET},
             "canteen": {"name": str((shared.get("canteen") or {}).get("name", "Canteen") if isinstance(shared.get("canteen"), dict) else "Canteen"),
                         "counter": CANTEEN_COUNTER, "seats": list(CANTEEN_SEATS)},
+            "rec_room": {"name": str((shared.get("rec_room") or {}).get("name", "Rec Room") if isinstance(shared.get("rec_room"), dict) else "Rec Room"),
+                        "spots": list(REC_SPOTS)},
         },
     }
 

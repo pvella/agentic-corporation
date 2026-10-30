@@ -93,7 +93,7 @@ var _add_agent_button: Button = null
 var _kill_agent_button: Button = null
 var _kill_mode: bool = false
 var _kill_cursor_tex: Texture2D = null
-const _KILL_PROTECTED_IDS: Array[String] = ["chief_of_staff", "executive_chief_of_staff_and_work_orche"]
+const _KILL_PROTECTED_IDS: Array[String] = ["chief_of_staff"]
 var _role_catalog: Array = []
 var _role_categories: Array = []
 var _fire_preview_variant := ""
@@ -144,6 +144,8 @@ func _ready() -> void:
 	# Cap FPS: uncapped GL Compatibility + iso office pegged MBP ~90% CPU
 	# and made the window feel dead / unresponsive.
 	Engine.max_fps = 30
+	# Never show navmesh / agent path debug overlays in the office window.
+	NavigationServer2D.set_debug_enabled(false)
 	get_viewport().physics_object_picking = true
 	_setup_hidpi()
 	bodies_root = Node2D.new()
@@ -170,6 +172,16 @@ func _ready() -> void:
 	if drawer.has_signal("hire_requested"):
 		drawer.hire_requested.connect(func() -> void:
 			_open_hiring_board()
+		)
+	if drawer.has_signal("fire_preview_requested"):
+		drawer.fire_preview_requested.connect(func(variant: String) -> void:
+			var v := variant.strip_edges()
+			if v == "":
+				v = HireFireFxScript.next_preview_variant()
+			_fire_preview_variant = v
+			send_json({"action": "PREVIEW_HIRE_FIRE", "which": "fire", "variant": v})
+			if drawer.has_method("append_system"):
+				drawer.append_system("previewing fire · %s" % v)
 		)
 	if drawer.has_signal("hire_submit"):
 		drawer.hire_submit.connect(func(hname: String, hrole: String) -> void:
@@ -853,12 +865,19 @@ func _hired_unique_role_ids() -> Dictionary:
 	var out: Dictionary = {}
 	var catalog: Array = _role_catalog
 	var titles_live: Dictionary = {}
+	var role_ids_live: Dictionary = {}
 	for id in agents.keys():
 		var ag: Agent = agents[id]
 		if not is_instance_valid(ag):
 			continue
 		titles_live[str(ag.role)] = true
 		titles_live[str(ag.display_name)] = true
+		var j: Dictionary = ag.job
+		titles_live[str(j.get("short_title", ""))] = true
+		titles_live[str(j.get("title", ""))] = true
+		var rid := str(j.get("role_id", ""))
+		if rid != "":
+			role_ids_live[rid] = true
 	for role in catalog:
 		if not (role is Dictionary):
 			continue
@@ -866,8 +885,10 @@ func _hired_unique_role_ids() -> Dictionary:
 			continue
 		var st := str(role.get("short_title", ""))
 		var ft := str(role.get("title", ""))
-		if titles_live.has(st) or titles_live.has(ft):
-			out[str(role.get("id", ""))] = true
+		var dn := str(role.get("default_name", ""))
+		var rid := str(role.get("id", ""))
+		if titles_live.has(st) or titles_live.has(ft) or titles_live.has(dn) or role_ids_live.has(rid):
+			out[rid] = true
 	return out
 
 
@@ -1211,7 +1232,8 @@ func _bake_navigation() -> void:
 	var poly := NavigationPolygon.new()
 	poly.agent_radius = nav_agent_radius
 	var source := NavigationMeshSourceGeometryData2D.new()
-	source.add_traversable_outline(office.get_floor_outline())
+	for floor_poly: PackedVector2Array in office.get_floor_outlines():
+		source.add_traversable_outline(floor_poly)
 	for outline: PackedVector2Array in office.get_obstacle_outlines():
 		source.add_obstruction_outline(outline)
 	NavigationServer2D.bake_from_source_geometry_data(poly, source)
@@ -1242,12 +1264,15 @@ func _build_room_buttons() -> void:
 		_room_buttons.append(b)
 
 
-## Opening view: the main building at a comfortable zoom (F fits everything).
+## Opening view: the hub campus at a comfortable zoom (F fits everything).
 func default_view() -> void:
 	var main_rect: Rect2 = office.outer_frames[0].rect if not office.outer_frames.is_empty() else office.bounds
-	# Centre on the upper half (the team rooms and the break room) rather than
-	# the corridor in the middle.
-	var focus := main_rect.position + main_rect.size * Vector2(0.5, 0.3)
+	# Prefer the hub centre when present; otherwise the first outer frame.
+	for f: Dictionary in office.outer_frames:
+		if bool(f.get("hub", false)):
+			main_rect = f.rect
+			break
+	var focus := main_rect.get_center()
 	camera.focus_on(Iso.to_screen(focus) + Vector2(0, -20), DEFAULT_ZOOM)
 
 
@@ -1542,8 +1567,14 @@ func _play_fire(msg: Dictionary) -> void:
 	# Optional delay so a hire-then-fire preview can play the beam first.
 	var after_ms := int(msg.get("after_ms", 0))
 	if after_ms > 0:
+		var delayed := {
+			"agent_id": id,
+			"desk": msg.get("desk", ""),
+			"room": msg.get("room", ""),
+			"variant": msg.get("variant", _fire_preview_variant),
+		}
 		get_tree().create_timer(after_ms / 1000.0).timeout.connect(func() -> void:
-			_play_fire({"agent_id": id, "desk": msg.get("desk", ""), "room": msg.get("room", "")})
+			_play_fire(delayed)
 		)
 		return
 	var entrance_name := "%s_Entrance" % agent.room_id if waypoints.has("%s_Entrance" % agent.room_id) else "Entrance"
@@ -1562,6 +1593,9 @@ func _play_fire(msg: Dictionary) -> void:
 				_desk_props[aid].queue_redraw()
 	)
 	var forced := str(msg.get("variant", _fire_preview_variant))
+	# Focus the camera on the agent being fired (HireFireFx also zooms; this anchors us).
+	if camera and camera.has_method("focus_on"):
+		camera.focus_on(Iso.to_screen(agent.global_position), clampf(camera.zoom.x * 1.2, 0.45, 2.2))
 	fx.play_fire(agent, entrance_pos, forced)
 	_fire_preview_variant = ""
 
@@ -1835,6 +1869,7 @@ func _start_debug_activity() -> void:
 	_debug_activity_log.clear()
 	_debug_activity_started_ms = Time.get_ticks_msec()
 	print("[AgentOffice] debug-activity: logging walks/state for 60s")
+	_debug_dump_activity_bounds()
 	# Prove the HUD button signal is wired, then open the board via the same path.
 	if _add_agent_button and _add_agent_button.pressed.get_connections().size() > 0:
 		print("[AgentOffice] debug-activity: Add Agent connections=%d rect=%s" % [
@@ -1855,10 +1890,87 @@ func _start_debug_activity() -> void:
 	_flush_debug_activity()
 
 
+
+func _room_kind_match(expect: String, got: String) -> bool:
+	if expect == got:
+		return true
+	# Desk/team cells are authored as kind "room" (hex) or "wing" (corridor).
+	if expect in ["team", "room", "wing"] and got in ["team", "room", "wing"]:
+		return true
+	return false
+
+
+## Expected amenity room kind for a waypoint name (live hex hub zones).
+func _activity_expected_kind(wp_name: String) -> String:
+	if wp_name.begins_with("Yoga_Mat") or wp_name.begins_with("Meditation_Cushion") or wp_name.begins_with("Chat_Rec"):
+		return "rec"
+	if wp_name.begins_with("Foosball") or wp_name in ["Coffee_Machine", "Water_Cooler", "Vending_Machine"] \
+			or wp_name.begins_with("Sofa_") or wp_name.begins_with("Chat_Break"):
+		return "break"
+	if wp_name.begins_with("Canteen_") or wp_name.begins_with("Chat_Canteen"):
+		return "canteen"
+	if wp_name.begins_with("Meeting_") or wp_name == "Meeting_Room":
+		return "meeting"
+	if wp_name.begins_with("Server_"):
+		return "server"
+	if wp_name.begins_with("Desk_"):
+		return "room"  # Office.gd uses kind "room" (wings use "wing")
+	return ""
+
+
+func _area_kind_at(pos: Vector2) -> String:
+	var best := ""
+	var best_area := INF
+	for a: Dictionary in office.areas:
+		var rect: Rect2 = a.rect
+		if rect.has_point(pos):
+			var kind := str(a.get("kind", ""))
+			# Prefer specific amenity zones over the encompassing hub.
+			if kind == "hub":
+				continue
+			var area := rect.get_area()
+			if area < best_area:
+				best_area = area
+				best = kind
+	return best
+
+
+func _debug_dump_activity_bounds() -> void:
+	var names := [
+		"Coffee_Machine", "Water_Cooler", "Vending_Machine", "Sofa_1", "Sofa_2",
+		"Foosball_1", "Foosball_2", "Foosball_3", "Foosball_4",
+		"Canteen_Counter", "Canteen_Seat_1", "Canteen_Seat_2", "Canteen_Seat_3",
+		"Canteen_Seat_4", "Canteen_Seat_5", "Canteen_Seat_6",
+		"Yoga_Mat_1", "Yoga_Mat_2", "Meditation_Cushion_1", "Meditation_Cushion_2",
+	]
+	var bad := 0
+	for n in names:
+		if not waypoints.has(n):
+			print("[AgentOffice] activity-bounds MISSING wp=%s" % n)
+			bad += 1
+			continue
+		var pos: Vector2 = (waypoints[n] as Node2D).global_position
+		var expect := _activity_expected_kind(n)
+		var got := _area_kind_at(pos)
+		var ok := expect == "" or _room_kind_match(expect, got)
+		if not ok:
+			bad += 1
+		print("[AgentOffice] activity-bounds wp=%s pos=(%.1f,%.1f) expect=%s got=%s %s" % [
+			n, pos.x, pos.y, expect, got, "OK" if ok else "OUTSIDE"])
+	print("[AgentOffice] activity-bounds summary bad=%d / %d" % [bad, names.size()])
+
+
 func _log_debug_activity(agent: Agent, state: String, target: String) -> void:
 	var elapsed := (Time.get_ticks_msec() - _debug_activity_started_ms) / 1000.0
 	var desk := agent.desk
 	var away := target != "" and target != desk
+	var wp := target if target != "" else agent.current_waypoint
+	var expect := _activity_expected_kind(wp)
+	var got := _area_kind_at(agent.global_position)
+	var in_room := expect == "" or _room_kind_match(expect, got) or agent.is_at_destination() == false
+	# When settled on an amenity, require the agent to be inside the amenity room.
+	if expect != "" and agent.is_at_destination():
+		in_room = _room_kind_match(expect, got)
 	var entry := {
 		"t": snappedf(elapsed, 0.1),
 		"id": agent.agent_id,
@@ -1868,26 +1980,40 @@ func _log_debug_activity(agent: Agent, state: String, target: String) -> void:
 		"pos": [snappedf(agent.global_position.x, 0.1), snappedf(agent.global_position.y, 0.1)],
 		"nav": not agent.is_at_destination(),
 		"away": away,
+		"expect_room": expect,
+		"got_room": got,
+		"in_room": in_room,
 	}
 	_debug_activity_log.append(entry)
 	if away or state in ["IDLE", "COLLAB"]:
-		print("[AgentOffice] walk/state t=%.1f %s %s -> %s nav=%s" % [
-			elapsed, agent.agent_id, state, target if target != "" else agent.current_waypoint,
-			entry["nav"]])
+		print("[AgentOffice] walk/state t=%.1f %s %s -> %s nav=%s room=%s/%s %s" % [
+			elapsed, agent.agent_id, state, wp, entry["nav"], expect, got,
+			"OK" if in_room else "WRONG_ROOM"])
 
 
 func _flush_debug_activity() -> void:
 	var walks: Array = []
+	var wrong: Array = []
 	for e in _debug_activity_log:
 		if e.get("away", false):
 			walks.append(e)
-	print("[AgentOffice] debug-activity DONE entries=%d walks=%d" % [_debug_activity_log.size(), walks.size()])
+		if e.get("expect_room", "") != "" and e.get("nav") == false and not e.get("in_room", true):
+			wrong.append(e)
+	print("[AgentOffice] debug-activity DONE entries=%d walks=%d wrong_room=%d" % [
+		_debug_activity_log.size(), walks.size(), wrong.size()])
 	for e in walks:
 		print("[AgentOffice] WALK %s" % e)
+	for e in wrong:
+		print("[AgentOffice] WRONG_ROOM %s" % e)
+	_debug_dump_activity_bounds()
 	var out := OS.get_environment("HOME") + "/Documents/GitHub/_agent_extracts/godot_activity_60s.json"
 	var f := FileAccess.open(out, FileAccess.WRITE)
 	if f:
-		f.store_string(JSON.stringify({"entries": _debug_activity_log, "walks": walks}, "\t"))
+		f.store_string(JSON.stringify({
+			"entries": _debug_activity_log,
+			"walks": walks,
+			"wrong_room": wrong,
+		}, "\t"))
 		f.close()
 		print("[AgentOffice] wrote %s" % out)
 

@@ -1,8 +1,8 @@
 ## One autonomous agent in the office: a small chibi office worker.
 ##
 ## Movement: NavigationAgent2D path-following with RVO avoidance, a relaxed
-## stroll speed, smooth acceleration/deceleration, and a short "settle" slide
-## into the exact seat on arrival. Standing agents never re-path or jitter.
+## stroll speed, and smooth acceleration/deceleration. Arrival snaps only when
+## already within a tiny radius — no free-space tween that could cross walls.
 ##
 ## Look: drawn procedurally in _draw (outlined shapes, shaded shirt, hair
 ## styles, accessories, blinking eyes). Poses: walk cycle, idle breathing,
@@ -37,11 +37,16 @@ const BUBBLE_SECONDS := 3.0
 const BUBBLE_MAX_CHARS := 64
 const ACCEL := 240.0         ## px/s² for gentle starts and stops
 const SLOW_RADIUS := 56.0    ## start easing off this far from the target
-const SETTLE_TIME := 0.35    ## slide into the exact seat on arrival
+## Amenity seat/pose (yoga, sofa, foosball…) only if we landed this close.
+## Stuck arrivals mid-corridor must not strike a tree pose in the hallway.
+const SEAT_ARRIVE_MAX := 28.0
+const STUCK_NEAR_SEC := 3.0    ## give up quickly when already at the spot
+const STUCK_FAR_SEC := 14.0    ## wait longer while still crossing the campus
+const STUCK_FAR_DIST := 64.0   ## "still far" threshold for the patience above
 const OUTLINE := Color(0.15, 0.13, 0.19)
 const HEAD_R := 14.0
 ## How far the drawing drops when sitting, per seat type.
-const SIT_DROP := {"desk": 3.0, "chair": 6.0, "sofa": 9.0, "foosball": 0.0, "": 0.0}
+const SIT_DROP := {"desk": 3.0, "chair": 6.0, "sofa": 9.0, "foosball": 0.0, "yoga": 0.0, "meditate": 10.0, "": 0.0}
 
 const SKINS: Array[Color] = [Color("#ffdbbf"), Color("#f1c27d"), Color("#e0ac69"), Color("#c68642"), Color("#8d5524"), Color("#ffe0d0")]
 const HAIRS: Array[Color] = [Color("#3b2a20"), Color("#6d4c41"), Color("#b5651d"), Color("#e6c07b"), Color("#1c1c1c"), Color("#9e9e9e"), Color("#a83f2e"), Color("#5e3a8c")]
@@ -87,6 +92,7 @@ var _vel := Vector2.ZERO
 var _nav_active := false
 var _settling := false
 var _stuck_time := 0.0
+var _stuck_retries := 0
 var _last_pos := Vector2.ZERO
 var _target_pos := Vector2.ZERO
 var _pose_facing := "down"
@@ -218,7 +224,7 @@ func go_to_waypoint(marker_name: String, offset: Vector2 = Vector2.ZERO, instant
 	current_waypoint = marker_name
 	_pose_facing = str(marker.get_meta("facing", "down"))
 	var seat := str(marker.get_meta("seat", ""))
-	if offset.length() > 1.0 and seat in ["desk", "chair", "sofa"]:
+	if offset.length() > 1.0 and seat in ["desk", "chair", "sofa", "meditate"]:
 		seat = ""  # overflow spot next to a seat: stand
 	if instant:
 		global_position = target
@@ -242,6 +248,7 @@ func go_to_position(world_pos: Vector2) -> void:
 	_nav_active = true
 	_settling = false
 	_stuck_time = 0.0
+	_stuck_retries = 0
 
 
 ## Pops a speech (or thought) bubble above the head; auto-hides after 3s.
@@ -367,11 +374,20 @@ func _physics_process(delta: float) -> void:
 	else:
 		_on_velocity_computed(_vel)
 
-	# Stuck detection (e.g. boxed in at a busy spot): give up after 3s.
+	# Stuck detection (e.g. boxed in at a busy spot). Be patient while still
+	# far from the amenity so a jam in a spoke corridor doesn't end the walk
+	# early — that used to leave agents doing yoga in the hallway.
 	if global_position.distance_to(_last_pos) < 3.0 * delta:
 		_stuck_time += delta
-		if _stuck_time > 3.0:
-			_arrive()
+		var far := remaining > STUCK_FAR_DIST
+		var limit := STUCK_FAR_SEC if far else STUCK_NEAR_SEC
+		if _stuck_time > limit:
+			if far and _stuck_retries < 2:
+				_stuck_retries += 1
+				_stuck_time = 0.0
+				nav_agent.target_position = _target_pos  # nudge a fresh path
+			else:
+				_arrive()
 	else:
 		_stuck_time = 0.0
 	_last_pos = global_position
@@ -391,15 +407,17 @@ func _arrive() -> void:
 	velocity = Vector2.ZERO
 	_vel = Vector2.ZERO
 	nav_agent.velocity = Vector2.ZERO
-	# Slide gently into the exact spot (seats can sit just inside furniture).
+	# Never tween/teleport across free space — that ignored nav and walked
+	# through walls. Snap only when already within a tiny radius of the seat.
 	var gap := global_position.distance_to(_target_pos)
-	if gap > 0.5 and gap < 70.0:
-		_settling = true
-		var tw := create_tween()
-		tw.tween_property(self, "global_position", _target_pos, SETTLE_TIME * clampf(gap / 20.0, 0.4, 1.5)).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
-		tw.tween_callback(_finish_settle)
-	else:
-		_finish_settle()
+	if gap > 0.5 and gap < 10.0:
+		global_position = _target_pos
+		gap = 0.0
+	# Amenity poses only at the real spot. A stuck/partial arrival in a spoke
+	# corridor or team room must not yoga / meditate / sit foosball there.
+	if gap > SEAT_ARRIVE_MAX:
+		_pending_seat = ""
+	_finish_settle()
 
 
 func _finish_settle() -> void:
@@ -584,7 +602,7 @@ func _draw_front() -> void:
 	var t := _anim_time
 	var bob := _bob()
 	var side := _side()
-	var seated := _sit > 0.5 and _seat in ["chair", "sofa", "desk"]
+	var seated := _sit > 0.5 and _seat in ["chair", "sofa", "desk", "meditate"]
 	var phone := is_phone_out()
 	var skin: Color = _look.skin
 	var H := Vector2(side * 1.5, -44.0 + bob)
@@ -643,7 +661,11 @@ func _draw_front() -> void:
 	var sh := -28.0 + bob
 	var L := Vector2(-11, sh)
 	var R := Vector2(11, sh)
-	if _seat == "foosball" and _sit > 0.5:
+	if _seat == "yoga" and _sit > 0.5:
+		_draw_yoga_pose(H, L, R, sh, side, t, false)
+	elif _seat == "meditate" and _sit > 0.5:
+		_draw_meditate_pose(H, L, R, sh, side, t, false)
+	elif _seat == "foosball" and _sit > 0.5:
 		var w := sin(t * 14.0) * 2.0
 		var d := 1.0 if side >= 0.0 else -1.0
 		_arm(L, Vector2(-6 + d * 6, sh + 6), Vector2(d * 18, -21 + w))
@@ -816,7 +838,7 @@ func _draw_back() -> void:
 	var t := _anim_time
 	var bob := _bob()
 	var at_desk := _seat in ["desk", "foosball"] and _sit > 0.5
-	var seated := _sit > 0.5 and _seat != "foosball"
+	var seated := _sit > 0.5 and _seat not in ["foosball", "yoga"]
 	var skin: Color = _look.skin
 	var H := Vector2(0, -44.0 + bob)
 	var sh := -28.0 + bob
@@ -913,6 +935,10 @@ func _draw_back() -> void:
 		_arm(Vector2(-11, sh), Vector2(-14, sh + 8), Vector2(-7, sh + 2))
 		_arm(Vector2(11, sh), Vector2(14, sh + 8), Vector2(7, sh + 2))
 		_c.draw_circle(Vector2(0, sh - 2), 10.0, Color(0.55, 0.85, 1.0, 0.18))  # screen glow
+	elif _seat == "yoga" and _sit > 0.5:
+		_draw_yoga_pose(H, Vector2(-11, sh), Vector2(11, sh), sh, 0.0, t, true)
+	elif _seat == "meditate" and _sit > 0.5:
+		_draw_meditate_pose(H, Vector2(-11, sh), Vector2(11, sh), sh, 0.0, t, true)
 	elif state == "COLLAB" and seated:
 		var g := sin(t * 5.0)
 		_arm(Vector2(-11, sh), Vector2(-15, sh + 6), Vector2(-12, sh + 12))
@@ -954,6 +980,47 @@ func _draw_food_plate(from_back: bool) -> void:
 	# Cup
 	_c.draw_rect(Rect2(off.x + 5, off.y - 4, 4, 6), Color("#fff8e1"))
 	_c.draw_rect(Rect2(off.x + 5, off.y - 4, 4, 6), Color("#bcaaa4"), false, 1.0)
+
+
+
+## Yoga pose cycle: tree (~0-2.5s), downward dog (~2.5-5s), stretch (~5-7.5s).
+func _yoga_phase() -> int:
+	return int(fmod(_anim_time, 7.5) / 2.5)
+
+
+func _draw_yoga_pose(H: Vector2, L: Vector2, R: Vector2, sh: float, side: float, t: float, _back: bool) -> void:
+	var phase := _yoga_phase()
+	match phase:
+		0:  # tree — one foot on calf, arms up
+			_arm(L, Vector2(-8, sh - 2), Vector2(-4, H.y - 6))
+			_arm(R, Vector2(8, sh - 2), Vector2(4, H.y - 6))
+			# Hands together above head
+			_c.draw_circle(Vector2(0, H.y - 10), 3.0, _look.skin)
+		1:  # downward dog — lean forward, arms reach down/out
+			_arm(L, Vector2(-14, sh + 4), Vector2(-16, sh + 16))
+			_arm(R, Vector2(14, sh + 4), Vector2(16, sh + 16))
+		_:  # stretch — arms wide overhead
+			var wiggle := sin(t * 2.0) * 2.0
+			_arm(L, Vector2(-12, sh - 4), Vector2(-18 + wiggle, H.y - 4))
+			_arm(R, Vector2(12, sh - 4), Vector2(18 - wiggle, H.y - 4))
+
+
+func _draw_meditate_pose(H: Vector2, L: Vector2, R: Vector2, sh: float, side: float, t: float, _back: bool) -> void:
+	# Hands resting on knees / mudra near lap
+	_arm(L, Vector2(-12, sh + 8), Vector2(-8, sh + 16))
+	_arm(R, Vector2(12, sh + 8), Vector2(8, sh + 16))
+	# Floating zen particle / om bubble
+	var bob := sin(t * 2.2) * 4.0
+	var zen := Vector2(0, H.y - 18 + bob)
+	var a := 0.55 + 0.35 * sin(t * 3.0)
+	_c.draw_circle(zen, 7.0, Color(0.75, 0.55, 0.95, a * 0.35))
+	_c.draw_circle(zen, 4.5, Color(0.95, 0.85, 1.0, a * 0.7))
+	_c.draw_string(ThemeDB.fallback_font, zen + Vector2(-5, 3), "om", HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(0.45, 0.2, 0.55, a))
+	# Soft orbiting dots
+	for i in 3:
+		var ang := t * 1.4 + i * TAU / 3.0
+		var p := zen + Vector2(cos(ang), sin(ang)) * 12.0
+		_c.draw_circle(p, 1.6, Color(0.7, 0.9, 1.0, a * 0.8))
 
 
 func _draw_phone(p: Vector2, _back: bool) -> void:
