@@ -13,6 +13,12 @@
 extends Node2D
 
 const Iso := preload("res://Iso.gd")
+## Measured from Agent.gd procedural chibi (HEAD_R, head centre at y=-44 →
+## head-top ≈ -58) and AgentView scale (Iso.PEOPLE_SCALE). HireFireFx draws in
+## the same agents_root space as those scaled views, so medics/ambulance must
+## use these screen sizes — not the unscaled local paint numbers.
+const AGENT_HEAD_R_LOCAL := 14.0
+const AGENT_HEIGHT_LOCAL := 58.0
 
 signal finished(kind: String, agent_id: String)
 
@@ -258,8 +264,10 @@ func _process_ambulance(delta: float) -> void:
 			var u := clampf(_t / 2.2, 0.0, 1.0)
 			# Slow collapse to the floor where they stand.
 			_agent.view.rotation = lerp_angle(0.0, PI / 2.0, u * u)
-			_agent.view.scale.y = lerpf(1.0, 0.42, u)
-			_agent.view.position.y = lerpf(0.0, 10.0, u)
+			# Keep AgentView at Iso.PEOPLE_SCALE (was resetting scale.y to 1.0).
+			var ps := Iso.PEOPLE_SCALE
+			_agent.view.scale = Vector2(ps, lerpf(ps, ps * 0.42, u))
+			_agent.view.position.y = lerpf(0.0, 10.0 * ps, u)
 			_agent.view.modulate = Color(1, 1, 1, lerpf(1.0, 0.92, u))
 		if _t >= 2.2:
 			_phase = 1
@@ -527,75 +535,105 @@ func _draw_ambulance() -> void:
 	var amb_s := Iso.to_screen(_amb_world) - global_position
 	var agent_s := Iso.to_screen(_from_world) - global_position
 	var entr_s := Iso.to_screen(_amb_arrive) - global_position
+	# Screen-space agent size (same space as AgentView * PEOPLE_SCALE).
+	var ps := Iso.PEOPLE_SCALE
+	var aw := 2.0 * AGENT_HEAD_R_LOCAL * ps  # ~44.8 — agent width (head diameter)
+	var ah := AGENT_HEIGHT_LOCAL * ps         # ~92.8 — agent height (feet → head-top)
+	var hr := AGENT_HEAD_R_LOCAL * ps         # ~22.4 — agent head radius
 
 	# Collapsed agent silhouette while still visible in phase 0–2 (view handles rotation).
 	if _phase <= 2 and not _body_on_stretcher:
 		pass  # agent.view draws the body
 
-	# Ambulance body (big, readable).
+	# Ambulance: ~3.5 agents long, taller than an agent (vehicle next to people).
 	if _phase >= 1:
 		var ax := amb_s.x
 		var ay := amb_s.y
+		var amb_len := aw * 3.5                 # ~157
+		var body_h := ah * 0.78                 # chassis box height
+		var wheel_r := ah * 0.18                # ~17
+		var cab_h := ah * 0.95                  # cab roof above ground-ish
+		var half := amb_len * 0.5
+		var body_top := ay - (body_h - wheel_r * 0.35)
+		var body_bot := ay + wheel_r * 0.55
 		# Shadow
-		_draw_ellipse_fx(Vector2(ax, ay + 18), Vector2(48, 10), Color(0, 0, 0, 0.25))
+		_draw_ellipse_fx(Vector2(ax, ay + wheel_r * 1.1), Vector2(half * 0.92, wheel_r * 0.65), Color(0, 0, 0, 0.25))
 		# Chassis
-		draw_rect(Rect2(ax - 52, ay - 22, 104, 36), Color("#eceff1"))
-		draw_rect(Rect2(ax - 50, ay - 20, 100, 32), Color("#f5f5f5"))
-		# Cab
-		draw_rect(Rect2(ax + 18, ay - 28, 34, 28), Color("#e3f2fd"))
-		draw_rect(Rect2(ax + 22, ay - 24, 26, 14), Color("#90caf9"))
-		# Red stripe + cross
-		draw_rect(Rect2(ax - 48, ay - 6, 64, 10), Color("#e53935"))
-		draw_rect(Rect2(ax - 28, ay - 18, 8, 28), Color("#e53935"))
-		draw_rect(Rect2(ax - 36, ay - 8, 24, 8), Color("#e53935"))
+		draw_rect(Rect2(ax - half, body_top, amb_len, body_bot - body_top), Color("#eceff1"))
+		draw_rect(Rect2(ax - half + 3.0, body_top + 3.0, amb_len - 6.0, body_bot - body_top - 6.0), Color("#f5f5f5"))
+		# Cab (front) — roof clears agent height
+		var cab_w := aw * 1.15
+		var cab_top := ay - cab_h
+		draw_rect(Rect2(ax + half - cab_w - 4.0, cab_top, cab_w, body_bot - cab_top - wheel_r * 0.2), Color("#e3f2fd"))
+		draw_rect(Rect2(ax + half - cab_w + 4.0, cab_top + ah * 0.12, cab_w * 0.72, ah * 0.28), Color("#90caf9"))
+		# Red stripe + cross on box
+		var cross_cx := ax - half * 0.35
+		var cross_cy := (body_top + body_bot) * 0.5
+		draw_rect(Rect2(ax - half + 6.0, cross_cy - ah * 0.06, amb_len * 0.55, ah * 0.12), Color("#e53935"))
+		draw_rect(Rect2(cross_cx - ah * 0.05, body_top + ah * 0.08, ah * 0.1, body_h * 0.7), Color("#e53935"))
+		draw_rect(Rect2(cross_cx - ah * 0.16, cross_cy - ah * 0.05, ah * 0.32, ah * 0.1), Color("#e53935"))
 		# Wheels
-		draw_circle(Vector2(ax - 30, ay + 16), 8.0, Color("#212121"))
-		draw_circle(Vector2(ax + 28, ay + 16), 8.0, Color("#212121"))
-		draw_circle(Vector2(ax - 30, ay + 16), 3.5, Color("#90a4ae"))
-		draw_circle(Vector2(ax + 28, ay + 16), 3.5, Color("#90a4ae"))
-		# Flashing red / blue lights
+		var wy := ay + wheel_r * 0.15
+		draw_circle(Vector2(ax - half * 0.55, wy), wheel_r, Color("#212121"))
+		draw_circle(Vector2(ax + half * 0.55, wy), wheel_r, Color("#212121"))
+		draw_circle(Vector2(ax - half * 0.55, wy), wheel_r * 0.42, Color("#90a4ae"))
+		draw_circle(Vector2(ax + half * 0.55, wy), wheel_r * 0.42, Color("#90a4ae"))
+		# Flashing red / blue lights on roof
 		var flash_on := fmod(_amb_flash, 0.35) < 0.18
 		var left_c := Color("#e53935") if flash_on else Color("#1565c0")
 		var right_c := Color("#1565c0") if flash_on else Color("#e53935")
-		draw_circle(Vector2(ax - 18, ay - 28), 5.5, left_c)
-		draw_circle(Vector2(ax + 6, ay - 28), 5.5, right_c)
-		draw_circle(Vector2(ax - 18, ay - 28), 2.5, Color(1, 1, 1, 0.85))
-		draw_circle(Vector2(ax + 6, ay - 28), 2.5, Color(1, 1, 1, 0.85))
+		var light_y := cab_top - ah * 0.02
+		var light_r := ah * 0.07
+		draw_circle(Vector2(ax - aw * 0.35, light_y), light_r, left_c)
+		draw_circle(Vector2(ax + aw * 0.15, light_y), light_r, right_c)
+		draw_circle(Vector2(ax - aw * 0.35, light_y), light_r * 0.45, Color(1, 1, 1, 0.85))
+		draw_circle(Vector2(ax + aw * 0.15, light_y), light_r * 0.45, Color(1, 1, 1, 0.85))
 		# Light wash on ground
-		draw_circle(Vector2(ax - 18, ay + 8), 16.0, Color(left_c.r, left_c.g, left_c.b, 0.18))
-		draw_circle(Vector2(ax + 6, ay + 8), 16.0, Color(right_c.r, right_c.g, right_c.b, 0.18))
+		draw_circle(Vector2(ax - aw * 0.35, ay + wheel_r * 0.4), aw * 0.55, Color(left_c.r, left_c.g, left_c.b, 0.18))
+		draw_circle(Vector2(ax + aw * 0.15, ay + wheel_r * 0.4), aw * 0.55, Color(right_c.r, right_c.g, right_c.b, 0.18))
 		# Optional siren icon (♪) bobbing above
 		if _phase >= 1 and _phase <= 6:
-			var sy := ay - 48 - sin(_siren_bob) * 3.0
-			draw_circle(Vector2(ax - 6, sy), 9.0, Color("#fff59d"))
-			draw_string(ThemeDB.fallback_font, Vector2(ax - 11, sy + 4), "♪", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("#f57f17"))
+			var sy := light_y - ah * 0.22 - sin(_siren_bob) * 3.0
+			var sr := ah * 0.1
+			draw_circle(Vector2(ax - 6.0, sy), sr, Color("#fff59d"))
+			draw_string(ThemeDB.fallback_font, Vector2(ax - 11.0, sy + 4.0), "♪", HORIZONTAL_ALIGNMENT_LEFT, -1, int(12.0 * ps), Color("#f57f17"))
 
-	# Medics + stretcher on the path (phases 2–5).
+	# Medics + stretcher on the path (phases 2–5) — medics match agent size.
 	if _phase >= 2 and _phase <= 5:
 		var path_w := _amb_arrive.lerp(_from_world, _medic_u)
-		var ps := Iso.to_screen(path_w) - global_position
-		# Stretcher
-		draw_rect(Rect2(ps.x - 28, ps.y - 4, 56, 12), Color("#cfd8dc"))
-		draw_rect(Rect2(ps.x - 26, ps.y - 2, 52, 8), Color("#eceff1"))
-		draw_rect(Rect2(ps.x - 24, ps.y + 6, 6, 6), Color("#546e7a"))  # legs
-		draw_rect(Rect2(ps.x + 18, ps.y + 6, 6, 6), Color("#546e7a"))
+		var path_s := Iso.to_screen(path_w) - global_position
+		# Stretcher ≈ agent length when laid flat
+		var st_len := ah * 1.05
+		var st_h := ah * 0.14
+		draw_rect(Rect2(path_s.x - st_len * 0.5, path_s.y - st_h * 0.35, st_len, st_h), Color("#cfd8dc"))
+		draw_rect(Rect2(path_s.x - st_len * 0.5 + 3.0, path_s.y - st_h * 0.15, st_len - 6.0, st_h * 0.7), Color("#eceff1"))
+		draw_rect(Rect2(path_s.x - st_len * 0.42, path_s.y + st_h * 0.55, ah * 0.08, ah * 0.08), Color("#546e7a"))
+		draw_rect(Rect2(path_s.x + st_len * 0.34, path_s.y + st_h * 0.55, ah * 0.08, ah * 0.08), Color("#546e7a"))
 		if _body_on_stretcher:
-			# Body bundle on stretcher
-			draw_rect(Rect2(ps.x - 16, ps.y - 8, 32, 10), Color("#90a4ae"))
-			draw_circle(Vector2(ps.x + 14, ps.y - 6), 5.0, Color("#ffe0b2"))
-		# Two medics
+			# Body bundle on stretcher (agent-scale)
+			draw_rect(Rect2(path_s.x - ah * 0.28, path_s.y - st_h * 0.85, ah * 0.55, ah * 0.16), Color("#90a4ae"))
+			draw_circle(Vector2(path_s.x + ah * 0.22, path_s.y - st_h * 0.55), hr * 0.55, Color("#ffe0b2"))
+		# Two medics — same proportions as agents (head r, torso, legs).
 		for i in 2:
 			var side := -1.0 if i == 0 else 1.0
-			var mp := ps + Vector2(side * 34.0, 2.0)
-			# Walk bob
-			var bob := sin(_t * 10.0 + i) * 2.0 if _phase in [2, 4] else 0.0
+			var mp := path_s + Vector2(side * (st_len * 0.55 + aw * 0.15), 0.0)
+			var bob := sin(_t * 10.0 + i) * (2.0 * ps) if _phase in [2, 4] else 0.0
 			mp.y += bob
-			draw_circle(mp + Vector2(0, -16), 6.5, Color("#ffccbc"))  # head
-			draw_rect(Rect2(mp.x - 7, mp.y - 10, 14, 18), Color("#e53935"))  # coat
-			draw_rect(Rect2(mp.x - 2, mp.y - 4, 4, 8), Color.WHITE)  # cross
-			draw_rect(Rect2(mp.x - 5, mp.y, 10, 3), Color.WHITE)
-			draw_rect(Rect2(mp.x - 6, mp.y + 8, 5, 8), Color("#37474f"))  # legs
-			draw_rect(Rect2(mp.x + 1, mp.y + 8, 5, 8), Color("#37474f"))
+			var head_c := mp + Vector2(0.0, -44.0 * ps)
+			draw_circle(head_c, hr, Color("#ffccbc"))  # head (= agent HEAD_R * ps)
+			# Coat / torso (~ Agent torso 22×20 local)
+			var tw := 22.0 * ps
+			var th := 20.0 * ps
+			var ty := mp.y - 31.0 * ps
+			draw_rect(Rect2(mp.x - tw * 0.5, ty, tw, th), Color("#e53935"))
+			# Cross on coat
+			draw_rect(Rect2(mp.x - 2.0 * ps, ty + th * 0.25, 4.0 * ps, th * 0.5), Color.WHITE)
+			draw_rect(Rect2(mp.x - tw * 0.28, ty + th * 0.42, tw * 0.56, 3.0 * ps), Color.WHITE)
+			# Legs down toward feet
+			var leg_w := 5.0 * ps
+			var leg_h := 12.0 * ps
+			draw_rect(Rect2(mp.x - tw * 0.35, mp.y - 5.0 * ps, leg_w, leg_h), Color("#37474f"))
+			draw_rect(Rect2(mp.x + tw * 0.12, mp.y - 5.0 * ps, leg_w, leg_h), Color("#37474f"))
 
 
 func _draw_stomp() -> void:
