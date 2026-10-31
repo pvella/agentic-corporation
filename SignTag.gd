@@ -14,7 +14,7 @@ var _font: Font
 func setup(s: Dictionary, anchor: Vector2) -> void:
 	info = s
 	position = anchor
-	z_index = 30
+	z_index = 80
 	_font = ThemeDB.fallback_font
 	var style := str(s.get("style", "info"))
 	if style == "info":

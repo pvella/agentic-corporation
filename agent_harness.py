@@ -2575,7 +2575,12 @@ class ConnectivityMonitor:
         self.reason: str = "Checking Claude…"
         self._last_check: float = 0.0
         self._lock = asyncio.Lock()
-        self._prev: str | None = None
+        # Last *stable* ok/down only — never "checking". Banner owns steady connectivity;
+        # notice board only gets real down / recover flips (debounced).
+        self._prev_stable: str | None = None
+        self._last_notice_at: float = 0.0
+
+    NOTICE_DEBOUNCE_S = 8.0
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -2601,27 +2606,54 @@ class ConnectivityMonitor:
         )
 
     def broadcast(self, *, notice: bool = False) -> None:
+        """Emit CONNECTIVITY always. Notice board: never spam 'Claude connected'.
+        At most one notice on a real transition to down, and one on recover from
+        down→ok. Steady ok / checking / status polls produce zero notices.
+        """
         self.hub.emit(self.payload())
-        if notice and self.claude in ("ok", "down") and self._prev != self.claude:
-            if self.claude == "ok":
-                self.hub.emit({
-                    "type": "OFFICE_NOTICE",
-                    "kind": "claude_ok",
-                    "title": "Claude connected",
-                    "detail": self.reason or "Claude Code is reachable",
-                    "icon": "✔",
-                    "color": "#81c784",
-                })
-            elif self.claude == "down":
-                self.hub.emit({
-                    "type": "OFFICE_NOTICE",
-                    "kind": "claude_down",
-                    "title": "Claude disconnected",
-                    "detail": self.reason or "Claude Code unreachable",
-                    "icon": "⚠",
-                    "color": "#e57373",
-                })
-        self._prev = self.claude
+        if self.claude == "checking":
+            # Do not record checking as stable — that made every poll look like a
+            # fresh ok flip and flooded the notice board with "Claude connected".
+            return
+        if self.claude not in ("ok", "down"):
+            return
+        prev = self._prev_stable
+        if not notice:
+            # Status / cache path — update stable cursor without posting.
+            self._prev_stable = self.claude
+            return
+        if prev == self.claude:
+            return
+        # First stable reading after boot: banner only, no notice.
+        if prev is None:
+            self._prev_stable = self.claude
+            return
+        now = time.monotonic()
+        if self._last_notice_at and (now - self._last_notice_at) < self.NOTICE_DEBOUNCE_S:
+            self._prev_stable = self.claude
+            return
+        if self.claude == "down" and prev != "down":
+            self.hub.emit({
+                "type": "OFFICE_NOTICE",
+                "kind": "claude_down",
+                "title": "Claude disconnected",
+                "detail": self.reason or "Claude Code unreachable",
+                "icon": "⚠",
+                "color": "#e57373",
+            })
+            self._last_notice_at = now
+        elif self.claude == "ok" and prev == "down":
+            # Recover only — never a steady-state "Claude connected" notice.
+            self.hub.emit({
+                "type": "OFFICE_NOTICE",
+                "kind": "claude_recovered",
+                "title": "Claude reconnected",
+                "detail": self.reason or "Claude Code is reachable again",
+                "icon": "✔",
+                "color": "#81c784",
+            })
+            self._last_notice_at = now
+        self._prev_stable = self.claude
 
     def note_failure(self, detail: str) -> None:
         detail = clean_line(detail or "Claude call failed", 200)

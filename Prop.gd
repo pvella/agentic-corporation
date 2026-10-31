@@ -87,11 +87,11 @@ func _draw() -> void:
 		"menu": _draw_menu()
 		"microwave": _draw_microwave()
 		"bin": _draw_bin()
-		"yoga_mat": _iso_yoga_mat()
-		"cushion": _iso_cushion()
-		"rug": _iso_rug()
-		"fountain": _iso_fountain()
-		"lamp": _iso_lamp()
+		"yoga_mat": _draw_yoga_mat()
+		"cushion": _draw_cushion()
+		"rug": _draw_rug()
+		"fountain": _draw_fountain()
+		"lamp": _draw_lamp()
 		"bookcase": _draw_bookcase()
 		"filing": _draw_filing()
 		"pinboard": _draw_pinboard()
@@ -519,11 +519,11 @@ func _draw_iso() -> void:
 		"foosball": _iso_foosball()
 		"table": _iso_table()
 		"plant": _iso_plant()
-		"yoga_mat": _draw_yoga_mat()
-		"cushion": _draw_cushion()
-		"rug": _draw_rug()
-		"fountain": _draw_fountain()
-		"lamp": _draw_lamp()
+		"yoga_mat": _iso_yoga_mat()
+		"cushion": _iso_cushion()
+		"rug": _iso_rug()
+		"fountain": _iso_fountain()
+		"lamp": _iso_lamp()
 		"reception": _iso_reception()
 		"bench": _iso_bench()
 		"servers": _iso_servers()
@@ -1190,13 +1190,23 @@ func _draw_lamp() -> void:
 
 
 func _iso_rug() -> void:
-	var tint := Color("#a1887f")
-	_box(rect, 0, 2, tint.darkened(0.1), tint, tint.lightened(0.05), false)
+	# Flat floor-plane only. Raised SE faces on a big rug read as grey-brown
+	# rectangles sitting on the grass past the room walls.
+	var tint := Color.from_string(str(data.get("color", "#a1887f")), Color("#a1887f"))
+	var r := clip if clip.has_area() else rect
+	_plane_top(0.0)
+	draw_rect(r, Color(tint.darkened(0.08), 0.55))
+	draw_rect(r.grow(-8), Color(tint.lightened(0.05), 0.4))
+	_plane_reset()
 
 
 func _iso_yoga_mat() -> void:
 	var tint := Color.from_string(str(data.get("tint", "#81c784")), Color("#81c784"))
-	_box(rect, 0, 3, tint.darkened(0.15), tint, tint.lightened(0.1), false)
+	var r := clip if clip.has_area() else rect
+	_plane_top(0.0)
+	draw_rect(r, tint.darkened(0.12))
+	draw_rect(r.grow(-3), tint)
+	_plane_reset()
 
 
 func _iso_cushion() -> void:

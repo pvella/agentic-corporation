@@ -152,7 +152,7 @@ var _follow_agent: String = ""
 @onready var waypoints_root: Node2D = $Waypoints
 @onready var props_root: Node2D = $World/Props
 @onready var agents_root: Node2D = $World/Agents
-@onready var signs_root: Node2D = $Signs
+@onready var signs_root: Node = $Signs  ## CanvasLayer so placards draw above Control speech bubbles
 @onready var drawer: CanvasLayer = $TerminalDrawer
 @onready var status_dot: Panel = $HUD/TopBar/Margin/HBox/StatusDot
 @onready var status_label: Label = $HUD/TopBar/Margin/HBox/StatusLabel
@@ -1808,9 +1808,15 @@ func handle_message(msg: Dictionary) -> void:
 				elif _claude_state == "ok":
 					_set_status("Claude connected", Color("#43a047"))
 		"OFFICE_NOTICE":
-			_notice(str(msg.get("kind", "info")), str(msg.get("title", "Notice")),
-				str(msg.get("detail", "")),
-				{"icon": str(msg.get("icon", "•")), "color": str(msg.get("color", "#7f848e"))})
+			var nkind := str(msg.get("kind", "info"))
+			var ntitle := str(msg.get("title", "Notice"))
+			# Connectivity lives on the banner — drop legacy "Claude connected" spam.
+			if nkind == "claude_ok" or ntitle == "Claude connected":
+				pass
+			else:
+				_notice(nkind, ntitle,
+					str(msg.get("detail", "")),
+					{"icon": str(msg.get("icon", "•")), "color": str(msg.get("color", "#7f848e"))})
 		var other:
 			push_warning("Unknown message type '%s'" % other)
 

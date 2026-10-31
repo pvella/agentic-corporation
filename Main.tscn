@@ -41,7 +41,9 @@ y_sort_enabled = true
 [node name="Agents" type="Node2D" parent="World"]
 y_sort_enabled = true
 
-[node name="Signs" type="Node2D" parent="."]
+[node name="Signs" type="CanvasLayer" parent="."]
+follow_viewport_enabled = true
+layer = 2
 
 [node name="HUD" type="CanvasLayer" parent="."]
 layer = 5

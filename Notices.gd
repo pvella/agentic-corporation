@@ -41,6 +41,36 @@ func load_from_disk() -> void:
 			if item is Dictionary:
 				events.append(item)
 	_trim()
+	purge_connectivity_spam()
+
+
+## Drop legacy "Claude connected" spam and collapse duplicate disconnect notices.
+## Steady connectivity belongs on the banner only (PR #18).
+func purge_connectivity_spam() -> void:
+	var kept: Array = []
+	var last_down_key := ""
+	var dirty := false
+	for e in events:
+		if not (e is Dictionary):
+			continue
+		var kind := str(e.get("kind", ""))
+		var title := str(e.get("title", ""))
+		if kind == "claude_ok" or title == "Claude connected":
+			dirty = true
+			continue
+		if kind == "claude_down" or title == "Claude disconnected":
+			var key := "%s|%s" % [title, str(e.get("detail", ""))]
+			if key == last_down_key:
+				dirty = true
+				continue
+			last_down_key = key
+		else:
+			last_down_key = ""
+		kept.append(e)
+	if dirty or kept.size() != events.size():
+		events = kept
+		save_to_disk()
+		changed.emit()
 
 
 func save_to_disk() -> void:

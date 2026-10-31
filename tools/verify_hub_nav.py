@@ -7,6 +7,8 @@ Mirrors Office.gd hub geometry (including `_fit_satellite_ring`). Asserts:
   3) every simulated room↔room path has no segment intersecting a wall rect
   4) amenity spots + room signs/labels sit inside their rooms
   5) headless idle grid reach: hub → canteen seat and hub → rec mat
+  6) no floor / rug / wall / path footprint lies on the grass outside a
+     room or corridor polygon (catches leftover patches after ring moves)
 Non-zero exit on any failure.
 """
 from __future__ import annotations
@@ -650,7 +652,244 @@ def verify_bank_safe(rooms: list[dict], cfg: dict) -> int:
     print("OK: bank safe world footprint inside Executive room")
     return 0
 
+
+def point_in_rect(p, r: Rect, tol: float = 0.0) -> bool:
+    return (
+        r.x - tol <= p[0] <= r.end_x + tol
+        and r.y - tol <= p[1] <= r.end_y + tol
+    )
+
+
+def rect_inside(inner: Rect, outer: Rect, tol: float = 1.0) -> bool:
+    return (
+        outer.x - tol <= inner.x
+        and inner.end_x <= outer.end_x + tol
+        and outer.y - tol <= inner.y
+        and inner.end_y <= outer.end_y + tol
+    )
+
+
+def dist_point_segment(p, a, b) -> float:
+    ax, ay = a
+    bx, by = b
+    px, py = p
+    abx, aby = bx - ax, by - ay
+    apx, apy = px - ax, py - ay
+    ab2 = abx * abx + aby * aby
+    if ab2 < 1e-9:
+        return math.hypot(apx, apy)
+    t = max(0.0, min(1.0, (apx * abx + apy * aby) / ab2))
+    return math.hypot(px - (ax + t * abx), py - (ay + t * aby))
+
+
+def point_in_spoke(p, a, b, half_w: float) -> bool:
+    return dist_point_segment(p, a, b) <= half_w + 1e-6
+
+
+def point_in_campus(p, rooms: list[dict], spokes: list[dict], corridor_w: float) -> bool:
+    """True if p is inside a room (incl. exterior wall fringe) or a spoke strip."""
+    for rm in rooms:
+        if point_in_rect(p, rm["rect"], tol=EXT_WALL + 2.0):
+            return True
+    half = corridor_w * 0.5 + EXT_WALL
+    for sp in spokes:
+        # Extend ends slightly into rooms (matches drawn / nav spoke).
+        ax, ay = sp["from"]
+        bx, by = sp["to"]
+        dx, dy = bx - ax, by - ay
+        ln = math.hypot(dx, dy) or 1.0
+        ux, uy = dx / ln, dy / ln
+        ext = EXT_WALL + 10.0
+        a2 = (ax - ux * ext, ay - uy * ext)
+        b2 = (bx + ux * ext, by + uy * ext)
+        if point_in_spoke(p, a2, b2, half):
+            return True
+    return False
+
+
+def hub_zone_rects(hub: Rect):
+    pad = 56.0
+    zone_w = (hub.w - pad * 4.0) / 3.0
+    zone_h = hub.h * 0.70
+    zone_y = hub.y + (hub.h - zone_h) * 0.5
+    break_r = Rect(hub.x + pad, zone_y, zone_w, zone_h)
+    canteen_r = Rect(break_r.end_x + pad, zone_y, zone_w, zone_h)
+    rec_r = Rect(canteen_r.end_x + pad, zone_y, zone_w, zone_h)
+    return break_r, canteen_r, rec_r
+
+
+def verify_no_outside_footprints(rooms: list[dict], walls: list[Rect], spokes: list[dict], corridor_w: float) -> int:
+    """Fail if floor zones, rugs, walls or paths sit on the grass outside rooms/corridors."""
+    hub = next(r for r in rooms if r["id"] == "hub")
+    hub_r: Rect = hub["rect"]
+    break_r, canteen_r, rec_r = hub_zone_rects(hub_r)
+    bad = 0
+
+    # Hub zone floors must stay inside the rectangular hub (no grass spill).
+    for name, zr in (("break", break_r), ("canteen", canteen_r), ("rec", rec_r)):
+        if not rect_inside(zr, hub_r, tol=0.5):
+            bad += 1
+            print(f"  floor_zone_outside_hub {name} rect=({zr.x:.1f},{zr.y:.1f},{zr.w:.1f}x{zr.h:.1f})")
+        for corner in (
+            (zr.x, zr.y),
+            (zr.end_x, zr.y),
+            (zr.x, zr.end_y),
+            (zr.end_x, zr.end_y),
+        ):
+            if not point_in_campus(corner, rooms, spokes, corridor_w):
+                bad += 1
+                print(f"  floor_corner_on_grass {name} {corner}")
+
+    # Soft rugs painted in hub zones / sample sat NW pads must stay on campus.
+    rug_samples = []
+    # Rec rug (mirrors Office._build_rec)
+    m = 16.0
+    rec_rug = Rect(rec_r.x + m, rec_r.y + 70, rec_r.w - m * 2.0, rec_r.h - 120)
+    rug_samples.append(("rec_rug", rec_rug, hub_r))
+    # Per-satellite: a 1/4 inset floor sample (catches old hard-coded footprints).
+    for rm in rooms:
+        if rm["id"] == "hub":
+            continue
+        rr: Rect = rm["rect"]
+        sample = Rect(rr.x + 20, rr.y + 20, max(40.0, rr.w - 40), max(40.0, rr.h - 40))
+        rug_samples.append((f"{rm['id']}_floor", sample, rr))
+
+    for name, rug, parent in rug_samples:
+        if rug.w <= 0 or rug.h <= 0:
+            continue
+        if not rect_inside(rug, parent, tol=2.0):
+            bad += 1
+            print(f"  rug_outside_room {name}")
+        for corner in (
+            (rug.x, rug.y),
+            (rug.end_x, rug.y),
+            (rug.x, rug.end_y),
+            (rug.end_x, rug.end_y),
+            rug.center(),
+        ):
+            if not point_in_campus(corner, rooms, spokes, corridor_w):
+                bad += 1
+                print(f"  rug_corner_on_grass {name} {corner}")
+
+    # Wall segment centres must sit on a room perimeter / campus (no free-standing grass walls).
+    for i, w in enumerate(walls):
+        cx, cy = w.center()
+        if point_in_campus((cx, cy), rooms, spokes, corridor_w):
+            continue
+        # Allow hub inner dividers (already inside hub).
+        bad += 1
+        print(f"  wall_on_grass #{i} center=({cx:.1f},{cy:.1f}) size=({w.w:.1f}x{w.h:.1f})")
+
+    # Spoke midpoints and door ends must be on campus (path not ending in grass).
+    for sp in spokes:
+        for label, pt in (("from", sp["from"]), ("to", sp["to"]),
+                          ("mid", ((sp["from"][0] + sp["to"][0]) * 0.5,
+                                   (sp["from"][1] + sp["to"][1]) * 0.5))):
+            if not point_in_campus(pt, rooms, spokes, corridor_w):
+                bad += 1
+                print(f"  path_on_grass {sp['id']}.{label} {pt}")
+
+    print(f"outside_footprints_bad={bad}")
+    if bad:
+        print("FAIL: floor/rug/wall/path footprint on grass outside room or corridor")
+        return bad
+    print("OK: no floor/rug/wall/path footprints outside room or corridor polygons")
+    return 0
+
+
+
+
+
+
+def verify_hub_zone_no_plank_floor() -> int:
+    """Break/Canteen/Rec must not go through _draw_floor (zen→wood planks become
+    dark diagonals / grey-brown patches on the grass under iso floor_xf)."""
+    office = Path(__file__).resolve().parents[1] / "Office.gd"
+    src = office.read_text()
+    bad = 0
+    if "func _draw_hub_zone_overlay" not in src:
+        bad += 1
+        print("  missing _draw_hub_zone_overlay")
+    if 'if a.kind in ["break", "canteen", "rec"]:' not in src:
+        bad += 1
+        print("  hub zones not skipped in floor draw loops")
+    # zen must be listed in a textured arm, not only the wood-plank default
+    match = src.find('match str(a.get("theme"')
+    default = src.find("\n\t\t_:", match)
+    if match < 0 or default < 0:
+        # Fallback: just require zen mentioned near tile/lobby arm
+        if '"zen"' not in src[src.find("func _draw_floor"):src.find("func _draw_hub")]:
+            bad += 1
+            print("  theme zen missing from _draw_floor non-default arms")
+    else:
+        arms = src[match:default]
+        if '"zen"' not in arms:
+            bad += 1
+            print("  theme zen missing from non-default _draw_floor arms")
+    if 'draw_rect(f.rect as Rect2, Color("#b3aa99"))' not in src and 'draw_rect(f.rect, Color("#b3aa99"))' not in src:
+        bad += 1
+        print("  base pad exact-footprint draw missing")
+    if "draw_rect(f.rect.grow(EXT_WALL" in src or "draw_rect((f.rect as Rect2).grow(EXT_WALL" in src:
+        bad += 1
+        print("  base pad still grows EXT_WALL (grass spill)")
+    print(f"hub_zone_floor_draw_bad={bad}")
+    if bad:
+        print("FAIL: hub zone floor draw can leave grass patches / diagonals")
+        return bad
+    print("OK: hub zones use overlay; no EXT_WALL base-pad spill")
+    return 0
+
+def verify_prop_iso_draw_routing() -> int:
+    """Rugs/cushions/lamps in iso must use _iso_* — _draw_* paints world AABBs
+    in screen space and leaves grey-brown rectangles on the grass."""
+    prop = Path(__file__).resolve().parents[1] / "Prop.gd"
+    src = prop.read_text()
+    start = src.find("func _draw_iso() -> void:")
+    if start < 0:
+        print("FAIL: Prop._draw_iso missing")
+        return 1
+    end = src.find("\nfunc ", start + 10)
+    block = src[start:end]
+    bad = 0
+    for kind, good in (
+        ("rug", "_iso_rug()"),
+        ("yoga_mat", "_iso_yoga_mat()"),
+        ("cushion", "_iso_cushion()"),
+        ("fountain", "_iso_fountain()"),
+        ("lamp", "_iso_lamp()"),
+    ):
+        needle = '"%s": %s' % (kind, good)
+        if needle not in block:
+            bad += 1
+            print("  prop_iso_route_bad kind=%s expected=%s" % (kind, good))
+            for line in block.splitlines():
+                if '"%s"' % kind in line:
+                    print("    found: %s" % line.strip())
+    start2 = src.find("func _draw() -> void:")
+    end2 = src.find("\nfunc ", start2 + 10)
+    block2 = src[start2:end2]
+    for kind, bad_fn in (
+        ("rug", "_iso_rug()"),
+        ("yoga_mat", "_iso_yoga_mat()"),
+        ("cushion", "_iso_cushion()"),
+        ("fountain", "_iso_fountain()"),
+        ("lamp", "_iso_lamp()"),
+    ):
+        needle = '"%s": %s' % (kind, bad_fn)
+        if needle in block2:
+            bad += 1
+            print("  prop_topdown_calls_iso kind=%s" % kind)
+    print("prop_iso_route_bad=%d" % bad)
+    if bad:
+        print("FAIL: Prop.gd iso/top-down floor-prop draw routing is swapped")
+        return bad
+    print("OK: Prop.gd iso floor props use _iso_* (no grass AABB spills)")
+    return 0
+
+
 def main() -> int:
+    if verify_prop_iso_draw_routing():
+        return 1
     cfg = json.loads((ROOT / "office.json").read_text())
     rooms, walls, spokes, door_w, corridor_w, signs, ring = build(cfg)
     hub = next(r for r in rooms if r["id"] == "hub")
@@ -800,6 +1039,11 @@ def main() -> int:
         print("FAIL: idle agent cannot reach canteen and/or rec room in headless sim")
         return 1
     print("OK: headless idle sim reaches canteen and rec room")
+
+    if verify_hub_zone_no_plank_floor():
+        return 1
+    if verify_no_outside_footprints(rooms, walls, spokes, corridor_w):
+        return 1
 
     if verify_bank_safe(rooms, cfg):
         return 1

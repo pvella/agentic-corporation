@@ -3,7 +3,7 @@
 ## rugs, walls, signs). Furniture that agents can stand behind is drawn by
 ## y-sorted Prop nodes that Main creates from `props`.
 ##
-## Layout: hexagonal hub-and-spoke campus. The centre hub holds the Break Room,
+## Layout: hub-and-spoke campus. The centre hub holds the Break Room,
 ## Canteen and Rec Room as open zones. Department offices plus the Meeting Room
 ## and Server Room sit as satellites on an elliptical (landscape / ~16:9) ring,
 ## each joined to the hub by a short corridor. The Executive (Chief of Staff)
@@ -198,7 +198,7 @@ func build(cfg: Dictionary) -> void:
 	ring_ry = fitted.y
 
 	# --- Build hub zones (Break | Canteen | Rec), open to each other ----------
-	# Inset so zone rects stay inside the inscribed hex (avoid corner spill).
+	# Inset zones from hub walls; hub floor is rectangular (matches perimeter walls).
 	var pad := 56.0
 	var zone_w := (hub_size.x - pad * 4.0) / 3.0
 	var zone_h := hub_size.y * 0.70
@@ -452,7 +452,10 @@ func _diorama_desks(room: Dictionary, cell: Rect2, opts: Dictionary = {}) -> Dic
 	var origin_y := cell.position.y + top
 	var rug_color := str(opts.get("rug", "#4fc3f7"))
 	var rug := Rect2(origin_x - 10, origin_y - 8, cluster_w + 20, rows * cell_h + 36)
-	_prop("rug", rug, {"set": "cozy", "color": rug_color})
+	# Keep rugs inside the room — never spill a brown/grey patch onto the grass.
+	rug = rug.intersection(cell.grow(-18.0))
+	if rug.has_area():
+		_prop("rug", rug, {"set": "cozy", "color": rug_color})
 	for i in desks:
 		var c := i % cols
 		var row := int(i / cols)
@@ -632,7 +635,7 @@ func _desk_grid(room: Dictionary, origin: Vector2) -> void:
 		row_x[row] = cell.x + cell_w
 
 func _build_break(cell: Dictionary, r: Rect2) -> void:
-	# Furniture + waypoints derived from the live zone rect (hex hub or corridor cell),
+	# Furniture + waypoints derived from the live zone rect (hub zone or corridor cell),
 	# never from old absolute corridor-map coordinates.
 	areas.append({"kind": "break", "rect": r, "theme": "tile", "name": cell.name})
 	signs.append({"room_id": "", "name": str(cell.name), "rect": _sign_rect(r, str(cell.name)), "color": Color("#6f8fa8"), "clickable": false})
@@ -760,8 +763,9 @@ func _build_rec(cell: Dictionary, r: Rect2) -> void:
 	var p := r.position
 	var e := r.end
 	var m := 16.0
-	var rug := Rect2(p.x + m, p.y + 70, r.size.x - m * 2.0, r.size.y - 120)
-	_prop("rug", rug, {"sort_y": p.y + 72.0})
+	var rug := Rect2(p.x + m, p.y + 70, r.size.x - m * 2.0, r.size.y - 120).intersection(r.grow(-4.0))
+	if rug.has_area():
+		_prop("rug", rug, {"sort_y": rug.position.y + 2.0})
 	_prop("lamp", Rect2(p.x + m, p.y + 48, 22, 36), {"set": "rec"})
 	_prop("lamp", Rect2(e.x - m - 22, p.y + 48, 22, 36), {"set": "rec"})
 	_prop("fountain", Rect2(r.get_center().x - 28, p.y + 40, 56, 48), {"set": "rec"})
@@ -799,7 +803,9 @@ func _build_meeting(cell: Dictionary, r: Rect2) -> void:
 	var tw := per_side * 84.0 + 20.0
 	var table := Rect2(r.position.x + r.size.x * 0.5 - tw * 0.5, r.position.y + maxf(120.0, r.size.y * 0.5 - 40.0), tw, 64)
 	# Soft rug under the conference table.
-	_prop("rug", Rect2(table.position.x - 24, table.position.y - 50, tw + 48, 160), {"set": "cozy", "color": "#7e57c2"})
+	var meet_rug := Rect2(table.position.x - 24, table.position.y - 50, tw + 48, 160).intersection(r.grow(-18.0))
+	if meet_rug.has_area():
+		_prop("rug", meet_rug, {"set": "cozy", "color": "#7e57c2"})
 	_prop("table", table, {"set": "cozy"})
 	# Presentation screen on the north wall.
 	_prop("screen", Rect2(r.position.x + r.size.x * 0.5 - 55, r.position.y + 14, 110, 22), {"set": "cozy"})
@@ -982,17 +988,6 @@ func _fit_satellite_ring(hub: Rect2, sat_specs: Array, seats: int, base_rx: floa
 			lo = mid
 	return Vector2(base_rx * hi, base_ry * hi)
 
-
-## Flat-top hexagon inscribed in rect (visual hub cue; nav still uses the rect).
-func _hub_hex(r: Rect2) -> PackedVector2Array:
-	var c := r.get_center()
-	var rx := r.size.x * 0.48
-	var ry := r.size.y * 0.48
-	var pts := PackedVector2Array()
-	for i in 6:
-		var ang := deg_to_rad(60.0 * float(i) - 30.0)  # flat-top
-		pts.append(c + Vector2(cos(ang) * rx, sin(ang) * ry))
-	return pts
 
 
 ## Point where a ray from rect centre along `dir` exits the rect edge.
@@ -1241,7 +1236,7 @@ func _draw() -> void:
 	# Floors (a base under each building first, so door gaps aren't grass).
 	for f: Dictionary in outer_frames:
 		if bool(f.get("hub", false)):
-			continue  # hub uses hex floor; rectangular base would show as corner junk
+			continue  # hub floor drawn as matching rectangle in _draw_hub_floor
 		draw_rect(f.rect, Color("#b3aa99"))
 	for a: Dictionary in areas:
 		if a.kind == "corridor":
@@ -1250,13 +1245,12 @@ func _draw() -> void:
 		if a.kind == "hub":
 			_draw_hub_floor(a)
 			continue
+		# Hub zones share the lobby floor — never re-stroke them (zen→wood planks
+		# became a dark diagonal across Rec under the iso floor transform).
+		if a.kind in ["break", "canteen", "rec"]:
+			_draw_hub_zone_overlay(a)
+			continue
 		_draw_floor(a)
-	# Re-stroke hub hex so zone floors don't hide the outline.
-	for a: Dictionary in areas:
-		if a.kind == "hub":
-			var hex := _hub_hex(a.rect)
-			for i in hex.size():
-				draw_line(hex[i], hex[(i + 1) % hex.size()], Color("#455a64", 0.95), 3.0)
 	# Building names on the roof edge (skip hub — campus title drawn centred on hub roof).
 	for f: Dictionary in outer_frames:
 		if bool(f.get("hub", false)):
@@ -1315,7 +1309,7 @@ func _draw_floor(a: Dictionary) -> void:
 	var c2: Color = pal[1]
 	draw_rect(r, c1)
 	match str(a.get("theme", "wood")):
-		"tile", "lobby", "cozy", "product", "ops", "finance", "lab":
+		"tile", "lobby", "cozy", "product", "ops", "finance", "lab", "zen", "sage":
 			var t := 32
 			for x in range(int(r.position.x), int(r.end.x), t):
 				for y in range(int(r.position.y), int(r.end.y), t):
@@ -1347,12 +1341,6 @@ func _draw_floor(a: Dictionary) -> void:
 					draw_line(Vector2(x, y), Vector2(x, minf(y + 20, r.end.y)), Color(c2, 0.9), 1.0)
 					x += 140.0
 				row += 1
-	if a.kind == "rec":
-		# Soft warm calm lighting wash.
-		draw_rect(r.grow(-8), Color(1.0, 0.95, 0.7, 0.08))
-		var rug := Rect2(r.position.x + 28, r.position.y + 80, r.size.x - 56, r.size.y - 130)
-		_rrect(rug, 18, Color("#8d6e63", 0.35))
-		_rrect(rug.grow(-6), 14, Color("#a1887f", 0.28))
 	if a.has("color") and a.kind in ["room", "wing"]:
 		# A soft rug in the team colour under the desks.
 		var c: Color = a.color
@@ -1368,18 +1356,36 @@ func _draw_floor(a: Dictionary) -> void:
 
 
 
-## Hex hub floor only (no rectangular AABB fill — that left corner shading junk).
+## Soft décor for Break / Canteen / Rec on top of the shared hub lobby floor.
+## Never fill or stroke a separate floor AABB here — that left grey-brown patches
+## and (for zen→wood) dark diagonals on the grass once the ring widened.
+func _draw_hub_zone_overlay(a: Dictionary) -> void:
+	var r: Rect2 = a.rect
+	if a.kind == "rec":
+		# Soft warm wash + inset rug (clamped inside the zone).
+		draw_rect(r.grow(-8), Color(1.0, 0.95, 0.7, 0.08))
+		var rug := Rect2(r.position.x + 28, r.position.y + 80, r.size.x - 56, r.size.y - 130)
+		rug = rug.intersection(r.grow(-12.0))
+		if rug.has_area():
+			_rrect(rug, 18, Color("#8d6e63", 0.35))
+			_rrect(rug.grow(-6), 14, Color("#a1887f", 0.28))
+
+
+## Rectangular hub floor matching perimeter walls. (Hex fill left zone floors /
+## rugs / wall feet stranded on the grass once the ring widened.)
 func _draw_hub_floor(a: Dictionary) -> void:
 	var r: Rect2 = a.rect
 	var pal: Array = THEMES.get(str(a.get("theme", "lobby")), THEMES["lobby"])
 	var c1: Color = pal[0]
-	var hex := _hub_hex(r)
-	draw_colored_polygon(hex, c1)
-	for i in hex.size():
-		draw_line(hex[i], hex[(i + 1) % hex.size()], Color("#455a64", 0.9), 3.0)
+	draw_rect(r, c1)
+	# Soft inner wash so hub reads as one lobby under Break/Canteen/Rec.
+	draw_rect(r.grow(-10), Color(c1.lightened(0.04), 0.35))
+	# No AABB outline stroke — in iso that edge becomes a dark diagonal
+	# cutting through Rec / Canteen. Perimeter walls already frame the hub.
 
 
 ## Oriented spoke strip (AABB corridors are nav-only; do not paint their full rect).
+## Ends are extended into hub/sat so the path meets the door mats (no grass gap).
 func _draw_spoke(a: Dictionary) -> void:
 	if not a.has("from") or not a.has("to"):
 		return
@@ -1389,7 +1395,11 @@ func _draw_spoke(a: Dictionary) -> void:
 	var d := b_pt - a_pt
 	if d.length_squared() < 1.0:
 		return
-	var n := Vector2(-d.y, d.x).normalized() * (w * 0.42)
+	var along := d.normalized()
+	var extend := EXT_WALL + 10.0
+	a_pt = a_pt - along * extend
+	b_pt = b_pt + along * extend
+	var n := Vector2(-along.y, along.x) * (w * 0.42)
 	var pts := PackedVector2Array([a_pt + n, b_pt + n, b_pt - n, a_pt - n])
 	draw_colored_polygon(pts, Color("#bfb6a6"))
 	# Soft edge lines along the spoke (not the old E–W runner).
@@ -1526,16 +1536,16 @@ func _draw_iso() -> void:
 		var gy := sb.position.y - 200 + fmod(i * 89.0, sb.size.y + 400)
 		draw_circle(Vector2(gx, gy), 3.0, Color("#6e955d"))
 		draw_circle(Vector2(gx + 9, gy + 2), 2.0, Color("#8db27a"))
-	# Building foundations: a slab edge under each building (skip hub — hex floor).
+	# Building foundations: a slab edge under each building (skip hub — drawn as rect floor).
 	for f: Dictionary in outer_frames:
 		if bool(f.get("hub", false)):
 			continue
-		var o: Rect2 = (f.rect as Rect2).grow(EXT_WALL)
+		var o: Rect2 = f.rect as Rect2
 		var a := Vector2(o.position.x, o.end.y)
 		var b := o.end
 		var c := Vector2(o.end.x, o.position.y)
-		_iso_poly([[a, 0.0], [b, 0.0], [b, -9.0], [a, -9.0]], Color("#8f8778"))
-		_iso_poly([[b, 0.0], [c, 0.0], [c, -9.0], [b, -9.0]], Color("#6f685c"))
+		_iso_poly([[a, 0.0], [b, 0.0], [b, -7.0], [a, -7.0]], Color("#8f8778"))
+		_iso_poly([[b, 0.0], [c, 0.0], [c, -7.0], [b, -7.0]], Color("#6f685c"))
 	# Everything else on the floor plane.
 	draw_set_transform_matrix(Iso.floor_xf())
 	# Wing entrance paths only — never paint campus-wide door streaks.
@@ -1548,8 +1558,8 @@ func _draw_iso() -> void:
 	for f: Dictionary in outer_frames:
 		if bool(f.get("hub", false)):
 			continue
-		var o: Rect2 = (f.rect as Rect2).grow(EXT_WALL)
-		draw_rect(o, Color("#b3aa99"))  # base under door gaps / wall feet
+		# Exact footprint — avoid grey-brown grass pads past SE walls.
+		draw_rect(f.rect as Rect2, Color("#b3aa99"))  # base under door gaps / wall feet
 	for a: Dictionary in areas:
 		if a.kind == "corridor":
 			_draw_spoke(a)
@@ -1557,12 +1567,10 @@ func _draw_iso() -> void:
 		if a.kind == "hub":
 			_draw_hub_floor(a)
 			continue
+		if a.kind in ["break", "canteen", "rec"]:
+			_draw_hub_zone_overlay(a)
+			continue
 		_draw_floor(a)
-	for a: Dictionary in areas:
-		if a.kind == "hub":
-			var hex2 := _hub_hex(a.rect)
-			for i in hex2.size():
-				draw_line(hex2[i], hex2[(i + 1) % hex2.size()], Color("#455a64", 0.95), 3.0)
 	# Subtle 32 px tile grid on rooms only (not corridors / hub AABB).
 	for a: Dictionary in areas:
 		if a.kind in ["corridor", "hub"]:
