@@ -192,7 +192,11 @@ func _row_for(s: Dictionary, locked: bool) -> Control:
 				set_agents.emit(sname, [])
 		)
 		agents_box.add_child(all_cb)
-		var wrap := HFlowContainer.new() if ClassDB.class_exists("HFlowContainer") else HBoxContainer.new()
+		var wrap: Container
+		if ClassDB.class_exists("HFlowContainer"):
+			wrap = HFlowContainer.new()
+		else:
+			wrap = HBoxContainer.new()
 		wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		for aid in _roster:
 			var id := str(aid)
