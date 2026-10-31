@@ -466,6 +466,41 @@ def verify_hub_amenities(hub: Rect) -> int:
     return bad
 
 
+
+
+def bank_safe_world_anchor(exec_rect: Rect, cos_desk_center_y: float | None = None) -> tuple[float, float]:
+    """Mirror Main.gd `_bank_safe_world_anchor` (world space, pre-Iso)."""
+    desk_y = exec_rect.y + 110.0 if cos_desk_center_y is None else cos_desk_center_y
+    y = min(max(desk_y, exec_rect.y + 90.0), exec_rect.end_y - 90.0)
+    return (exec_rect.x + 56.0, y)
+
+
+def verify_bank_safe(rooms: list[dict], cfg: dict) -> int:
+    """Fail if the Executive bank-safe world anchor is outside the Executive room."""
+    exec_room = next((r for r in rooms if r["id"] == "executive"), None)
+    if exec_room is None:
+        print("FAIL: no executive room for bank safe")
+        return 1
+    er: Rect = exec_room["rect"]
+    # Approximate CoS desk centre y the same way Office.gd lays it out.
+    room_cfg = next((r for r in cfg.get("rooms", []) if r.get("id") == "executive"), {})
+    cw, _ch = team_size(room_cfg) if room_cfg else (er.w / 1.28, er.h / 1.18)
+    origin_y = er.y
+    desk_y = origin_y + ROOM_TOP + 26.0 + 21.0  # desk top + half height
+    sx, sy = bank_safe_world_anchor(er, desk_y)
+    inside = er.x < sx < er.end_x and er.y < sy < er.end_y
+    # Also keep a margin from door-side (north) and not past south wall.
+    margin_ok = (sy >= er.y + 80.0) and (sy <= er.end_y - 80.0) and (sx >= er.x + 40.0)
+    print(
+        f"bank_safe_world=({sx:.1f},{sy:.1f}) executive=({er.x:.1f},{er.y:.1f},{er.w:.1f}x{er.h:.1f}) "
+        f"{'OK' if inside and margin_ok else 'OUT'}"
+    )
+    if not (inside and margin_ok):
+        print("FAIL: bank safe world anchor not inside Executive room")
+        return 1
+    print("OK: bank safe world anchor inside Executive room")
+    return 0
+
 def main() -> int:
     cfg = json.loads((ROOT / "office.json").read_text())
     rooms, walls, spokes, door_w, corridor_w = build(cfg)
@@ -513,6 +548,9 @@ def main() -> int:
         print(f"FAIL: {amenity_bad} amenity waypoints outside their zone or in obstacles")
         return 1
     print("OK: amenity waypoints inside Break/Canteen/Rec zones")
+
+    if verify_bank_safe(rooms, cfg):
+        return 1
     return 0
 
 

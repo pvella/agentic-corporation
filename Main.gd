@@ -48,7 +48,6 @@ const HireFireFxScript := preload("res://HireFireFx.gd")
 const KnowledgeLibraryScript := preload("res://KnowledgeLibrary.gd")
 const NoticesScript := preload("res://Notices.gd")
 const NoticeBoardScript := preload("res://NoticeBoard.gd")
-const VaultDoorScript := preload("res://VaultDoor.gd")
 const BankSafeScript := preload("res://BankSafe.gd")
 const VaultPanelScript := preload("res://VaultPanel.gd")
 const AgentViewScript := preload("res://AgentView.gd")
@@ -115,7 +114,6 @@ var _knowledge_racks: Array = []
 var _knowledge_library: Node = null
 var _notices_store = null  ## Notices
 var _notice_board: Control = null
-var _vault_door: Node2D
 var _bank_safe: Node2D
 var _vault_panel: Window
 var _vault_roster: Array = []
@@ -408,7 +406,7 @@ func _build_visuals() -> void:
 	_add_server_rack_hotspots()
 	_build_signs()
 	_place_notice_board()
-	_place_vault_door()
+	# Decorative Server Room mini-safe removed — only the Executive BankSafe is the vault entry.
 	_place_bank_safe()
 	office.queue_redraw()
 
@@ -2639,32 +2637,30 @@ func _on_vault_secret_resolved(msg: Dictionary) -> void:
 	_set_status("Vault request %s" % str(msg.get("status", "done")), Color("#ffd54f"))
 
 
-func _place_vault_door() -> void:
-	## Decorative mini-safe in the Server Room (non-interactive). No walkmesh/door/hex changes.
-	if _vault_door and is_instance_valid(_vault_door):
-		_vault_door.queue_free()
-		_vault_door = null
-	var server: Dictionary = {}
-	for a in office.areas:
-		if str(a.get("kind", "")) == "server":
-			server = a
+
+func _bank_safe_world_anchor(exec_rect: Rect2) -> Vector2:
+	## World-space point clearly inside Executive, against the west wall beside
+	## the Chief of Staff desk (not on desks, door gap, or south outer corner).
+	var desk_y := exec_rect.position.y + 110.0
+	for p in office.props:
+		if str(p.get("kind", "")) != "desk":
+			continue
+		if str(p.get("owner", "")) == "chief_of_staff" or str(p.get("style", "")) == "executive":
+			var dr: Rect2 = p.rect
+			desk_y = dr.get_center().y
 			break
-	if server.is_empty():
-		return
-	var r: Rect2 = server.rect
-	var anchor := Vector2(r.position.x + r.size.x * 0.5 + 70.0, r.position.y + 210.0)
-	var door: Node2D = VaultDoorScript.new()
-	signs_root.add_child(door)
-	door.setup(anchor)
-	_vault_door = door
-	if _vault_door not in _sign_tags:
-		_sign_tags.append(_vault_door)
-	var z := camera.zoom.x if camera else 1.0
-	_vault_door.scale = Vector2.ONE * _ui_scale_for(z)
+	# Inset from west wall so the billboarded safe reads as against the wall;
+	# keep clear of the north door (desk_y is below ROOM_TOP seating band).
+	var x := exec_rect.position.x + 56.0
+	var y := clampf(desk_y, exec_rect.position.y + 90.0, exec_rect.end.y - 90.0)
+	return Vector2(x, y)
 
 
 func _place_bank_safe() -> void:
 	## Chunky bank safe in the Executive room — the vault entry point.
+	## signs_root is screen/iso space (same as SignTag/Prop), so convert the
+	## world anchor with Iso.to_screen. Prior bug: raw world coords put the
+	## safe far from the projected Executive room.
 	if _bank_safe and is_instance_valid(_bank_safe):
 		_bank_safe.queue_free()
 		_bank_safe = null
@@ -2676,8 +2672,8 @@ func _place_bank_safe() -> void:
 	if exec_area.is_empty():
 		return
 	var r: Rect2 = exec_area.rect
-	# Front-right of the Executive room, clearly visible, no layout changes.
-	var anchor := Vector2(r.position.x + r.size.x - 90.0, r.position.y + r.size.y - 120.0)
+	var world := _bank_safe_world_anchor(r)
+	var anchor := Iso.to_screen(world)
 	var safe: Node2D = BankSafeScript.new()
 	signs_root.add_child(safe)
 	safe.setup(anchor)
