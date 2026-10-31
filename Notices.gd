@@ -150,6 +150,12 @@ func _default_icon(kind: String) -> String:
 			return "✖"
 		"error":
 			return "⚠"
+		"vault_add", "vault_grant", "vault_list", "vault_unlock":
+			return "🔐"
+		"vault_revoke", "vault_rm", "vault_declined", "vault_lock", "vault_unlock_fail", "vault_tamper":
+			return "🔓"
+		"vault_request", "vault_rm_pending":
+			return "🔑"
 		_:
 			return "•"
 
@@ -176,6 +182,12 @@ func _default_color(kind: String) -> String:
 			return "#e57373"
 		"error":
 			return "#e06c75"
+		"vault_add", "vault_grant", "vault_list", "vault_unlock":
+			return "#ffd54f"
+		"vault_revoke", "vault_rm", "vault_declined", "vault_lock", "vault_unlock_fail", "vault_tamper":
+			return "#ef9a9a"
+		"vault_request", "vault_rm_pending":
+			return "#ffe082"
 		_:
 			return "#b0bec5"
 

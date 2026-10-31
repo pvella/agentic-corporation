@@ -4,7 +4,7 @@ office_mcp.py - Remote MCP connector for Agent Office live status.
 Started by agent_harness.py (unless --no-mcp). Serves the MCP Streamable HTTP
 transport at http://127.0.0.1:8766/mcp using the official `mcp` Python SDK
 (MCPServer, stateless, JSON responses), so a cloud-hosted bot (e.g. a Grok Bot
-connector) can call three tools:
+connector) can call office tools including vault helpers:
 
   report_office_status(agent, action, detail)
       agent   the bot's name as in office.json ("Android Dev"); case-insensitive,
@@ -269,6 +269,186 @@ def build_mcp(hub: Any) -> MCPServer:
             raise ToolError("reply is empty")
         hub.post_reply(target, reply, mid, bubble=show_bubble)
         return "ok"
+
+    @server.tool(
+        name="request_secret",
+        title="Request a vault secret",
+        description=(
+            "Ask the human owner for a new secret. Opens a masked input card in the office. "
+            "On approval the value is stored in the OS keychain and granted to you as an env var "
+            "with the given NAME. You never see the value. If declined, do not request that name again."
+        ),
+    )
+    def request_secret(
+        agent: AgentName,
+        name: Annotated[str, Field(description="Env var name, e.g. GITHUB_TOKEN (letters/digits/underscore).")],
+        label: Annotated[str, Field(description="Short human-facing title for the secret card.")] = "",
+        description: Annotated[str, Field(description="Why you need it / what it is used for.")] = "",
+    ) -> str:
+        a = _agent(hub, agent)
+        vault = getattr(hub, "vault", None)
+        if vault is None:
+            return "vault unavailable"
+        try:
+            req = vault.add_request(a.agent_id, name, label=label or name, description=description)
+        except PermissionError as exc:
+            return str(exc)
+        except Exception as exc:
+            return f"vault request failed: {exc}"
+        hub.emit({
+            "type": "VAULT_SECRET_REQUEST",
+            "request_id": req["request_id"],
+            "agent_id": a.agent_id,
+            "agent_name": a.name,
+            "name": req["name"],
+            "label": req.get("label") or req["name"],
+            "description": req.get("description") or "",
+            "prompt": (
+                f"{a.name} requests secret '{req['name']}'. "
+                f"{req.get('description') or 'Enter the value (stored in the keychain, never shown again).'}"
+            ),
+        })
+        hub.emit({
+            "type": "VAULT_NOTICE",
+            "kind": "vault_request",
+            "title": f"Vault request — {req['name']}",
+            "detail": f"from {a.name}",
+            "pending": True,
+            "meta": {"name": req["name"], "agent_id": a.agent_id, "request_id": req["request_id"]},
+        })
+        return (
+            f"Secret request for '{req['name']}' sent to the human owner. "
+            f"When granted you will have env var ${req['name']}; never print its value."
+        )
+
+    @server.tool(
+        name="vault_list",
+        title="List vault secrets (metadata)",
+        description=(
+            "Chief of Staff only. List vault secret names, descriptions and which agents have access. "
+            "Never returns values."
+        ),
+    )
+    def vault_list(agent: AgentName) -> str:
+        a = _agent(hub, agent)
+        from agent_harness import is_chief_of_staff
+        if not is_chief_of_staff(a):
+            return "only the Chief of Staff may list the vault"
+        vault = getattr(hub, "vault", None)
+        if vault is None:
+            return "vault unavailable"
+        lines = ["Vault secrets (names only):"]
+        for e in vault.list_meta():
+            agents = e.get("agents")
+            who = "all" if agents == "all" else (", ".join(agents) if agents else "(none)")
+            lines.append(f"- {e['name']}: {e.get('description') or '(no description)'} [agents: {who}]")
+        if vault.pending:
+            lines.append("Pending requests:")
+            for pend in vault.pending:
+                lines.append(f"- {pend.get('name')} from {pend.get('agent_id')} ({pend.get('request_id')})")
+        if len(lines) == 1:
+            lines.append("(empty)")
+        hub.emit({"type": "VAULT_NOTICE", "kind": "vault_list", "title": "Vault listed by CoS",
+                  "detail": f"{len(vault.list_meta())} secrets", "pending": False,
+                  "meta": {"agent_id": a.agent_id}})
+        return "\n".join(lines)
+
+    @server.tool(
+        name="vault_grant",
+        title="Grant vault secret access",
+        description="Chief of Staff only. Grant an agent (or 'all') access to a named secret. Metadata only.",
+    )
+    def vault_grant(
+        agent: AgentName,
+        name: Annotated[str, Field(description="Secret name.")],
+        grantee: Annotated[str, Field(description="agent_id to grant, or 'all'.")],
+    ) -> str:
+        a = _agent(hub, agent)
+        from agent_harness import is_chief_of_staff
+        if not is_chief_of_staff(a):
+            return "only the Chief of Staff may grant vault access"
+        vault = getattr(hub, "vault", None)
+        if vault is None:
+            return "vault unavailable"
+        try:
+            meta = vault.grant(name, grantee)
+        except Exception as exc:
+            return f"grant failed: {exc}"
+        hub.emit({
+            "type": "VAULT_NOTICE", "kind": "vault_grant",
+            "title": f"Vault grant {name} → {grantee}",
+            "detail": f"by {a.name}", "pending": False,
+            "meta": {"name": name, "grantee": grantee, "agents": meta.get("agents", []), "by": "cos"},
+        })
+        hub.emit({"type": "VAULT_META", "secrets": vault.list_meta(), "pending": list(vault.pending)})
+        return f"granted '{name}' to {grantee}"
+
+    @server.tool(
+        name="vault_revoke",
+        title="Revoke vault secret access",
+        description="Chief of Staff only. Revoke an agent's (or all) access to a named secret.",
+    )
+    def vault_revoke(
+        agent: AgentName,
+        name: Annotated[str, Field(description="Secret name.")],
+        grantee: Annotated[str, Field(description="agent_id to revoke, or 'all'.")],
+    ) -> str:
+        a = _agent(hub, agent)
+        from agent_harness import is_chief_of_staff
+        if not is_chief_of_staff(a):
+            return "only the Chief of Staff may revoke vault access"
+        vault = getattr(hub, "vault", None)
+        if vault is None:
+            return "vault unavailable"
+        try:
+            meta = vault.revoke(name, grantee)
+        except Exception as exc:
+            return f"revoke failed: {exc}"
+        hub.emit({
+            "type": "VAULT_NOTICE", "kind": "vault_revoke",
+            "title": f"Vault revoke {name} ✕ {grantee}",
+            "detail": f"by {a.name}", "pending": False,
+            "meta": {"name": name, "grantee": grantee, "agents": meta.get("agents", []), "by": "cos"},
+        })
+        hub.emit({"type": "VAULT_META", "secrets": vault.list_meta(), "pending": list(vault.pending)})
+        return f"revoked '{name}' from {grantee}"
+
+    @server.tool(
+        name="vault_request_remove",
+        title="Request vault secret removal",
+        description=(
+            "Chief of Staff only. Ask the human owner to delete a secret. "
+            "Does not delete immediately — opens a confirm dialog. CoS never sees values."
+        ),
+    )
+    def vault_request_remove(
+        agent: AgentName,
+        name: Annotated[str, Field(description="Secret name to remove.")],
+    ) -> str:
+        a = _agent(hub, agent)
+        from agent_harness import is_chief_of_staff
+        if not is_chief_of_staff(a):
+            return "only the Chief of Staff may request vault removal"
+        vault = getattr(hub, "vault", None)
+        if vault is None:
+            return "vault unavailable"
+        if not vault.get_meta(name):
+            return f"unknown secret '{name}'"
+        request_id = f"vault_rm_{a.agent_id}_{name}"
+        hub.emit({
+            "type": "VAULT_REMOVE_CONFIRM",
+            "name": name,
+            "request_id": request_id,
+            "prompt": f"Chief of Staff requests deletion of vault secret '{name}'. Confirm?",
+        })
+        hub.emit({
+            "type": "VAULT_NOTICE", "kind": "vault_rm_pending",
+            "title": f"Vault remove pending — {name}",
+            "detail": f"requested by {a.name}", "pending": True,
+            "meta": {"name": name, "request_id": request_id, "agent_id": a.agent_id},
+        })
+        return f"removal of '{name}' awaits human confirmation"
+
 
     return server
 

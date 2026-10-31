@@ -48,6 +48,9 @@ const HireFireFxScript := preload("res://HireFireFx.gd")
 const KnowledgeLibraryScript := preload("res://KnowledgeLibrary.gd")
 const NoticesScript := preload("res://Notices.gd")
 const NoticeBoardScript := preload("res://NoticeBoard.gd")
+const VaultDoorScript := preload("res://VaultDoor.gd")
+const BankSafeScript := preload("res://BankSafe.gd")
+const VaultPanelScript := preload("res://VaultPanel.gd")
 const AgentViewScript := preload("res://AgentView.gd")
 const SignTagScript := preload("res://SignTag.gd")
 const SETTINGS_PATH := "user://agent_office.cfg"
@@ -103,6 +106,10 @@ var _knowledge_racks: Array = []
 var _knowledge_library: Node = null
 var _notices_store = null  ## Notices
 var _notice_board: Control = null
+var _vault_door: Node2D
+var _bank_safe: Node2D
+var _vault_panel: Window
+var _vault_roster: Array = []
 var _meeting_active: Dictionary = {}  ## target -> {agents: PackedStringArray, text: String}
 var _agent_prev_state: Dictionary = {}  ## agent_id -> last notable state
 var _server_clickables: Array = []
@@ -228,6 +235,7 @@ func _ready() -> void:
 		_notices_store.load_from_disk()
 	if drawer.has_signal("notices_requested"):
 		drawer.notices_requested.connect(_on_notices_requested)
+	drawer.vault_requested.connect(_on_vault_requested)
 	camera.zoom_changed.connect(_apply_ui_scale)
 	build_layout(Office.LEGACY_LAYOUT, true)
 	_backoff = reconnect_min
@@ -390,6 +398,8 @@ func _build_visuals() -> void:
 	_add_server_rack_hotspots()
 	_build_signs()
 	_place_notice_board()
+	_place_vault_door()
+	_place_bank_safe()
 	office.queue_redraw()
 
 
@@ -1496,6 +1506,22 @@ func handle_message(msg: Dictionary) -> void:
 			_on_agent_dm(msg)
 		"ASK_HUMAN":
 			_on_ask_human(msg)
+		"VAULT_SECRET_REQUEST":
+			_on_vault_secret_request(msg)
+		"VAULT_REMOVE_CONFIRM":
+			_on_vault_remove_confirm(msg)
+		"VAULT_META":
+			_on_vault_meta(msg)
+		"VAULT_NOTICE":
+			_on_vault_notice(msg)
+		"VAULT_SECRET_RESOLVED":
+			_on_vault_secret_resolved(msg)
+		"VAULT_UNLOCKED":
+			_on_vault_unlocked(msg)
+		"VAULT_UNLOCK_FAILED":
+			_on_vault_unlock_failed(msg)
+		"VAULT_LOCKED":
+			_on_vault_locked(msg)
 		"MEETING_TURN":
 			_on_meeting_turn(msg)
 		"AGENT_HIRE":
@@ -2186,3 +2212,333 @@ func _take_screenshot() -> void:
 		print("[AgentOffice] screenshot saved to %s (%s)" % [out, error_string(err)])
 	if _quit_after_screenshot:
 		get_tree().quit()
+
+
+func _on_vault_requested(cmd: String, arg: String) -> void:
+	var c := cmd.strip_edges().to_lower()
+	if c in ["list", "ls", ""]:
+		send_json({"action": "VAULT_LIST"})
+		return
+	if c == "add":
+		var parts := arg.split(" ", false, 1)
+		var sname := parts[0].strip_edges() if parts.size() > 0 else ""
+		var desc := parts[1].strip_edges() if parts.size() > 1 else ""
+		if sname == "":
+			if drawer and drawer.has_method("append_system"):
+				drawer.append_system("usage: /vault add NAME [description]")
+			return
+		_show_vault_add_dialog(sname, desc)
+		return
+	if c in ["grant", "revoke"]:
+		var parts := arg.split(" ", false, 1)
+		var sname := parts[0].strip_edges() if parts.size() > 0 else ""
+		var who := parts[1].strip_edges() if parts.size() > 1 else ""
+		if sname == "" or who == "":
+			if drawer and drawer.has_method("append_system"):
+				drawer.append_system("usage: /vault %s NAME agent_id|all" % c)
+			return
+		send_json({"action": ("VAULT_GRANT" if c == "grant" else "VAULT_REVOKE"),
+			"name": sname, "agent_id": who})
+		return
+	if c in ["rm", "remove", "del"]:
+		var sname := arg.strip_edges().split(" ")[0]
+		if sname == "":
+			if drawer and drawer.has_method("append_system"):
+				drawer.append_system("usage: /vault rm NAME")
+			return
+		send_json({"action": "VAULT_RM", "name": sname})
+		return
+
+
+func _show_vault_add_dialog(sname: String, desc: String) -> void:
+	var win := Window.new()
+	win.title = "Vault — add secret"
+	win.size = Vector2i(480, 220)
+	var vbox := VBoxContainer.new()
+	var help := Label.new()
+	help.text = "Name: %s\n%s\nValue is stored in the OS keychain and never shown again." % [
+		sname, (desc if desc != "" else "Enter the secret value (masked).")]
+	help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(help)
+	var edit := LineEdit.new()
+	edit.secret = true
+	edit.placeholder_text = "Secret value…"
+	edit.custom_minimum_size = Vector2(440, 28)
+	vbox.add_child(edit)
+	var row := HBoxContainer.new()
+	var save := Button.new()
+	save.text = "Store in keychain"
+	save.pressed.connect(func() -> void:
+		var val := edit.text
+		edit.text = ""
+		if val == "":
+			return
+		send_json({"action": "VAULT_ADD", "name": sname, "value": val, "description": desc, "agents": []})
+		win.queue_free()
+	)
+	var cancel := Button.new()
+	cancel.text = "Cancel"
+	cancel.pressed.connect(func() -> void: win.queue_free())
+	row.add_child(save)
+	row.add_child(cancel)
+	vbox.add_child(row)
+	win.add_child(vbox)
+	add_child(win)
+	win.close_requested.connect(func() -> void: win.queue_free())
+	win.popup_centered()
+	edit.grab_focus()
+
+
+func _on_vault_secret_request(msg: Dictionary) -> void:
+	_notice("vault_request",
+		"Vault request — %s" % str(msg.get("name", "")),
+		str(msg.get("prompt", msg.get("description", ""))).left(120),
+		{"pending": true, "meta": {
+			"name": str(msg.get("name", "")),
+			"agent_id": str(msg.get("agent_id", "")),
+			"request_id": str(msg.get("request_id", ""))}})
+	var win := Window.new()
+	win.title = str(msg.get("label", msg.get("name", "Secret request")))
+	win.size = Vector2i(520, 260)
+	var vbox := VBoxContainer.new()
+	var body := RichTextLabel.new()
+	body.bbcode_enabled = true
+	body.fit_content = true
+	body.text = str(msg.get("prompt", ""))
+	body.custom_minimum_size = Vector2(480, 100)
+	vbox.add_child(body)
+	var edit := LineEdit.new()
+	edit.secret = true
+	edit.placeholder_text = "Secret value (stored in keychain)…"
+	edit.custom_minimum_size = Vector2(480, 28)
+	vbox.add_child(edit)
+	var row := HBoxContainer.new()
+	var submit := Button.new()
+	submit.text = "Store & grant to agent"
+	var request_id := str(msg.get("request_id", ""))
+	submit.pressed.connect(func() -> void:
+		var val := edit.text
+		edit.text = ""
+		if val == "":
+			return
+		send_json({"action": "VAULT_SUBMIT_SECRET", "request_id": request_id, "value": val})
+		if _notices_store and request_id:
+			_notices_store.resolve_ask(request_id)
+		win.queue_free()
+	)
+	var dismiss := Button.new()
+	dismiss.text = "Decline"
+	dismiss.pressed.connect(func() -> void:
+		send_json({"action": "VAULT_DISMISS_SECRET", "request_id": request_id})
+		if _notices_store and request_id:
+			_notices_store.resolve_ask(request_id)
+		win.queue_free()
+	)
+	row.add_child(submit)
+	row.add_child(dismiss)
+	vbox.add_child(row)
+	win.add_child(vbox)
+	add_child(win)
+	win.close_requested.connect(func() -> void:
+		send_json({"action": "VAULT_DISMISS_SECRET", "request_id": request_id})
+		win.queue_free()
+	)
+	win.popup_centered()
+	edit.grab_focus()
+	_set_status("Vault secret request from %s" % str(msg.get("agent_name", "agent")), Color("#ffe082"))
+
+
+func _on_vault_remove_confirm(msg: Dictionary) -> void:
+	var sname := str(msg.get("name", ""))
+	var request_id := str(msg.get("request_id", ""))
+	var win := Window.new()
+	win.title = "Confirm vault removal"
+	win.size = Vector2i(460, 160)
+	var vbox := VBoxContainer.new()
+	var body := Label.new()
+	body.text = str(msg.get("prompt", "Delete secret '%s'?" % sname))
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(body)
+	var row := HBoxContainer.new()
+	var yes := Button.new()
+	yes.text = "Delete permanently"
+	yes.pressed.connect(func() -> void:
+		send_json({"action": "VAULT_CONFIRM_RM", "name": sname, "request_id": request_id})
+		win.queue_free()
+	)
+	var no := Button.new()
+	no.text = "Cancel"
+	no.pressed.connect(func() -> void:
+		send_json({"action": "VAULT_CANCEL_RM", "name": sname, "request_id": request_id})
+		win.queue_free()
+	)
+	row.add_child(yes)
+	row.add_child(no)
+	vbox.add_child(row)
+	win.add_child(vbox)
+	add_child(win)
+	win.close_requested.connect(func() -> void:
+		send_json({"action": "VAULT_CANCEL_RM", "name": sname, "request_id": request_id})
+		win.queue_free()
+	)
+	win.popup_centered()
+
+
+func _on_vault_meta(msg: Dictionary) -> void:
+	var secrets: Array = msg.get("secrets", [])
+	var pending: Array = msg.get("pending", [])
+	if drawer and drawer.has_method("append_system"):
+		if secrets.is_empty() and pending.is_empty():
+			drawer.append_system("vault: (empty)")
+		else:
+			drawer.append_system("vault: %d secret(s), %d pending" % [secrets.size(), pending.size()])
+			for s in secrets:
+				if typeof(s) != TYPE_DICTIONARY:
+					continue
+				var agents = s.get("agents", [])
+				var who := "all" if str(agents) == "all" else (", ".join(agents) if agents is Array else str(agents))
+				drawer.append_system("  • %s — %s [%s]" % [
+					str(s.get("name", "")),
+					str(s.get("description", "")),
+					who])
+			for pend in pending:
+				if typeof(pend) != TYPE_DICTIONARY:
+					continue
+				drawer.append_system("  ? pending %s from %s" % [str(pend.get("name", "")), str(pend.get("agent_id", ""))])
+	var locked := bool(msg.get("locked", false))
+	if msg.has("roster") and msg.get("roster") is Array:
+		_vault_roster = msg.get("roster")
+	if _vault_panel and is_instance_valid(_vault_panel) and _vault_panel.has_method("configure"):
+		_vault_panel.configure(secrets, _vault_roster, locked)
+	var label := "Vault locked — %d name(s)" if locked else "Vault: %d secrets"
+	_set_status(label % secrets.size(), Color("#ffd54f"))
+
+
+func _on_vault_notice(msg: Dictionary) -> void:
+	var meta: Dictionary = {}
+	if msg.get("meta", {}) is Dictionary:
+		meta = msg.get("meta", {})
+	_notice(str(msg.get("kind", "vault_add")),
+		str(msg.get("title", "Vault")),
+		str(msg.get("detail", "")),
+		{"pending": bool(msg.get("pending", false)), "meta": meta})
+
+
+func _on_vault_secret_resolved(msg: Dictionary) -> void:
+	var rid := str(msg.get("request_id", ""))
+	if _notices_store and rid:
+		_notices_store.resolve_ask(rid)
+	_set_status("Vault request %s" % str(msg.get("status", "done")), Color("#ffd54f"))
+
+
+func _place_vault_door() -> void:
+	## Decorative mini-safe in the Server Room (non-interactive). No walkmesh/door/hex changes.
+	if _vault_door and is_instance_valid(_vault_door):
+		_vault_door.queue_free()
+		_vault_door = null
+	var server: Dictionary = {}
+	for a in office.areas:
+		if str(a.get("kind", "")) == "server":
+			server = a
+			break
+	if server.is_empty():
+		return
+	var r: Rect2 = server.rect
+	var anchor := Vector2(r.position.x + r.size.x * 0.5 + 70.0, r.position.y + 210.0)
+	var door: Node2D = VaultDoorScript.new()
+	signs_root.add_child(door)
+	door.setup(anchor)
+	_vault_door = door
+	if _vault_door not in _sign_tags:
+		_sign_tags.append(_vault_door)
+	var z := camera.zoom.x if camera else 1.0
+	_vault_door.scale = Vector2.ONE * _ui_scale_for(z)
+
+
+func _place_bank_safe() -> void:
+	## Chunky bank safe in the Executive room — the vault entry point.
+	if _bank_safe and is_instance_valid(_bank_safe):
+		_bank_safe.queue_free()
+		_bank_safe = null
+	var exec_area: Dictionary = {}
+	for a in office.areas:
+		if str(a.get("kind", "")) == "room" and str(a.get("id", "")) == "executive":
+			exec_area = a
+			break
+	if exec_area.is_empty():
+		return
+	var r: Rect2 = exec_area.rect
+	# Front-right of the Executive room, clearly visible, no layout changes.
+	var anchor := Vector2(r.position.x + r.size.x - 90.0, r.position.y + r.size.y - 120.0)
+	var safe: Node2D = BankSafeScript.new()
+	signs_root.add_child(safe)
+	safe.setup(anchor)
+	if safe.has_signal("unlock_requested"):
+		safe.unlock_requested.connect(_on_bank_safe_unlock)
+	if safe.has_signal("open_panel_requested"):
+		safe.open_panel_requested.connect(_on_bank_safe_open_panel)
+	_bank_safe = safe
+	if _bank_safe not in _sign_tags:
+		_sign_tags.append(_bank_safe)
+	var z := camera.zoom.x if camera else 1.0
+	_bank_safe.scale = Vector2.ONE * _ui_scale_for(z)
+
+
+func _on_bank_safe_unlock() -> void:
+	send_json({"action": "VAULT_UNLOCK", "reason": "Unlock the Agentic Corporation office vault"})
+	_set_status("Vault — authenticate to unlock (Touch ID / password)…", Color("#ffe082"))
+
+
+func _on_bank_safe_open_panel() -> void:
+	send_json({"action": "VAULT_LIST"})
+	_open_vault_panel()
+
+
+func _open_vault_panel() -> void:
+	if _vault_panel and is_instance_valid(_vault_panel):
+		_vault_panel.popup_centered()
+		return
+	var panel: Window = VaultPanelScript.new()
+	add_child(panel)
+	panel.add_secret.connect(func(n: String, d: String, v: String) -> void:
+		send_json({"action": "VAULT_ADD", "name": n, "description": d, "value": v, "agents": []})
+	)
+	panel.set_agents.connect(func(n: String, agents: Variant) -> void:
+		send_json({"action": "VAULT_SET_AGENTS", "name": n, "agents": agents})
+	)
+	panel.remove_secret.connect(func(n: String) -> void:
+		send_json({"action": "VAULT_RM", "name": n})
+	)
+	panel.lock_now.connect(func() -> void:
+		send_json({"action": "VAULT_LOCK"})
+		if _vault_panel and is_instance_valid(_vault_panel):
+			_vault_panel.queue_free()
+			_vault_panel = null
+	)
+	panel.activity.connect(func() -> void:
+		# Touch session by listing (extends unlock TTL server-side when unlocked).
+		send_json({"action": "VAULT_LIST"})
+	)
+	_vault_panel = panel
+	panel.popup_centered()
+
+
+func _on_vault_unlocked(msg: Dictionary) -> void:
+	if _bank_safe and is_instance_valid(_bank_safe) and _bank_safe.has_method("set_unlocked"):
+		_bank_safe.set_unlocked(true)
+	_set_status("Vault unlocked", Color("#66bb6a"))
+	_open_vault_panel()
+
+
+func _on_vault_unlock_failed(msg: Dictionary) -> void:
+	_set_status("Vault unlock failed: %s" % str(msg.get("detail", "denied")), Color("#ef5350"))
+
+
+func _on_vault_locked(msg: Dictionary) -> void:
+	if _bank_safe and is_instance_valid(_bank_safe) and _bank_safe.has_method("set_unlocked"):
+		_bank_safe.set_unlocked(false)
+	if _vault_panel and is_instance_valid(_vault_panel):
+		_vault_panel.queue_free()
+		_vault_panel = null
+	_set_status("Vault locked", Color("#ffd54f"))
+

@@ -1,3 +1,11 @@
+## Vault (`feature/vault`)
+
+- Shared bot secrets: values in macOS Keychain (`agentic-corp.<NAME>`) / Linux secure store; gitignored `.office_vault.json` metadata only
+- `/vault` terminal commands + Server Room VaultDoor; notice board events (names only)
+- Any agent `request_secret` → masked Godot card; CoS `vault_*` MCP tools; remove needs human confirm
+- CliRunner env injection + scrub of harness/CLI output; system-prompt names/descriptions only
+- README + hooks doc cover hex hub, Rec/Hiring/Kill/KB/meeting/`/msg`/quiet/`/notices`/`/jd`/vault
+
 # Agent Office — change notes (for PRs)
 
 ## Why agents do not pick up tasks (root cause)
