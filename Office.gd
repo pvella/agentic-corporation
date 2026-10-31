@@ -66,7 +66,14 @@ const THEMES := {
 	"lobby": [Color("#d6d1c8"), Color("#cfc9c0")],
 	"zen": [Color("#cad8c6"), Color("#c2d1be")],
 	"corridor": [Color("#c0b8aa"), Color("#b9b1a3")],
-	"cozy": [Color("#d8cbb4"), Color("#d1c3ab")],  ## Engineering diorama floor
+	"cozy": [Color("#d8cbb4"), Color("#d1c3ab")],       ## Engineering
+	"exec": [Color("#4a5570"), Color("#44506a")],       ## Executive soft navy
+	"product": [Color("#ddd0e8"), Color("#d4c6e0")],    ## Product & Design
+	"ops": [Color("#c8d6c0"), Color("#bfd0b6")],        ## Operations
+	"finance": [Color("#d9d0c4"), Color("#d0c7bb")],    ## Finance tidy wood-tile
+	"lab": [Color("#c5cdd4"), Color("#bbc4cc")],        ## Special Projects lab
+	"meeting": [Color("#b0a3c8"), Color("#a79cbf")],    ## Meeting carpet
+	"server": [Color("#2a2e32"), Color("#24282c")],     ## Dark antistatic
 }
 
 # ---- Built layout (read by Main) ------------------------------------------
@@ -386,71 +393,188 @@ func _text_w(text: String, size: int) -> float:
 
 func _build_team(room: Dictionary, cell: Rect2, content: Rect2) -> void:
 	var col := Color.from_string(str(room.get("color", "#90a4ae")), Color("#90a4ae"))
-	var is_eng := str(room.id) == "engineering"
-	var theme := "cozy" if is_eng else str(room.get("theme", "wood"))
+	var rid := str(room.id)
+	var theme_by := {
+		"engineering": "cozy",
+		"executive": "exec",
+		"product_design": "product",
+		"operations": "ops",
+		"finance": "finance",
+		"special_projects": "lab",
+	}
+	var theme := str(theme_by.get(rid, room.get("theme", "wood")))
 	areas.append({"kind": "room", "id": room.id, "rect": cell, "theme": theme, "name": room.name, "color": col})
 	# One placard per room (no member-count subtitle — details live in the side panel).
-	signs.append({"room_id": str(room.id), "name": str(room.name), "sub": "", "rect": _sign_rect(cell, str(room.name)), "color": col, "clickable": true})
-	if is_eng:
-		_build_engineering_diorama(room, cell)
-		return
-	# Centre the desk grid horizontally inside the (possibly wider) cell.
-	var origin := Vector2(cell.position.x + (cell.size.x - content.size.x) * 0.5, cell.position.y)
-	_desk_grid(room, origin)
-	_prop("plant", Rect2(cell.end.x - 44, cell.position.y + 10, 30, 30))
-	_chat("Chat_" + str(room.id), Vector2(cell.get_center().x, cell.end.y - 46))
+	signs.append({"room_id": rid, "name": str(room.name), "sub": "", "rect": _sign_rect(cell, str(room.name)), "color": col, "clickable": true})
+	match rid:
+		"engineering":
+			_build_engineering_diorama(room, cell)
+		"executive":
+			_build_executive_diorama(room, cell)
+		"product_design":
+			_build_product_diorama(room, cell)
+		"operations":
+			_build_operations_diorama(room, cell)
+		"finance":
+			_build_finance_diorama(room, cell)
+		"special_projects":
+			_build_lab_diorama(room, cell)
+		_:
+			var origin := Vector2(cell.position.x + (cell.size.x - content.size.x) * 0.5, cell.position.y)
+			_desk_grid(room, origin)
+			_prop("plant", Rect2(cell.end.x - 44, cell.position.y + 10, 30, 30), {"set": "cozy"})
+			_chat("Chat_" + rid, Vector2(cell.get_center().x, cell.end.y - 46))
 
 
-## Engineering-only cozy office diorama: clustered workstations, whiteboard,
-## plants, lamps, softer monitors, contact shadows. Keeps the same door / chat
-## / desk waypoint contract so nav and harness seating still work.
-func _build_engineering_diorama(room: Dictionary, cell: Rect2) -> void:
+## Shared clustered workstation layout used by every cozy diorama.
+## Keeps Desk_* waypoints + chat contract for nav / harness seating.
+func _diorama_desks(room: Dictionary, cell: Rect2, opts: Dictionary = {}) -> Dictionary:
 	var members: Array = room.get("members", [])
 	var desks := maxi(int(room.get("desks", 1)), members.size())
 	desks = maxi(desks, 1)
-	# Tighter cluster than the default 3-col grid: two columns of pods.
-	var cols := 2 if desks <= 4 else mini(3, desks)
+	var cols: int = int(opts.get("cols", 2 if desks <= 4 else mini(3, desks)))
 	var rows := ceili(desks / float(cols))
-	var cell_w := 148.0
-	var cell_h := 138.0
-	var pad_x := 22.0
-	var top := 78.0
+	var cell_w: float = float(opts.get("cell_w", 148.0))
+	var cell_h: float = float(opts.get("cell_h", 138.0))
+	var top: float = float(opts.get("top", 78.0))
+	var desk_w: float = float(opts.get("desk_w", 80.0))
+	var desk_h: float = float(opts.get("desk_h", 34.0))
+	var soft := bool(opts.get("soft_monitor", true))
 	var cluster_w := cols * cell_w
 	var origin_x := cell.position.x + (cell.size.x - cluster_w) * 0.5
 	var origin_y := cell.position.y + top
-	# Soft area rug under the pod (drawn as a rug prop so y-sort works).
+	var rug_color := str(opts.get("rug", "#4fc3f7"))
 	var rug := Rect2(origin_x - 10, origin_y - 8, cluster_w + 20, rows * cell_h + 36)
-	_prop("rug", rug, {"set": "cozy", "color": "#4fc3f7"})
-	# Whiteboard on the north wall.
-	var wb := Rect2(cell.position.x + cell.size.x * 0.5 - 70, cell.position.y + 10, 140, 28)
-	_prop("whiteboard", wb, {"set": "cozy"})
-	# Corner plants + floor lamps (warm pool, no layout impact beyond tiny footprints).
-	_prop("plant", Rect2(cell.position.x + 10, cell.position.y + 12, 28, 28), {"set": "cozy"})
-	_prop("plant", Rect2(cell.end.x - 40, cell.position.y + 12, 28, 28), {"set": "cozy"})
-	_prop("plant", Rect2(cell.position.x + 10, cell.end.y - 44, 28, 28), {"set": "cozy"})
-	_prop("lamp", Rect2(cell.end.x - 36, cell.end.y - 52, 20, 34), {"set": "cozy"})
-	_prop("lamp", Rect2(cell.position.x + 12, cell.position.y + cell.size.y * 0.45, 20, 34), {"set": "cozy"})
+	_prop("rug", rug, {"set": "cozy", "color": rug_color})
 	for i in desks:
 		var c := i % cols
 		var row := int(i / cols)
 		var owner := ""
 		var desk_name := ""
 		var color := ""
+		var is_exec := false
 		if i < members.size():
 			owner = str(members[i].agent_id)
 			desk_name = str(members[i].get("desk", "Desk_" + owner))
 			color = str(members[i].get("color", ""))
+			var style := str(members[i].get("desk_style", ""))
+			is_exec = style == "executive" or owner == "chief_of_staff"
 		var cx := origin_x + c * cell_w + cell_w * 0.5
 		var cy := origin_y + row * cell_h
-		var desk := Rect2(cx - 40, cy + 28, 80, 34)
-		_prop("desk", desk, {"owner": owner, "color": color, "set": "cozy", "soft_monitor": true})
-		var seat := Vector2(cx, desk.end.y + 12)
-		_prop("chair", Rect2(seat.x - 12, seat.y - 20, 24, 22), {"sort_y": seat.y + 2.0, "set": "cozy"})
-		# Tiny desk plant instead of a second black slab.
-		_prop("plant", Rect2(desk.end.x + 4, desk.position.y + 4, 18, 18), {"set": "cozy"})
-		if not desk_name.is_empty():
-			_wp(desk_name, seat, "up", "desk")
+		if is_exec and bool(opts.get("allow_exec", true)):
+			var desk := Rect2(cx - 78, cy + 22, 156, 42)
+			_prop("desk", desk, {"owner": owner, "color": color, "style": "executive", "set": "cozy", "soft_monitor": soft})
+			var seat := Vector2(cx + 18, desk.end.y + 16)
+			_prop("chair", Rect2(seat.x - 16, seat.y - 28, 32, 30), {"sort_y": seat.y + 2.0, "style": "executive", "set": "cozy"})
+			_prop("plant", Rect2(desk.position.x - 28, desk.position.y + 4, 24, 24), {"set": "cozy"})
+			if not desk_name.is_empty():
+				_wp(desk_name, seat, "up", "desk")
+		else:
+			var style := str(opts.get("desk_style", ""))
+			var desk := Rect2(cx - desk_w * 0.5, cy + 28, desk_w, desk_h)
+			var extra := {"owner": owner, "color": color, "set": "cozy", "soft_monitor": soft}
+			if style != "":
+				extra["style"] = style
+			_prop("desk", desk, extra)
+			var seat := Vector2(cx, desk.end.y + 12)
+			var chair_col := str(opts.get("chair_color", ""))
+			var chair_extra := {"sort_y": seat.y + 2.0, "set": "cozy"}
+			if chair_col != "":
+				chair_extra["color"] = chair_col
+			_prop("chair", Rect2(seat.x - 12, seat.y - 20, 24, 22), chair_extra)
+			if bool(opts.get("desk_plant", true)):
+				_prop("plant", Rect2(desk.end.x + 4, desk.position.y + 4, 18, 18), {"set": "cozy"})
+			if not desk_name.is_empty():
+				_wp(desk_name, seat, "up", "desk")
 	_chat("Chat_" + str(room.id), Vector2(cell.get_center().x, cell.end.y - 46))
+	return {"origin_x": origin_x, "origin_y": origin_y, "cluster_w": cluster_w, "rows": rows, "cell_h": cell_h}
+
+
+## Engineering-only cozy office diorama: clustered workstations, whiteboard,
+## plants, lamps, softer monitors, contact shadows. Keeps the same door / chat
+## / desk waypoint contract so nav and harness seating still work.
+func _build_engineering_diorama(room: Dictionary, cell: Rect2) -> void:
+	_diorama_desks(room, cell, {"rug": "#4fc3f7", "cols": 2 if (room.get("members", []) as Array).size() <= 4 else 3})
+	var wb := Rect2(cell.position.x + cell.size.x * 0.5 - 70, cell.position.y + 10, 140, 28)
+	_prop("whiteboard", wb, {"set": "cozy"})
+	_prop("plant", Rect2(cell.position.x + 10, cell.position.y + 12, 28, 28), {"set": "cozy"})
+	_prop("plant", Rect2(cell.end.x - 40, cell.position.y + 12, 28, 28), {"set": "cozy"})
+	_prop("plant", Rect2(cell.position.x + 10, cell.end.y - 44, 28, 28), {"set": "cozy"})
+	_prop("lamp", Rect2(cell.end.x - 36, cell.end.y - 52, 20, 34), {"set": "cozy"})
+	_prop("lamp", Rect2(cell.position.x + 12, cell.position.y + cell.size.y * 0.45, 20, 34), {"set": "cozy"})
+
+
+## Executive: larger desks, bookcases (east wall — bank safe stays on west),
+## rug, lamps, plants; CoS keeps the big executive desk.
+func _build_executive_diorama(room: Dictionary, cell: Rect2) -> void:
+	_diorama_desks(room, cell, {
+		"rug": "#5c6bc0", "cols": 2, "cell_w": 170.0, "cell_h": 150.0,
+		"desk_w": 96.0, "desk_h": 38.0, "top": 88.0, "allow_exec": true,
+	})
+	# Bookcases along the east wall only (west wall hosts the bank safe).
+	_prop("bookcase", Rect2(cell.end.x - 42, cell.position.y + 70, 28, 70), {"set": "cozy"})
+	_prop("bookcase", Rect2(cell.end.x - 42, cell.position.y + 160, 28, 70), {"set": "cozy"})
+	_prop("plant", Rect2(cell.end.x - 48, cell.end.y - 48, 30, 30), {"set": "cozy"})
+	_prop("plant", Rect2(cell.position.x + 48, cell.end.y - 48, 30, 30), {"set": "cozy"})
+	_prop("lamp", Rect2(cell.end.x - 56, cell.position.y + 18, 20, 34), {"set": "cozy"})
+	_prop("lamp", Rect2(cell.position.x + 48, cell.position.y + 18, 20, 34), {"set": "cozy"})
+
+
+## Product & Design: colourful seating, pinboards / mood boards, drafting table.
+func _build_product_diorama(room: Dictionary, cell: Rect2) -> void:
+	_diorama_desks(room, cell, {
+		"rug": "#ce93d8", "cols": 2, "chair_color": "#f48fb1", "soft_monitor": true,
+	})
+	_prop("pinboard", Rect2(cell.position.x + 24, cell.position.y + 10, 100, 26), {"set": "cozy", "variant": "mood"})
+	_prop("pinboard", Rect2(cell.end.x - 124, cell.position.y + 10, 100, 26), {"set": "cozy", "variant": "pins"})
+	# Drafting table in the SE corner (away from door band).
+	_prop("desk", Rect2(cell.end.x - 110, cell.end.y - 120, 88, 40), {
+		"set": "cozy", "style": "drafting", "soft_monitor": false, "owner": "",
+	})
+	_prop("chair", Rect2(cell.end.x - 78, cell.end.y - 88, 26, 24), {"set": "cozy", "color": "#ffcc80", "sort_y": cell.end.y - 70})
+	_prop("plant", Rect2(cell.position.x + 10, cell.end.y - 44, 28, 28), {"set": "cozy"})
+	_prop("lamp", Rect2(cell.position.x + 12, cell.position.y + cell.size.y * 0.4, 20, 34), {"set": "cozy"})
+
+
+## Operations & Support: headset desk cluster, ticket/kanban wall, water cooler.
+func _build_operations_diorama(room: Dictionary, cell: Rect2) -> void:
+	_diorama_desks(room, cell, {
+		"rug": "#81c784", "cols": 2, "desk_style": "headset", "soft_monitor": true,
+	})
+	_prop("kanban", Rect2(cell.position.x + cell.size.x * 0.5 - 80, cell.position.y + 10, 160, 28), {"set": "cozy"})
+	# Water cooler in NE corner (not a hub amenity rename — unique wp).
+	var water := Rect2(cell.end.x - 48, cell.position.y + 48, 36, 40)
+	_prop("water", water, {"set": "cozy"})
+	_wp("Ops_Water_Cooler", Vector2(water.get_center().x, water.end.y + 22), "down")
+	_prop("plant", Rect2(cell.position.x + 10, cell.end.y - 44, 28, 28), {"set": "cozy"})
+	_prop("lamp", Rect2(cell.position.x + 12, cell.position.y + 16, 20, 34), {"set": "cozy"})
+
+
+## Finance: tidy desks, filing cabinets, wall chart.
+func _build_finance_diorama(room: Dictionary, cell: Rect2) -> void:
+	_diorama_desks(room, cell, {
+		"rug": "#a1887f", "cols": 2, "desk_w": 84.0, "soft_monitor": true, "desk_plant": false,
+	})
+	_prop("chart", Rect2(cell.position.x + cell.size.x * 0.5 - 70, cell.position.y + 10, 140, 28), {"set": "cozy"})
+	_prop("filing", Rect2(cell.end.x - 44, cell.position.y + 56, 30, 50), {"set": "cozy"})
+	_prop("filing", Rect2(cell.end.x - 44, cell.position.y + 120, 30, 50), {"set": "cozy"})
+	_prop("plant", Rect2(cell.position.x + 10, cell.end.y - 44, 26, 26), {"set": "cozy"})
+	_prop("lamp", Rect2(cell.position.x + 12, cell.position.y + 16, 20, 34), {"set": "cozy"})
+
+
+## Special Projects: lab / workbench feel.
+func _build_lab_diorama(room: Dictionary, cell: Rect2) -> void:
+	_diorama_desks(room, cell, {
+		"rug": "#78909c", "cols": 2, "desk_style": "workbench", "soft_monitor": true, "desk_plant": false,
+	})
+	_prop("whiteboard", Rect2(cell.position.x + 20, cell.position.y + 10, 120, 26), {"set": "cozy", "variant": "schematic"})
+	# Central workbench island (no waypoint — empty lab desks cover seating).
+	_prop("desk", Rect2(cell.get_center().x - 60, cell.end.y - 130, 120, 44), {
+		"set": "cozy", "style": "workbench", "soft_monitor": false, "owner": "",
+	})
+	_prop("plant", Rect2(cell.end.x - 40, cell.end.y - 44, 28, 28), {"set": "cozy"})
+	_prop("lamp", Rect2(cell.position.x + 12, cell.position.y + 16, 20, 34), {"set": "cozy"})
+	_prop("lamp", Rect2(cell.end.x - 36, cell.position.y + 16, 20, 34), {"set": "cozy"})
 
 
 func _desk_grid(room: Dictionary, origin: Vector2) -> void:
@@ -543,7 +667,11 @@ func _build_break(cell: Dictionary, r: Rect2) -> void:
 	_wp("Foosball_2", Vector2(f2x, table.position.y + 22), "left", "foosball")
 	_wp("Foosball_3", Vector2(f1x, table.position.y + 50), "right", "foosball")
 	_wp("Foosball_4", Vector2(f2x, table.position.y + 50), "left", "foosball")
-	_prop("plant", Rect2(p.x + m, e.y - 50, 34, 34))
+	_prop("plant", Rect2(p.x + m, e.y - 50, 34, 34), {"set": "cozy"})
+	_prop("plant", Rect2(e.x - m - 34, e.y - 50, 34, 34), {"set": "cozy"})
+	_prop("bin", Rect2(p.x + m + 40, e.y - 48, 22, 22), {"set": "cozy"})
+	_prop("snacks", Rect2(counter_x + 8, p.y + 42, 36, 18), {"set": "cozy"})
+	_prop("microwave", Rect2(counter_x + counter_w * 0.55, p.y + 40, 34, 26), {"set": "cozy"})
 
 
 
@@ -556,11 +684,11 @@ func _build_canteen(cell: Dictionary, r: Rect2) -> void:
 	var m := 14.0
 	# Back-wall appliances packed from the right edge; counter fills the left.
 	var micro := Rect2(e.x - m - 36, p.y + 52, 36, 28)
-	_prop("microwave", micro)
+	_prop("microwave", micro, {"set": "cozy"})
 	var coffee := Rect2(micro.position.x - 10 - 48, p.y + 44, 48, 40)
-	_prop("coffee", coffee)
+	_prop("coffee", coffee, {"set": "cozy"})
 	var fridge := Rect2(coffee.position.x - 10 - 40, p.y + 36, 40, 52)
-	_prop("fridge", fridge)
+	_prop("fridge", fridge, {"set": "cozy"})
 	var counter_w := maxf(120.0, fridge.position.x - (p.x + m) - 12.0)
 	var counter := Rect2(p.x + m, p.y + 42, counter_w, 40)
 	_prop("counter", counter, {"set": "canteen"})
@@ -590,16 +718,19 @@ func _build_canteen(cell: Dictionary, r: Rect2) -> void:
 		var fallback := Vector2(r.get_center().x + (seat_i - 5) * 28.0, e.y - 60)
 		_wp("Canteen_Seat_%d" % seat_i, fallback, "down", "chair")
 		seat_i += 1
-	_prop("plant", Rect2(e.x - m - 30, p.y + 16, 30, 30))
+	_prop("plant", Rect2(e.x - m - 30, p.y + 16, 30, 30), {"set": "cozy"})
+	_prop("plant", Rect2(p.x + m, e.y - 48, 28, 28), {"set": "cozy"})
+	_prop("snacks", Rect2(counter.position.x + 16, counter.position.y - 6, 40, 16), {"set": "cozy"})
+	_prop("bin", Rect2(p.x + m, e.y - 56, 22, 22), {"set": "cozy"})
 	_chat("Chat_Canteen", Vector2(r.get_center().x, e.y - 36))
 
 
 
 func _build_server(cell: Dictionary, r: Rect2) -> void:
-	areas.append({"kind": "server", "rect": r, "theme": "tile", "name": cell.name})
+	areas.append({"kind": "server", "rect": r, "theme": "server", "name": cell.name})
 	signs.append({"room_id": "__knowledge__", "name": str(cell.name), "rect": _sign_rect(r, str(cell.name)), "color": Color("#26a69a"), "clickable": true})
 	var p := r.position
-	# Cold aisle of server racks.
+	# Cold aisle of server racks with cycling LEDs (Prop._iso_servers).
 	for i in 4:
 		var rx := p.x + 28 + i * 78
 		_prop("servers", Rect2(rx, p.y + 48, 56, 120), {"set": "server", "rack_id": i})
@@ -608,7 +739,8 @@ func _build_server(cell: Dictionary, r: Rect2) -> void:
 	_wp("Server_Room", Vector2(p.x + r.size.x * 0.5, p.y + 230), "up")
 	_wp("Server_Rack_1", Vector2(p.x + 56, p.y + 180), "up")
 	_wp("Server_Rack_2", Vector2(p.x + 210, p.y + 180), "up")
-	_prop("plant", Rect2(r.end.x - 40, r.end.y - 48, 28, 28))
+	# Tiny status lamp, no leafy plant (keeps the antistatic look).
+	_prop("lamp", Rect2(r.end.x - 36, r.end.y - 52, 18, 30), {"set": "server"})
 	_chat("Chat_Server", Vector2(p.x + r.size.x * 0.5, r.end.y - 36))
 
 
@@ -648,17 +780,22 @@ func _build_rec(cell: Dictionary, r: Rect2) -> void:
 	_prop("cushion", c2, {"set": "rec", "tint": "#b39ddb"})
 	_wp("Meditation_Cushion_1", Vector2(c1.get_center().x, c1.get_center().y - 2), "down", "meditate")
 	_wp("Meditation_Cushion_2", Vector2(c2.get_center().x, c2.get_center().y - 2), "down", "meditate")
+	_prop("bin", Rect2(e.x - m - 22, e.y - 48, 20, 20), {"set": "cozy"})
 	_chat("Chat_Rec", Vector2(p.x + r.size.x * 0.35, e.y - 40))
 
 
 func _build_meeting(cell: Dictionary, r: Rect2) -> void:
-	areas.append({"kind": "meeting", "rect": r, "theme": "carpet", "name": cell.name})
+	areas.append({"kind": "meeting", "rect": r, "theme": "meeting", "name": cell.name})
 	signs.append({"room_id": "", "name": str(cell.name), "rect": _sign_rect(r, str(cell.name)), "color": Color("#7e6aa6"), "clickable": false})
 	var n := int(cell.seats)
 	var per_side := ceili(n / 2.0)
 	var tw := per_side * 84.0 + 20.0
 	var table := Rect2(r.position.x + r.size.x * 0.5 - tw * 0.5, r.position.y + maxf(120.0, r.size.y * 0.5 - 40.0), tw, 64)
-	_prop("table", table)
+	# Soft rug under the conference table.
+	_prop("rug", Rect2(table.position.x - 24, table.position.y - 50, tw + 48, 160), {"set": "cozy", "color": "#7e57c2"})
+	_prop("table", table, {"set": "cozy"})
+	# Presentation screen on the north wall.
+	_prop("screen", Rect2(r.position.x + r.size.x * 0.5 - 55, r.position.y + 14, 110, 22), {"set": "cozy"})
 	var names: Array[String] = []
 	for i in n:
 		var top_side := i < per_side
@@ -672,10 +809,13 @@ func _build_meeting(cell: Dictionary, r: Rect2) -> void:
 			_wp(name, pos, "down", "chair")
 		else:
 			var pos := Vector2(sx, table.end.y + 24)
-			_prop("chair", Rect2(pos.x - 13, pos.y - 22, 26, 24), {"sort_y": pos.y + 2.0})
+			_prop("chair", Rect2(pos.x - 13, pos.y - 22, 26, 24), {"sort_y": pos.y + 2.0, "set": "cozy"})
 			_wp(name, pos, "up", "chair")
 	meeting_groups["Meeting_Room"] = names
-	_prop("plant", Rect2(r.end.x - 48, r.end.y - 48, 34, 34))
+	_prop("plant", Rect2(r.end.x - 48, r.end.y - 48, 34, 34), {"set": "cozy"})
+	_prop("plant", Rect2(r.position.x + 14, r.end.y - 48, 34, 34), {"set": "cozy"})
+	_prop("lamp", Rect2(r.position.x + 14, r.position.y + 16, 20, 34), {"set": "cozy"})
+	_prop("lamp", Rect2(r.end.x - 36, r.position.y + 16, 20, 34), {"set": "cozy"})
 
 
 func _build_wing(room: Dictionary, wing: Rect2) -> Rect2:
@@ -726,7 +866,9 @@ func _prop(kind: String, r: Rect2, extra: Dictionary = {}) -> void:
 	d.merge(extra, true)
 	props.append(d)
 	# Walkable surface props (mats, rugs, cushions, floor lamps glow) must not block nav.
-	if kind not in ["chair", "rug", "yoga_mat", "cushion", "lamp"]:
+	# Wall-mounted / floor-soft props must not block doors or the walkmesh.
+	if kind not in ["chair", "rug", "yoga_mat", "cushion", "lamp",
+			"whiteboard", "pinboard", "kanban", "chart", "screen", "snacks"]:
 		obstacles.append(r)
 
 
@@ -1100,16 +1242,27 @@ func _draw_floor(a: Dictionary) -> void:
 	var c2: Color = pal[1]
 	draw_rect(r, c1)
 	match str(a.get("theme", "wood")):
-		"tile", "lobby", "cozy":
+		"tile", "lobby", "cozy", "product", "ops", "finance", "lab":
 			var t := 32
 			for x in range(int(r.position.x), int(r.end.x), t):
 				for y in range(int(r.position.y), int(r.end.y), t):
 					if int((x - r.position.x) / t + (y - r.position.y) / t) % 2 == 0:
 						# Soft wash — keep checker readable without high contrast.
 						draw_rect(Rect2(x, y, t, t).intersection(r), Color(c2, 0.55))
-		"carpet", "navy":
+		"carpet", "navy", "meeting", "exec":
 			for y in range(int(r.position.y), int(r.end.y), 8):
-				draw_line(Vector2(r.position.x, y), Vector2(r.end.x, y), Color(c2, 0.5), 1.0)
+				draw_line(Vector2(r.position.x, y), Vector2(r.end.x, y), Color(c2, 0.45), 1.0)
+		"server":
+			# Dark antistatic panels with subtle seams.
+			var s := 48
+			for x in range(int(r.position.x), int(r.end.x) + 1, s):
+				draw_line(Vector2(x, r.position.y), Vector2(x, r.end.y), Color(c2, 0.55), 1.0)
+			for y in range(int(r.position.y), int(r.end.y) + 1, s):
+				draw_line(Vector2(r.position.x, y), Vector2(r.end.x, y), Color(c2, 0.55), 1.0)
+			# Faint conductive grid
+			for x in range(int(r.position.x) + 24, int(r.end.x), s):
+				for y in range(int(r.position.y) + 24, int(r.end.y), s):
+					draw_circle(Vector2(x, y), 1.2, Color(0.4, 0.85, 0.7, 0.12))
 		_:
 			# Wood planks with staggered joints.
 			var row := 0

@@ -92,6 +92,14 @@ func _draw() -> void:
 		"rug": _iso_rug()
 		"fountain": _iso_fountain()
 		"lamp": _iso_lamp()
+		"bookcase": _draw_bookcase()
+		"filing": _draw_filing()
+		"pinboard": _draw_pinboard()
+		"kanban": _draw_kanban()
+		"chart": _draw_chart()
+		"screen": _draw_screen_wall()
+		"snacks": _draw_snacks()
+		"whiteboard": _draw_pinboard()
 
 
 func _rr(r: Rect2, radius: float, c: Color) -> void:
@@ -470,20 +478,19 @@ func _plane_reset() -> void:
 
 
 ## Soft contact shadow on the floor under this slice of `r`.
-func _floor_shadow(r: Rect2, alpha: float = 0.16) -> void:
+func _floor_shadow(r: Rect2, alpha: float = 0.22) -> void:
 	if str(data.get("set", "")) == "cozy":
-		alpha = maxf(alpha, 0.28)
+		alpha = maxf(alpha, 0.30)
 	var s := Rect2(r.position + Vector2(2, 3), r.size).intersection(clip.grow_individual(0, 0, 3, 4))
 	if not s.has_area():
 		return
 	_plane_top(0.0)
 	draw_rect(s, Color(0, 0, 0, alpha))
-	# Soft oval contact for cozy desks/chairs.
-	if str(data.get("set", "")) == "cozy":
-		var c := s.get_center()
-		draw_set_transform(c, 0.0, Vector2(s.size.x * 0.55, s.size.y * 0.35))
-		draw_circle(Vector2.ZERO, 1.0, Color(0, 0, 0, 0.18))
-		_plane_top(0.0)
+	# Soft oval contact under every prop.
+	var c := s.get_center()
+	draw_set_transform(c, 0.0, Vector2(maxf(s.size.x * 0.55, 6.0), maxf(s.size.y * 0.35, 4.0)))
+	draw_circle(Vector2.ZERO, 1.0, Color(0, 0, 0, 0.16))
+	_plane_top(0.0)
 	_plane_reset()
 
 
@@ -522,6 +529,13 @@ func _draw_iso() -> void:
 		"servers": _iso_servers()
 		"wall": _iso_wall()
 		"whiteboard": _iso_whiteboard()
+		"pinboard": _iso_pinboard()
+		"kanban": _iso_kanban()
+		"chart": _iso_chart()
+		"bookcase": _iso_bookcase()
+		"filing": _iso_filing()
+		"screen": _iso_screen()
+		"snacks": _iso_snacks()
 		"fridge": _iso_fridge()
 		"menu": _iso_menu()
 		"microwave": _iso_microwave()
@@ -572,36 +586,79 @@ func _iso_desk() -> void:
 		_draw_exec_nameplate(r)
 		_plane_reset()
 	else:
-		# Monitor on the far edge, screen facing the sitter (south).
-		var soft := bool(data.get("soft_monitor", false)) or str(data.get("set", "")) == "cozy"
-		var stand := Color("#78909c") if soft else Color("#37474f")
-		_box(Rect2(cx - 3, r.position.y + 5, 6, 4), DESK_H, 10, stand)
-		_box(Rect2(cx - 10, r.position.y + 4, 20, 8), DESK_H, 1.5, stand)
-		var mw := 50.0 if soft else 62.0
-		var mon := Rect2(cx - mw * 0.5, r.position.y + 3, mw, 5)
-		var z0 := DESK_H + 8.0
-		var mh := 32.0 if soft else 40.0
-		var topc := Color("#90a4ae") if soft else Color("#2b343a")
-		var southc := Color("#78909c") if soft else Color("#1c2328")
-		var eastc := Color("#607d8b") if soft else Color("#151b1f")
-		_box(mon, z0, mh, topc, southc, eastc)
-		_plane_south(mon.end.y, z0 + mh)
-		draw_rect(Rect2(cx - mw * 0.5 + 2, 2, mw - 4, mh - 4), Color("#546e7a") if soft else Color("#263238"))
-		_draw_screen(Rect2(cx - mw * 0.5 + 3.5, 3.5, mw - 7, mh - 7))
-		_plane_reset()
+		var style := str(data.get("style", ""))
+		if style == "drafting":
+			# Angled drafting board + lamp + paper roll (no tall monitor).
+			_plane_top(DESK_H)
+			draw_rect(Rect2(r.position.x + 6, r.position.y + 4, r.size.x - 12, r.size.y - 10), Color("#fff8e1"))
+			draw_line(Vector2(r.position.x + 10, r.position.y + 10), Vector2(r.end.x - 14, r.end.y - 12), Color("#bcaaa4"), 1.2)
+			draw_line(Vector2(r.position.x + 14, r.position.y + 18), Vector2(r.end.x - 20, r.end.y - 8), Color("#bcaaa4"), 1.0)
+			_plane_reset()
+			_box(Rect2(r.end.x - 18, r.position.y + 6, 10, 10), DESK_H, 18, Color("#ffcc80"), Color("#ffa726"), Color("#ef6c00"))
+			_box(Rect2(r.position.x + 6, r.position.y + 6, 14, 8), DESK_H, 6, Color("#eceff1"))
+		elif style == "workbench":
+			# Lab bench: tool tray, beaker, cable spool — soft monitor optional.
+			_plane_top(DESK_H)
+			draw_rect(Rect2(r.position.x + 4, r.position.y + 4, 28, 12), Color("#546e7a"))
+			for i in 3:
+				draw_rect(Rect2(r.position.x + 6 + i * 8, r.position.y + 6, 6, 8), [Color("#ef5350"), Color("#42a5f5"), Color("#66bb6a")][i])
+			draw_circle(Vector2(r.end.x - 16, r.position.y + 14), 5.0, Color("#4fc3f7", 0.7))
+			_plane_reset()
+			var soft_wb := bool(data.get("soft_monitor", true))
+			if soft_wb:
+				var stand := Color("#78909c")
+				_box(Rect2(cx - 3, r.position.y + 5, 6, 4), DESK_H, 8, stand)
+				var mon := Rect2(cx - 22, r.position.y + 3, 44, 5)
+				_box(mon, DESK_H + 6.0, 26.0, Color("#90a4ae"), Color("#78909c"), Color("#607d8b"))
+				_plane_south(mon.end.y, DESK_H + 32.0)
+				_draw_screen(Rect2(cx - 19, 2, 38, 22))
+				_plane_reset()
+		elif style == "headset":
+			# Soft monitor + headset cradle on the desk.
+			var stand := Color("#78909c")
+			_box(Rect2(cx - 3, r.position.y + 5, 6, 4), DESK_H, 10, stand)
+			_box(Rect2(cx - 10, r.position.y + 4, 20, 8), DESK_H, 1.5, stand)
+			var mon := Rect2(cx - 25, r.position.y + 3, 50, 5)
+			_box(mon, DESK_H + 8.0, 30.0, Color("#90a4ae"), Color("#78909c"), Color("#607d8b"))
+			_plane_south(mon.end.y, DESK_H + 38.0)
+			_draw_screen(Rect2(cx - 22, 3, 44, 24))
+			_plane_reset()
+			_box(Rect2(r.end.x - 22, r.position.y + 14, 14, 10), DESK_H, 8, Color("#37474f"), Color("#263238"), Color("#1c2328"))
+			_box(Rect2(r.end.x - 20, r.position.y + 16, 10, 6), DESK_H + 8, 4, Color("#90caf9"))
+		else:
+			# Monitor on the far edge, screen facing the sitter (south).
+			var soft := bool(data.get("soft_monitor", false)) or str(data.get("set", "")) == "cozy"
+			var stand := Color("#78909c") if soft else Color("#37474f")
+			_box(Rect2(cx - 3, r.position.y + 5, 6, 4), DESK_H, 10, stand)
+			_box(Rect2(cx - 10, r.position.y + 4, 20, 8), DESK_H, 1.5, stand)
+			var mw := 50.0 if soft else 62.0
+			var mon := Rect2(cx - mw * 0.5, r.position.y + 3, mw, 5)
+			var z0 := DESK_H + 8.0
+			var mh := 32.0 if soft else 40.0
+			var topc := Color("#90a4ae") if soft else Color("#2b343a")
+			var southc := Color("#78909c") if soft else Color("#1c2328")
+			var eastc := Color("#607d8b") if soft else Color("#151b1f")
+			_box(mon, z0, mh, topc, southc, eastc)
+			_plane_south(mon.end.y, z0 + mh)
+			draw_rect(Rect2(cx - mw * 0.5 + 2, 2, mw - 4, mh - 4), Color("#546e7a") if soft else Color("#263238"))
+			_draw_screen(Rect2(cx - mw * 0.5 + 3.5, 3.5, mw - 7, mh - 7))
+			_plane_reset()
 
 
 func _iso_chair() -> void:
 	var r := rect
 	var c := Vector2(r.get_center().x, r.position.y + r.size.y * 0.5 + 1)
-	_plane_top(0)
-	draw_circle(c + Vector2(2, 2), 11.0, Color(0, 0, 0, 0.14))
-	_plane_reset()
+	_floor_shadow(Rect2(c - Vector2(12, 11), Vector2(24, 22)), 0.20)
+	var tint := Color.from_string(str(data.get("color", "")), Color("#455a64"))
+	if str(data.get("color", "")).is_empty():
+		tint = Color("#455a64")
+	var dark := tint.darkened(0.25)
+	var mid := tint.darkened(0.12)
 	_box(Rect2(c - Vector2(2, 2), Vector2(4, 4)), 0, 13, Color("#37474f"), Color(0, 0, 0, 0), Color(0, 0, 0, 0), false)
 	var seat := Rect2(c.x - 12, c.y - 11, 24, 22)
-	_box(seat, 13, 5, Color("#455a64"), Color("#263238"), Color("#1f2a30"))
+	_box(seat, 13, 5, tint, dark, mid)
 	# Backrest on the south side (we look at the sitter's back from the south-east).
-	_box(Rect2(seat.position.x + 1, seat.end.y - 4, seat.size.x - 2, 4), 18, 24, Color("#37474f"), Color("#455a64"), Color("#263238"))
+	_box(Rect2(seat.position.x + 1, seat.end.y - 4, seat.size.x - 2, 4), 18, 24, mid, tint, dark)
 
 
 ## Meeting chair whose sitter faces south (towards us): backrest on the north.
@@ -933,7 +990,7 @@ func _iso_wall() -> void:
 		draw_line(_p(r.end, h), _p(Vector2(r.end.x, r.position.y), h), Color(1, 1, 1, 0.2), 1.0)
 
 
-## Whiteboard hung on a west wall, facing east (into the room).
+## Whiteboard hung on a north/west wall. Optional variant=schematic.
 func _iso_whiteboard() -> void:
 	var r := rect
 	var z0 := 14.0
@@ -941,10 +998,17 @@ func _iso_whiteboard() -> void:
 	_box(r, z0, h, Color("#cfd8dc"), Color("#b0bec5"), Color("#eceff1"))
 	_plane_east(r.end.x, z0 + h)
 	draw_rect(Rect2(r.position.y, 0, r.size.y, h), Color("#90a4ae"), false, 2.0)
-	var cols := [Color("#e57373"), Color("#64b5f6"), Color("#81c784")]
-	for i in 3:
-		draw_line(Vector2(r.position.y + 14, 10 + i * 9), Vector2(r.position.y + 50 + i * 18, 10 + i * 9), cols[i], 2.0)
-	draw_rect(Rect2(r.position.y + 80, 8, 26, 20), Color("#ffe082"))
+	var variant := str(data.get("variant", ""))
+	if variant == "schematic":
+		for i in 4:
+			draw_line(Vector2(r.position.y + 10, 8 + i * 7), Vector2(r.position.y + 90, 8 + i * 7), Color("#546e7a"), 1.2)
+		draw_circle(Vector2(r.position.y + 40, 18), 6.0, Color("#4fc3f7", 0.5))
+		draw_rect(Rect2(r.position.y + 70, 12, 18, 18), Color("#81c784", 0.5), false, 1.5)
+	else:
+		var cols := [Color("#e57373"), Color("#64b5f6"), Color("#81c784")]
+		for i in 3:
+			draw_line(Vector2(r.position.y + 14, 10 + i * 9), Vector2(r.position.y + 50 + i * 18, 10 + i * 9), cols[i], 2.0)
+		draw_rect(Rect2(r.position.y + 80, 8, 26, 20), Color("#ffe082"))
 	draw_rect(Rect2(r.position.y + 10, h - 5, 40, 3), Color("#78909c"))
 	_plane_reset()
 
@@ -1156,3 +1220,182 @@ func _iso_lamp() -> void:
 	var c := Iso.to_screen(rect.get_center()) - position
 	draw_circle(c + Vector2(0, -30), 16.0, Color(1.0, 0.92, 0.55, pulse))
 
+
+# ---- room-personality props (cozy diorama rollout) ---------------------------
+func _draw_bookcase() -> void:
+	var r := rect
+	_shadow(r)
+	_rr(r, 3, Color("#6d4c41"))
+	for i in 3:
+		var y := r.position.y + 6 + i * (r.size.y / 3.5)
+		draw_rect(Rect2(r.position.x + 3, y, r.size.x - 6, 3), Color("#5d4037"))
+		var cols := [Color("#e57373"), Color("#64b5f6"), Color("#81c784"), Color("#ffb74d"), Color("#ba68c8")]
+		for j in 4:
+			draw_rect(Rect2(r.position.x + 5 + j * 5, y - 10, 4, 10), cols[(i + j) % cols.size()])
+
+
+func _draw_filing() -> void:
+	var r := rect
+	_shadow(r)
+	_rr(r, 3, Color("#78909c"))
+	for i in 3:
+		var y := r.position.y + 6 + i * ((r.size.y - 12) / 3.0)
+		draw_rect(Rect2(r.position.x + 3, y, r.size.x - 6, (r.size.y - 16) / 3.0 - 2), Color("#90a4ae"))
+		draw_rect(Rect2(r.get_center().x - 4, y + 4, 8, 3), Color("#546e7a"))
+
+
+func _draw_pinboard() -> void:
+	var r := rect
+	_rr(r, 2, Color("#a1887f"))
+	_rr(Rect2(r.position + Vector2(2, 2), r.size - Vector2(4, 4)), 2, Color("#fff8e1"))
+	var cols := [Color("#ef9a9a"), Color("#90caf9"), Color("#a5d6a7"), Color("#ffe082"), Color("#ce93d8")]
+	for i in 5:
+		var px := r.position.x + 6 + (i % 3) * 18
+		var py := r.position.y + 5 + int(i / 3) * 10
+		draw_rect(Rect2(px, py, 14, 8), cols[i])
+
+
+func _draw_kanban() -> void:
+	var r := rect
+	_rr(r, 2, Color("#546e7a"))
+	_rr(Rect2(r.position + Vector2(2, 2), r.size - Vector2(4, 4)), 2, Color("#eceff1"))
+	var cols := [Color("#ef5350"), Color("#ffca28"), Color("#66bb6a")]
+	for col_i in 3:
+		var x := r.position.x + 6 + col_i * (r.size.x / 3.2)
+		draw_rect(Rect2(x, r.position.y + 4, r.size.x / 4.0, 3), cols[col_i])
+		for row in 2:
+			draw_rect(Rect2(x, r.position.y + 10 + row * 8, r.size.x / 4.5, 6), cols[col_i].lightened(0.35))
+
+
+func _draw_chart() -> void:
+	var r := rect
+	_rr(r, 2, Color("#5d4037"))
+	_rr(Rect2(r.position + Vector2(2, 2), r.size - Vector2(4, 4)), 2, Color("#fafafa"))
+	for i in 4:
+		var h := 6.0 + i * 3.0
+		draw_rect(Rect2(r.position.x + 8 + i * 12, r.end.y - 4 - h, 8, h), Color("#42a5f5"))
+
+
+func _draw_screen_wall() -> void:
+	var r := rect
+	_rr(r, 2, Color("#263238"))
+	_rr(Rect2(r.position + Vector2(3, 3), r.size - Vector2(6, 6)), 2, Color("#1565c0"))
+
+
+func _draw_snacks() -> void:
+	var r := rect
+	_shadow(r, 0.12)
+	_rr(r, 3, Color("#fff3e0"))
+	var cols := [Color("#ef5350"), Color("#ffca28"), Color("#66bb6a"), Color("#42a5f5")]
+	for i in 4:
+		draw_rect(Rect2(r.position.x + 4 + i * 8, r.position.y + 4, 6, 10), cols[i])
+
+
+func _iso_bookcase() -> void:
+	var r := rect
+	var h := 56.0
+	_floor_shadow(r)
+	_box(r, 0, h, Color("#8d6e63"), Color("#6d4c41"), Color("#5d4037"))
+	_plane_south(r.end.y, h)
+	var cols := [Color("#e57373"), Color("#64b5f6"), Color("#81c784"), Color("#ffb74d"), Color("#ba68c8")]
+	for shelf in 3:
+		var y := 8.0 + shelf * 16.0
+		draw_rect(Rect2(r.position.x + 2, y, r.size.x - 4, 2), Color("#5d4037"))
+		for j in mini(4, int((r.size.x - 6) / 6.0)):
+			draw_rect(Rect2(r.position.x + 4 + j * 6, y - 12, 5, 12), cols[(shelf + j) % cols.size()])
+	_plane_reset()
+
+
+func _iso_filing() -> void:
+	var r := rect
+	var h := 48.0
+	_floor_shadow(r)
+	_box(r, 0, h, Color("#90a4ae"), Color("#78909c"), Color("#607d8b"))
+	_plane_south(r.end.y, h)
+	for i in 3:
+		var y := 6.0 + i * 14.0
+		draw_rect(Rect2(r.position.x + 3, y, r.size.x - 6, 11), Color("#b0bec5"))
+		draw_rect(Rect2(r.get_center().x - 5, y + 4, 10, 3), Color("#546e7a"))
+	_plane_reset()
+
+
+func _iso_pinboard() -> void:
+	var r := rect
+	var z0 := 16.0
+	var h := 36.0
+	_box(r, z0, h, Color("#a1887f"), Color("#8d6e63"), Color("#6d4c41"))
+	_plane_south(r.end.y, z0 + h)
+	draw_rect(Rect2(r.position.x + 2, 2, r.size.x - 4, h - 4), Color("#fff8e1"))
+	var variant := str(data.get("variant", "pins"))
+	var cols := [Color("#ef9a9a"), Color("#90caf9"), Color("#a5d6a7"), Color("#ffe082"), Color("#ce93d8"), Color("#ffab91")]
+	if variant == "mood":
+		for i in 6:
+			var px := 6.0 + (i % 3) * 28.0
+			var py := 6.0 + int(i / 3) * 14.0
+			draw_rect(Rect2(r.position.x + px, py, 22, 12), cols[i])
+	else:
+		for i in 5:
+			var px := 8.0 + i * 16.0
+			draw_rect(Rect2(r.position.x + px, 8 + (i % 2) * 10, 12, 9), cols[i])
+			draw_circle(Vector2(r.position.x + px + 6, 7 + (i % 2) * 10), 1.6, Color("#c62828"))
+	_plane_reset()
+
+
+func _iso_kanban() -> void:
+	var r := rect
+	var z0 := 14.0
+	var h := 38.0
+	_box(r, z0, h, Color("#546e7a"), Color("#455a64"), Color("#37474f"))
+	_plane_south(r.end.y, z0 + h)
+	draw_rect(Rect2(r.position.x + 2, 2, r.size.x - 4, h - 4), Color("#eceff1"))
+	var cols := [Color("#ef5350"), Color("#ffca28"), Color("#66bb6a")]
+	var labels := ["To do", "Doing", "Done"]
+	for col_i in 3:
+		var x := r.position.x + 6 + col_i * ((r.size.x - 12) / 3.0)
+		var w := (r.size.x - 18) / 3.0
+		draw_rect(Rect2(x, 4, w, 4), cols[col_i])
+		draw_string(_font, Vector2(x, 14), labels[col_i], HORIZONTAL_ALIGNMENT_LEFT, -1, 7, Color("#546e7a"))
+		for row in 2:
+			draw_rect(Rect2(x + 1, 16 + row * 9, w - 2, 7), cols[col_i].lightened(0.4))
+	_plane_reset()
+
+
+func _iso_chart() -> void:
+	var r := rect
+	var z0 := 14.0
+	var h := 38.0
+	_box(r, z0, h, Color("#5d4037"), Color("#4e342e"), Color("#3e2723"))
+	_plane_south(r.end.y, z0 + h)
+	draw_rect(Rect2(r.position.x + 2, 2, r.size.x - 4, h - 4), Color("#fafafa"))
+	# Bar chart
+	for i in 5:
+		var bh := 8.0 + i * 4.0 + sin(_t + i) * 2.0
+		draw_rect(Rect2(r.position.x + 10 + i * 18, h - 6 - bh, 12, bh), Color("#42a5f5"))
+	# Trend line
+	draw_line(Vector2(r.position.x + 8, h - 20), Vector2(r.end.x - 8, 10), Color("#ef5350"), 1.5)
+	_plane_reset()
+
+
+func _iso_screen() -> void:
+	var r := rect
+	var z0 := 18.0
+	var h := 42.0
+	_box(r, z0, h, Color("#263238"), Color("#1c2328"), Color("#151b1f"))
+	_plane_south(r.end.y, z0 + h)
+	draw_rect(Rect2(r.position.x + 3, 3, r.size.x - 6, h - 8), Color("#1565c0"))
+	# Soft presentation glow
+	var pulse := 0.15 + 0.05 * sin(_t * 2.0)
+	draw_rect(Rect2(r.position.x + 8, 8, r.size.x - 16, h - 18), Color(1, 1, 1, pulse))
+	draw_rect(Rect2(r.get_center().x - 10, h - 4, 20, 3), Color("#90a4ae"))
+	_plane_reset()
+
+
+func _iso_snacks() -> void:
+	var r := rect
+	_floor_shadow(r, 0.14)
+	_box(r, 0, 10, Color("#fff3e0"), Color("#ffe0b2"), Color("#ffcc80"))
+	_plane_top(10)
+	var cols := [Color("#ef5350"), Color("#ffca28"), Color("#66bb6a"), Color("#42a5f5")]
+	for i in mini(4, int(r.size.x / 8.0)):
+		draw_rect(Rect2(r.position.x + 3 + i * 8, r.position.y + 2, 6, 6), cols[i % cols.size()])
+	_plane_reset()
