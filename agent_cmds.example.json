@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to agent_cmds.json (gitignored). System prompts are generated from each agent's job description in office.json (see docs/agent-roles.md). run-mac.command loads agent_cmds.json automatically.",
+  "_comment": "Copy to agent_cmds.json (gitignored). System prompts are generated from each agent's job description in office.json (see docs/agent-roles.md). run-mac.command / run-windows.bat load agent_cmds.json automatically.",
   "chief_of_staff": {
     "cmd": "claude -p --output-format text {prompt}",
     "cwd": ".",

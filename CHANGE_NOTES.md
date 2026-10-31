@@ -41,3 +41,11 @@ In `--mode live` without `--agent-cmd` / `agent_cmds.json`, typing a task in a s
 - Claude bindings get a read-only `--allowedTools` allowlist (Read/Grep/Glob + git status/log/diff + gh pr list/view) and `--permission-prompts none` so status questions do not hang on approvals
 - Recruiter (DR eggbot) **Hire…** then `/hire Name | Role` persists to `office.json` and binds Claude; **Archive** on another bot persists removal
 
+
+## Windows support (`feature/windows-support`)
+
+- `run-windows.bat` / `run-windows.ps1`: venv, first-time Godot import, harness + MCP :8766, Godot; single-instance guard on port 8765
+- Cross-platform CLI env (`HOME`/`USERPROFILE`, `USER`/`USERNAME`) and process teardown (`terminate` without `killpg` on Windows); resolve `claude.cmd` via `cmd.exe /c`
+- `export_presets.cfg` Windows Desktop preset → `build/AgentOffice.windows.x86_64.exe`
+- Docs: [docs/windows-setup.md](docs/windows-setup.md); README quick start / components / limitations
+- Vault secret storage on Windows (Credential Manager via `keyring`) is out of scope here — lands with the vault PR

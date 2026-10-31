@@ -58,6 +58,8 @@ Only the drawing changes between the views. The layout, the navigation mesh and 
 ## Quick start
 
 > **macOS shortcut:** double-click `run-mac.command` to create the venv on first run (Python 3.10+; it picks the newest `python3.x` it finds), start the bridge with the MCP connector on **port 8766** (Godot WebSocket **8765**), print where the token is, and open the Godot client (**Godot 4.3+**; `godot` on your PATH, e.g. `brew install --cask godot`). Copy `agent_cmds.example.json` to `agent_cmds.json` (gitignored) so live agents bind to `claude -p`; run `claude` once and complete `/login` so Keychain auth works. The bridge stops when you close the game. It reinstalls the requirements whenever `requirements.txt` changes. Full checklist: [docs/setup.md](docs/setup.md).
+>
+> **Windows shortcut:** double-click `run-windows.bat` (or run `run-windows.ps1` in PowerShell). Same flow: venv, MCP on 8766, Godot client, bridge stops when the window closes. Needs Python 3.10+ and Godot 4.3+ on PATH (or a `Godot_v*-stable_win64.exe` the script can find). It refuses to start if port 8765 is already in use. Full steps: [docs/windows-setup.md](docs/windows-setup.md).
 
 ### 1. Run the harness
 
@@ -167,7 +169,7 @@ You need Godot **4.3 or newer**, the standard (non-.NET) build from [godotengine
 2. Press **F5** (Run Project). `Main.tscn` is the main scene.
 3. The top bar shows the connection status. The client retries the connection with increasing delays (1 s, doubling up to 15 s), so you can start the harness and Godot in either order.
 
-From the command line, with `godot` on your PATH (on macOS the binary is `Godot.app/Contents/MacOS/Godot`):
+From the command line, with `godot` on your PATH (on macOS the binary is `Godot.app/Contents/MacOS/Godot`; on Windows use `Godot_v*-stable_win64.exe` renamed or aliased as `godot`):
 
 ```bash
 godot --path .                                   # run the office
@@ -316,7 +318,9 @@ The window opens at 1280x800 (larger on a HiDPI screen) and can be resized; the 
 
 ## Stores / distribution
 
-There is no packaged build or store listing yet. Agentic Corporation is a **local desktop tool**: you run the harness and the Godot project from source on your own machine.
+There is no store listing yet. Agentic Corporation is a **local desktop tool**: you run the Python harness plus the Godot project (or an exported client) on your own machine.
+
+A **Windows Desktop** export preset is in `export_presets.cfg` (`build/AgentOffice.windows.x86_64.exe`). See [docs/windows-setup.md](docs/windows-setup.md) for prerequisites, Claude Code on Windows, `run-windows.bat`, and how to install export templates / export from the CLI.
 
 ## Stack
 
@@ -358,7 +362,11 @@ There is no packaged build or store listing yet. Agentic Corporation is a **loca
 | `tests/test_office_vault.py` | Vault metadata isolation, ACL, scrub, request/decline (no Keychain required). |
 | `tests/test_office_mcp.py` | Python unit tests for the MCP connector (auth, tools/list, tool calls reaching a WebSocket client, unknown agents, truncation, mixed and live modes, rate limit, token file, and the inbox: queue, persist, deliver, reply, badge events, cap, escaping). |
 | `tools/test_client.py` | Python test client for the harness protocol, in mock and cli modes. |
-| `tools/funnel-mac.sh` | `on` / `off` / `status` / `url` helper for Tailscale Funnel on the MCP port. |
+| `run-mac.command` | macOS double-click launcher: venv, harness + MCP :8766, Godot; stops the bridge when the window closes. |
+| `run-windows.bat` / `run-windows.ps1` | Windows launcher (same flow). Refuses to start if port 8765 is already in use. |
+| `export_presets.cfg` | Godot export presets (Windows Desktop → `build/AgentOffice.windows.x86_64.exe`). |
+| `docs/windows-setup.md` | Windows prerequisites, Claude Code install, launch and export steps. |
+| `tools/funnel-mac.sh` | `on` / `off` / `status` / `url` helper for Tailscale Funnel on the MCP port (macOS). |
 | `tools/tempo_check.py` | Watches the harness and reports walks per minute, dwell times and how many agents walk at once. |
 | `docs/images/` | Screenshots used in this README. |
 
@@ -504,7 +512,7 @@ godot --headless --path . --script res://tests/smoke_test.gd    # layouts, spawn
 - CLI mode treats output as plain lines. It doesn't understand structured output such as stream-json yet, so tool calls don't drive the animation beyond WORKING and the latest line in the bubble.
 - The shared meeting room has 2–8 seats (`shared.meeting_room.seats`) and isolated wings have 4. Extra collaborators share a seat, slightly offset.
 - The harness keeps the last 200 log lines per agent and nothing is saved to disk. Restarting the harness clears its history.
-- Testing has been on Linux (headless, plus Xvfb with software OpenGL). macOS and Windows should work but haven't been verified. The harness's Ctrl+C handling has a Windows fallback that hasn't been tested.
+- Testing has been on Linux (headless, plus Xvfb with software OpenGL) and macOS. Windows launchers and harness process teardown are implemented but need verification on a real Windows machine (Claude `.cmd` resolution, Credential Manager once the vault lands, and the exported `.exe` + harness pair).
 - The WebSocket has no authentication (see Security). The MCP connector does.
 - Real bots only report what they choose to report; between reports the character holds its last state (in mock mode, until `--live-hold` runs out).
 
@@ -524,4 +532,4 @@ Encrypted secrets for agents, managed from a **bank safe in the Executive room**
 - **Audit**: unlock, failed unlock, grant, revoke, add, remove post to the notice board (names only). Chief of Staff MCP grant/revoke are audited the same way.
 - **CoS MCP**: `vault_list`, `vault_grant`, `vault_revoke`, `vault_request_remove` (unchanged; no values).
 
-See [docs/setup.md](docs/setup.md) for keychain notes and the unlock helper.
+See [docs/setup.md](docs/setup.md) for keychain notes and the unlock helper. Do not commit `.office_token`, API keys, Keychain material, or Windows Credential Manager payloads. A `.gitleaks.toml` is included for pre-push scanning. The office vault keeps secret values in the OS store (macOS Keychain; Windows via Python `keyring` / Credential Manager) and only ever shows names in the UI.

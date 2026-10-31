@@ -22,7 +22,7 @@ Your global `~/.claude/settings.json` is **not** modified.
 
 ## Try it
 
-1. Start the office (bridge + Godot), e.g. `./run-mac.command --mode live`.
+1. Start the office (bridge + Godot), e.g. `./run-mac.command --mode live` (Windows: `run-windows.bat --mode live`).
 2. In this repo: `claude -p 'list files in this repo'`
    (or an interactive `claude` session).
 3. Watch **Chief of Staff** (override with `$OFFICE_AGENT`).
