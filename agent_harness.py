@@ -913,6 +913,12 @@ class Hub:
             await self._action_vault_submit_secret(ws, msg)
         elif action == "VAULT_DISMISS_SECRET":
             await self._action_vault_dismiss_secret(ws, msg)
+        elif action == "VAULT_UNLOCK":
+            await self._action_vault_unlock(ws, msg)
+        elif action == "VAULT_LOCK":
+            await self._action_vault_lock(ws, msg)
+        elif action == "VAULT_SET_AGENTS":
+            await self._action_vault_set_agents(ws, msg)
         else:
             await self.reply(ws, {"type": "ERROR", "message": f"unknown action '{action}'"})
 
@@ -1124,21 +1130,114 @@ class Hub:
     def _vault_or_error(self) -> OfficeVault | None:
         return self.vault
 
+    def _vault_roster(self) -> list[str]:
+        return sorted(self.agents.keys())
+
+    def _vault_meta_payload(self, *, full: bool) -> dict[str, Any]:
+        vault = self.vault
+        assert vault is not None
+        if full and vault.is_unlocked():
+            secrets = vault.list_meta()
+        else:
+            secrets = vault.list_public()
+        return {
+            "type": "VAULT_META",
+            "secrets": secrets,
+            "pending": list(vault.pending),
+            "locked": not vault.is_unlocked(),
+            "unlocked_until": vault.unlocked_until,
+            "roster": self._vault_roster(),
+            "integrity_ok": vault.verify_integrity(),
+            "integrity_detail": vault.integrity_detail,
+        }
+
+    async def _vault_require_unlocked(self, ws: ServerConnection, action: str) -> OfficeVault | None:
+        vault = self._vault_or_error()
+        if vault is None:
+            await self.reply(ws, {"type": "ERROR", "action": action, "message": "vault unavailable"})
+            return None
+        if not vault.is_unlocked():
+            await self.reply(ws, {"type": "ERROR", "action": action,
+                                  "message": "vault is locked — click the Executive safe to unlock"})
+            return None
+        vault.touch_unlock()
+        return vault
+
+    async def _action_vault_unlock(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        vault = self._vault_or_error()
+        if vault is None:
+            await self.reply(ws, {"type": "ERROR", "action": "VAULT_UNLOCK", "message": "vault unavailable"})
+            return
+        if vault.is_unlocked():
+            vault.touch_unlock()
+            self.emit({"type": "VAULT_UNLOCKED", "unlocked_until": vault.unlocked_until,
+                       "already": True})
+            self.emit(self._vault_meta_payload(full=True))
+            await self.reply(ws, {"type": "ACK", "action": "VAULT_UNLOCK", "already": True})
+            return
+        reason = str(msg.get("reason") or "Unlock the Agentic Corporation office vault")
+        try:
+            from tools.vault_auth import authenticate as vault_authenticate
+        except ImportError:
+            # tools/ may not be a package — load by path
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "vault_auth", Path(__file__).resolve().parent / "tools" / "vault_auth.py")
+            if spec is None or spec.loader is None:
+                await self.reply(ws, {"type": "ERROR", "action": "VAULT_UNLOCK",
+                                      "message": "vault_auth helper missing"})
+                return
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            vault_authenticate = mod.authenticate  # type: ignore
+
+        ok, detail = await asyncio.to_thread(vault_authenticate, reason)
+        if not ok:
+            self.emit(vault_notice_payload(
+                "vault_unlock_fail", "Vault unlock failed",
+                (detail or "authentication failed")[:160],
+            ))
+            self.emit({"type": "VAULT_UNLOCK_FAILED", "detail": (detail or "")[:160]})
+            await self.reply(ws, {"type": "ERROR", "action": "VAULT_UNLOCK", "message": detail or "denied"})
+            return
+        until = vault.mark_unlocked()
+        self.emit(vault_notice_payload(
+            "vault_unlock", "Vault unlocked",
+            "session open — re-locks after 2 minutes idle or when closed",
+        ))
+        self.emit({"type": "VAULT_UNLOCKED", "unlocked_until": until, "already": False})
+        self.emit(self._vault_meta_payload(full=True))
+        await self.reply(ws, {"type": "ACK", "action": "VAULT_UNLOCK", "unlocked_until": until})
+
+    async def _action_vault_lock(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        vault = self._vault_or_error()
+        if vault is None:
+            await self.reply(ws, {"type": "ERROR", "action": "VAULT_LOCK", "message": "vault unavailable"})
+            return
+        was = vault.is_unlocked()
+        vault.lock()
+        if was:
+            self.emit(vault_notice_payload("vault_lock", "Vault locked", "session closed"))
+        self.emit({"type": "VAULT_LOCKED"})
+        self.emit(self._vault_meta_payload(full=False))
+        await self.reply(ws, {"type": "ACK", "action": "VAULT_LOCK"})
+
     async def _action_vault_list(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
         vault = self._vault_or_error()
         if vault is None:
             await self.reply(ws, {"type": "ERROR", "action": "VAULT_LIST", "message": "vault unavailable"})
             return
-        entries = vault.list_meta()
-        pending = list(vault.pending)
-        self.emit({"type": "VAULT_META", "secrets": entries, "pending": pending})
-        await self.reply(ws, {"type": "ACK", "action": "VAULT_LIST", "count": len(entries),
-                              "pending": len(pending)})
+        full = vault.is_unlocked()
+        if full:
+            vault.touch_unlock()
+        payload = self._vault_meta_payload(full=full)
+        self.emit(payload)
+        await self.reply(ws, {"type": "ACK", "action": "VAULT_LIST", "count": len(payload["secrets"]),
+                              "pending": len(payload["pending"]), "locked": payload["locked"]})
 
     async def _action_vault_add(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
-        vault = self._vault_or_error()
+        vault = await self._vault_require_unlocked(ws, "VAULT_ADD")
         if vault is None:
-            await self.reply(ws, {"type": "ERROR", "action": "VAULT_ADD", "message": "vault unavailable"})
             return
         name = str(msg.get("name", "")).strip()
         value = str(msg.get("value", ""))
@@ -1154,13 +1253,12 @@ class Hub:
             meta.get("description") or "secret stored (value in keychain)",
             meta={"name": meta["name"], "agents": meta.get("agents", [])},
         ))
-        self.emit({"type": "VAULT_META", "secrets": vault.list_meta(), "pending": list(vault.pending)})
+        self.emit(self._vault_meta_payload(full=True))
         await self.reply(ws, {"type": "ACK", "action": "VAULT_ADD", "name": meta["name"]})
 
     async def _action_vault_grant(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
-        vault = self._vault_or_error()
+        vault = await self._vault_require_unlocked(ws, "VAULT_GRANT")
         if vault is None:
-            await self.reply(ws, {"type": "ERROR", "action": "VAULT_GRANT", "message": "vault unavailable"})
             return
         name = str(msg.get("name", "")).strip()
         grantee = str(msg.get("agent_id", msg.get("grantee", ""))).strip()
@@ -1172,15 +1270,14 @@ class Hub:
         self.emit(vault_notice_payload(
             "vault_grant", f"Vault grant {name} → {grantee}",
             "access updated (names only)",
-            meta={"name": name, "grantee": grantee, "agents": meta.get("agents", [])},
+            meta={"name": name, "grantee": grantee, "agents": meta.get("agents", []), "by": "human"},
         ))
-        self.emit({"type": "VAULT_META", "secrets": vault.list_meta(), "pending": list(vault.pending)})
+        self.emit(self._vault_meta_payload(full=True))
         await self.reply(ws, {"type": "ACK", "action": "VAULT_GRANT", "name": name, "grantee": grantee})
 
     async def _action_vault_revoke(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
-        vault = self._vault_or_error()
+        vault = await self._vault_require_unlocked(ws, "VAULT_REVOKE")
         if vault is None:
-            await self.reply(ws, {"type": "ERROR", "action": "VAULT_REVOKE", "message": "vault unavailable"})
             return
         name = str(msg.get("name", "")).strip()
         grantee = str(msg.get("agent_id", msg.get("grantee", ""))).strip()
@@ -1192,15 +1289,34 @@ class Hub:
         self.emit(vault_notice_payload(
             "vault_revoke", f"Vault revoke {name} ✕ {grantee}",
             "access updated (names only)",
-            meta={"name": name, "grantee": grantee, "agents": meta.get("agents", [])},
+            meta={"name": name, "grantee": grantee, "agents": meta.get("agents", []), "by": "human"},
         ))
-        self.emit({"type": "VAULT_META", "secrets": vault.list_meta(), "pending": list(vault.pending)})
+        self.emit(self._vault_meta_payload(full=True))
         await self.reply(ws, {"type": "ACK", "action": "VAULT_REVOKE", "name": name, "grantee": grantee})
 
-    async def _action_vault_rm(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
-        vault = self._vault_or_error()
+    async def _action_vault_set_agents(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        vault = await self._vault_require_unlocked(ws, "VAULT_SET_AGENTS")
         if vault is None:
-            await self.reply(ws, {"type": "ERROR", "action": "VAULT_RM", "message": "vault unavailable"})
+            return
+        name = str(msg.get("name", "")).strip()
+        agents = msg.get("agents", [])
+        try:
+            meta = vault.set_agents(name, agents)
+        except Exception as exc:
+            await self.reply(ws, {"type": "ERROR", "action": "VAULT_SET_AGENTS", "message": str(exc)})
+            return
+        who = "all" if meta.get("agents") == "all" else ",".join(meta.get("agents") or [])
+        self.emit(vault_notice_payload(
+            "vault_grant", f"Vault ACL {name}",
+            f"agents → {who or '(none)'}",
+            meta={"name": name, "agents": meta.get("agents", []), "by": "human"},
+        ))
+        self.emit(self._vault_meta_payload(full=True))
+        await self.reply(ws, {"type": "ACK", "action": "VAULT_SET_AGENTS", "name": name})
+
+    async def _action_vault_rm(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        vault = await self._vault_require_unlocked(ws, "VAULT_RM")
+        if vault is None:
             return
         name = str(msg.get("name", "")).strip()
         if not vault.get_meta(name):
@@ -1221,9 +1337,8 @@ class Hub:
         await self.reply(ws, {"type": "ACK", "action": "VAULT_RM", "name": name, "request_id": request_id})
 
     async def _action_vault_confirm_rm(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
-        vault = self._vault_or_error()
+        vault = await self._vault_require_unlocked(ws, "VAULT_CONFIRM_RM")
         if vault is None:
-            await self.reply(ws, {"type": "ERROR", "action": "VAULT_CONFIRM_RM", "message": "vault unavailable"})
             return
         name = str(msg.get("name", "")).strip()
         try:
@@ -1235,7 +1350,7 @@ class Hub:
             "vault_rm", f"Vault − {name}", "removed from keychain + metadata",
             meta={"name": name},
         ))
-        self.emit({"type": "VAULT_META", "secrets": vault.list_meta(), "pending": list(vault.pending)})
+        self.emit(self._vault_meta_payload(full=True))
         await self.reply(ws, {"type": "ACK", "action": "VAULT_CONFIRM_RM", "name": name})
 
     async def _action_vault_cancel_rm(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
@@ -1247,6 +1362,8 @@ class Hub:
         await self.reply(ws, {"type": "ACK", "action": "VAULT_CANCEL_RM", "name": name})
 
     async def _action_vault_submit_secret(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        # Submitting a requested secret is itself an unlock-gated human action when session locked:
+        # allow without prior unlock so agent requests still work; value never leaves keychain path.
         vault = self._vault_or_error()
         if vault is None:
             await self.reply(ws, {"type": "ERROR", "action": "VAULT_SUBMIT_SECRET", "message": "vault unavailable"})
@@ -1279,7 +1396,7 @@ class Hub:
                     agent_id,
                     f"[vault] Secret '{name}' is available as env var ${name}. Do not print its value.",
                 )
-        self.emit({"type": "VAULT_META", "secrets": vault.list_meta(), "pending": list(vault.pending)})
+        self.emit(self._vault_meta_payload(full=vault.is_unlocked()))
         self.emit({"type": "VAULT_SECRET_RESOLVED", "request_id": request_id, "name": name,
                    "agent_id": agent_id, "status": "granted"})
         await self.reply(ws, {"type": "ACK", "action": "VAULT_SUBMIT_SECRET", "name": name})
@@ -1307,7 +1424,7 @@ class Hub:
                 f"\x1b[33mvault: request for ${name} was declined — do not ask again\x1b[0m",
                 important=True,
             )
-        self.emit({"type": "VAULT_META", "secrets": vault.list_meta(), "pending": list(vault.pending)})
+        self.emit(self._vault_meta_payload(full=vault.is_unlocked()))
         self.emit({"type": "VAULT_SECRET_RESOLVED", "request_id": request_id, "name": name,
                    "agent_id": agent_id, "status": "declined"})
         await self.reply(ws, {"type": "ACK", "action": "VAULT_DISMISS_SECRET", "name": name})
@@ -2807,6 +2924,14 @@ class Harness:
         if office_arg and str(office_arg).lower() != "none":
             vault_meta = Path(office_arg).expanduser().resolve().parent / ".office_vault.json"
         self.hub.vault = OfficeVault(meta_path=vault_meta)
+        if self.hub.vault is not None and not self.hub.vault.verify_integrity():
+            log.warning("vault metadata integrity check failed: %s", self.hub.vault.integrity_detail)
+            # Notice board is notified on first client connect via SNAPSHOT path; emit now too.
+            self.hub.emit(vault_notice_payload(
+                "vault_tamper", "Vault metadata integrity warning",
+                (self.hub.vault.integrity_detail or "HMAC mismatch")[:160],
+                meta={"integrity_ok": False},
+            ))
         global _VAULT_PROMPT_HOOK
         def _vault_addon(aid: str) -> str:
             v = self.hub.vault

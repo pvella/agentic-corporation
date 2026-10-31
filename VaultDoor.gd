@@ -1,60 +1,24 @@
-## Small vault/safe placard in the Server Room. Click opens the vault list (names only).
-## No walkmesh / door / hex changes — placed as a SignTag-style overlay like the Notice Board.
 extends Node2D
+## Decorative mini-safe in the Server Room (non-interactive). The Executive BankSafe is the entry point.
 
-signal open_requested
-
-const SIZE := Vector2(44, 40)
-
-var _area: Area2D
-var _hover := false
+const BODY := Color("#607d8b")
+const DOOR := Color("#90a4ae")
+const GOLD := Color("#ffd54f")
 
 
-func setup(anchor_world: Vector2) -> void:
-	position = anchor_world
-	z_index = 40
-	_ensure_area()
+func setup(anchor: Vector2) -> void:
+	position = anchor
+	z_index = 18
 	queue_redraw()
 
 
-func _ensure_area() -> void:
-	if _area and is_instance_valid(_area):
-		return
-	_area = Area2D.new()
-	_area.input_pickable = true
-	var shape := CollisionShape2D.new()
-	var rect := RectangleShape2D.new()
-	rect.size = SIZE
-	shape.shape = rect
-	shape.position = SIZE * 0.5
-	_area.add_child(shape)
-	add_child(_area)
-	_area.input_event.connect(_on_area_input)
-	_area.mouse_entered.connect(func() -> void: _hover = true; queue_redraw())
-	_area.mouse_exited.connect(func() -> void: _hover = false; queue_redraw())
-
-
-func _on_area_input(_viewport: Node, event: InputEvent, _shape_idx: int) -> void:
-	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-		open_requested.emit()
-		get_viewport().set_input_as_handled()
-
-
 func _draw() -> void:
-	var r := Rect2(Vector2.ZERO, SIZE)
-	var body := Color("#455a64") if not _hover else Color("#546e7a")
-	draw_rect(r, body)
-	draw_rect(r, Color("#263238"), false, 2.0)
-	# Door face
-	var door := Rect2(6, 8, 32, 26)
-	draw_rect(door, Color("#37474f"))
-	draw_rect(door, Color("#78909c"), false, 1.0)
-	# Dial
-	draw_circle(Vector2(22, 20), 6.0, Color("#ffd54f" if _hover else "#cfd8dc"))
-	draw_circle(Vector2(22, 20), 2.0, Color("#263238"))
-	# Handle
-	draw_rect(Rect2(30, 18, 5, 3), Color("#90a4ae"))
-	# Label
-	var font := ThemeDB.fallback_font
-	if font:
-		draw_string(font, Vector2(4, SIZE.y + 12), "VAULT", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color("#eceff1"))
+	draw_rect(Rect2(-22, -26, 44, 48), Color(0, 0, 0, 0.25))
+	draw_rect(Rect2(-20, -24, 40, 44), BODY)
+	draw_rect(Rect2(-16, -18, 32, 32), DOOR)
+	draw_circle(Vector2(0, -2), 6, Color("#cfd8dc"))
+	draw_circle(Vector2(0, -2), 2, BODY)
+	draw_rect(Rect2(8, -10, 4, 14), Color("#eceff1"))
+	var f := ThemeDB.fallback_font
+	if f:
+		draw_string(f, Vector2(-14, 28), "safe", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, GOLD)

@@ -49,6 +49,8 @@ const KnowledgeLibraryScript := preload("res://KnowledgeLibrary.gd")
 const NoticesScript := preload("res://Notices.gd")
 const NoticeBoardScript := preload("res://NoticeBoard.gd")
 const VaultDoorScript := preload("res://VaultDoor.gd")
+const BankSafeScript := preload("res://BankSafe.gd")
+const VaultPanelScript := preload("res://VaultPanel.gd")
 const AgentViewScript := preload("res://AgentView.gd")
 const SignTagScript := preload("res://SignTag.gd")
 const SETTINGS_PATH := "user://agent_office.cfg"
@@ -105,6 +107,9 @@ var _knowledge_library: Node = null
 var _notices_store = null  ## Notices
 var _notice_board: Node2D = null
 var _vault_door: Node2D
+var _bank_safe: Node2D
+var _vault_panel: Window
+var _vault_roster: Array = []
 var _meeting_active: Dictionary = {}  ## target -> {agents: PackedStringArray, text: String}
 var _agent_prev_state: Dictionary = {}  ## agent_id -> last notable state
 var _server_clickables: Array = []
@@ -394,6 +399,7 @@ func _build_visuals() -> void:
 	_build_signs()
 	_place_notice_board()
 	_place_vault_door()
+	_place_bank_safe()
 	office.queue_redraw()
 
 
@@ -1527,6 +1533,12 @@ func handle_message(msg: Dictionary) -> void:
 			_on_vault_notice(msg)
 		"VAULT_SECRET_RESOLVED":
 			_on_vault_secret_resolved(msg)
+		"VAULT_UNLOCKED":
+			_on_vault_unlocked(msg)
+		"VAULT_UNLOCK_FAILED":
+			_on_vault_unlock_failed(msg)
+		"VAULT_LOCKED":
+			_on_vault_locked(msg)
 		"MEETING_TURN":
 			_on_meeting_turn(msg)
 		"AGENT_HIRE":
@@ -2410,7 +2422,13 @@ func _on_vault_meta(msg: Dictionary) -> void:
 				if typeof(pend) != TYPE_DICTIONARY:
 					continue
 				drawer.append_system("  ? pending %s from %s" % [str(pend.get("name", "")), str(pend.get("agent_id", ""))])
-	_set_status("Vault: %d secrets" % secrets.size(), Color("#ffd54f"))
+	var locked := bool(msg.get("locked", false))
+	if msg.has("roster") and msg.get("roster") is Array:
+		_vault_roster = msg.get("roster")
+	if _vault_panel and is_instance_valid(_vault_panel) and _vault_panel.has_method("configure"):
+		_vault_panel.configure(secrets, _vault_roster, locked)
+	var label := "Vault locked — %d name(s)" if locked else "Vault: %d secrets"
+	_set_status(label % secrets.size(), Color("#ffd54f"))
 
 
 func _on_vault_notice(msg: Dictionary) -> void:
@@ -2431,7 +2449,7 @@ func _on_vault_secret_resolved(msg: Dictionary) -> void:
 
 
 func _place_vault_door() -> void:
-	## Small safe in the Server Room. No walkmesh / door / hex changes.
+	## Decorative mini-safe in the Server Room (non-interactive). No walkmesh/door/hex changes.
 	if _vault_door and is_instance_valid(_vault_door):
 		_vault_door.queue_free()
 		_vault_door = null
@@ -2447,8 +2465,6 @@ func _place_vault_door() -> void:
 	var door: Node2D = VaultDoorScript.new()
 	signs_root.add_child(door)
 	door.setup(anchor)
-	if door.has_signal("open_requested"):
-		door.open_requested.connect(_on_vault_door_clicked)
 	_vault_door = door
 	if _vault_door not in _sign_tags:
 		_sign_tags.append(_vault_door)
@@ -2456,7 +2472,90 @@ func _place_vault_door() -> void:
 	_vault_door.scale = Vector2.ONE * _ui_scale_for(z)
 
 
-func _on_vault_door_clicked() -> void:
+func _place_bank_safe() -> void:
+	## Chunky bank safe in the Executive room — the vault entry point.
+	if _bank_safe and is_instance_valid(_bank_safe):
+		_bank_safe.queue_free()
+		_bank_safe = null
+	var exec_area: Dictionary = {}
+	for a in office.areas:
+		if str(a.get("kind", "")) == "room" and str(a.get("id", "")) == "executive":
+			exec_area = a
+			break
+	if exec_area.is_empty():
+		return
+	var r: Rect2 = exec_area.rect
+	# Front-right of the Executive room, clearly visible, no layout changes.
+	var anchor := Vector2(r.position.x + r.size.x - 90.0, r.position.y + r.size.y - 120.0)
+	var safe: Node2D = BankSafeScript.new()
+	signs_root.add_child(safe)
+	safe.setup(anchor)
+	if safe.has_signal("unlock_requested"):
+		safe.unlock_requested.connect(_on_bank_safe_unlock)
+	if safe.has_signal("open_panel_requested"):
+		safe.open_panel_requested.connect(_on_bank_safe_open_panel)
+	_bank_safe = safe
+	if _bank_safe not in _sign_tags:
+		_sign_tags.append(_bank_safe)
+	var z := camera.zoom.x if camera else 1.0
+	_bank_safe.scale = Vector2.ONE * _ui_scale_for(z)
+
+
+func _on_bank_safe_unlock() -> void:
+	send_json({"action": "VAULT_UNLOCK", "reason": "Unlock the Agentic Corporation office vault"})
+	_set_status("Vault — authenticate to unlock (Touch ID / password)…", Color("#ffe082"))
+
+
+func _on_bank_safe_open_panel() -> void:
 	send_json({"action": "VAULT_LIST"})
-	_set_status("Vault — listing secrets (names only)", Color("#ffd54f"))
+	_open_vault_panel()
+
+
+func _open_vault_panel() -> void:
+	if _vault_panel and is_instance_valid(_vault_panel):
+		_vault_panel.popup_centered()
+		return
+	var panel: Window = VaultPanelScript.new()
+	add_child(panel)
+	panel.add_secret.connect(func(n: String, d: String, v: String) -> void:
+		send_json({"action": "VAULT_ADD", "name": n, "description": d, "value": v, "agents": []})
+	)
+	panel.set_agents.connect(func(n: String, agents: Variant) -> void:
+		send_json({"action": "VAULT_SET_AGENTS", "name": n, "agents": agents})
+	)
+	panel.remove_secret.connect(func(n: String) -> void:
+		send_json({"action": "VAULT_RM", "name": n})
+	)
+	panel.lock_now.connect(func() -> void:
+		send_json({"action": "VAULT_LOCK"})
+		if _vault_panel and is_instance_valid(_vault_panel):
+			_vault_panel.queue_free()
+			_vault_panel = null
+	)
+	panel.activity.connect(func() -> void:
+		# Touch session by listing (extends unlock TTL server-side when unlocked).
+		send_json({"action": "VAULT_LIST"})
+	)
+	_vault_panel = panel
+	panel.popup_centered()
+
+
+func _on_vault_unlocked(msg: Dictionary) -> void:
+	if _bank_safe and is_instance_valid(_bank_safe) and _bank_safe.has_method("set_unlocked"):
+		_bank_safe.set_unlocked(true)
+	_set_status("Vault unlocked", Color("#66bb6a"))
+	_open_vault_panel()
+
+
+func _on_vault_unlock_failed(msg: Dictionary) -> void:
+	_set_status("Vault unlock failed: %s" % str(msg.get("detail", "denied")), Color("#ef5350"))
+
+
+func _on_vault_locked(msg: Dictionary) -> void:
+	if _bank_safe and is_instance_valid(_bank_safe) and _bank_safe.has_method("set_unlocked"):
+		_bank_safe.set_unlocked(false)
+	if _vault_panel and is_instance_valid(_vault_panel):
+		_vault_panel.queue_free()
+		_vault_panel = null
+	_set_status("Vault locked", Color("#ffd54f"))
 

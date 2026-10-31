@@ -6,11 +6,14 @@ Service name in Keychain: agentic-corp.<NAME>
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import os
 import platform
 import re
+import secrets
 import subprocess
 import time
 from pathlib import Path
@@ -22,6 +25,8 @@ SERVICE_PREFIX = "agentic-corp."
 KEYCHAIN_ACCOUNT = "agentic-corp"
 DEFAULT_META_NAME = ".office_vault.json"
 NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+HMAC_KEY_NAME = "__VAULT_HMAC_KEY__"
+UNLOCK_TTL_SEC = 120.0
 
 # CoS agent_id (and display-name match helpers live in the harness).
 COS_AGENT_ID = "chief_of_staff"
@@ -172,21 +177,74 @@ class OfficeVault:
         self.entries: list[dict[str, Any]] = []
         self.pending: list[dict[str, Any]] = []  # secret requests awaiting Paul
         self.declined: set[str] = set()  # "agent_id::name" — do not ask again
+        self.unlocked_until: float = 0.0
+        self.integrity_ok: bool = True
+        self.integrity_detail: str = ""
         self._load()
+
+    # -- unlock session (human operator) -------------------------------------
+    def is_unlocked(self) -> bool:
+        return _now() < float(self.unlocked_until or 0)
+
+    def mark_unlocked(self, ttl: float = UNLOCK_TTL_SEC) -> float:
+        self.unlocked_until = _now() + float(ttl)
+        return self.unlocked_until
+
+    def touch_unlock(self, ttl: float = UNLOCK_TTL_SEC) -> float:
+        """Extend the session on activity while unlocked."""
+        if self.is_unlocked():
+            return self.mark_unlocked(ttl)
+        return self.unlocked_until
+
+    def lock(self) -> None:
+        self.unlocked_until = 0.0
+
+    def require_unlocked(self) -> None:
+        if not self.is_unlocked():
+            raise PermissionError("vault is locked — authenticate to unlock")
+
+    # -- HMAC integrity on metadata ------------------------------------------
+    def _hmac_key(self) -> bytes:
+        raw = self.store.get(HMAC_KEY_NAME)
+        if not raw:
+            raw = secrets.token_hex(32)
+            self.store.set(HMAC_KEY_NAME, raw)
+        return raw.encode("utf-8") if isinstance(raw, str) else bytes(raw)
+
+    def _canonical_body(self) -> str:
+        payload = {
+            "secrets": [self._clean_meta(e) for e in self.entries],
+            "pending": list(self.pending),
+            "declined": sorted(self.declined),
+        }
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+    def _compute_hmac(self) -> str:
+        dig = hmac.new(self._hmac_key(), self._canonical_body().encode("utf-8"), hashlib.sha256)
+        return dig.hexdigest()
+
+    def verify_integrity(self) -> bool:
+        return bool(self.integrity_ok)
 
     # -- persistence (metadata only) -----------------------------------------
     def _load(self) -> None:
         self.entries = []
         self.pending = []
         self.declined = set()
+        self.integrity_ok = True
+        self.integrity_detail = ""
         if not self.meta_path.is_file():
             return
         try:
             raw = json.loads(self.meta_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             log.warning("vault meta unreadable: %s", exc)
+            self.integrity_ok = False
+            self.integrity_detail = f"unreadable: {exc}"
             return
+        stored_hmac = ""
         if isinstance(raw, dict):
+            stored_hmac = str(raw.get("hmac") or "")
             for item in raw.get("secrets") or []:
                 if isinstance(item, dict) and item.get("name"):
                     self.entries.append(self._clean_meta(item))
@@ -199,15 +257,34 @@ class OfficeVault:
             for item in raw:
                 if isinstance(item, dict) and item.get("name"):
                     self.entries.append(self._clean_meta(item))
+        # Verify HMAC when present; missing hmac on fresh file is OK (will be written on save).
+        if stored_hmac:
+            try:
+                expect = self._compute_hmac()
+            except Exception as exc:
+                self.integrity_ok = False
+                self.integrity_detail = f"hmac key error: {exc}"
+                return
+            if not hmac.compare_digest(stored_hmac, expect):
+                self.integrity_ok = False
+                self.integrity_detail = "metadata HMAC mismatch — ACL file may have been tampered with"
+                log.warning("vault integrity: %s", self.integrity_detail)
 
     def _save(self) -> None:
-        payload = {
+        body = {
             "secrets": [self._clean_meta(e) for e in self.entries],
             "pending": list(self.pending),
             "declined": sorted(self.declined),
         }
+        try:
+            body["hmac"] = self._compute_hmac()
+            self.integrity_ok = True
+            self.integrity_detail = ""
+        except Exception as exc:
+            log.warning("vault hmac skipped on save: %s", exc)
+            body["hmac"] = ""
         tmp = self.meta_path.with_suffix(self.meta_path.suffix + ".tmp")
-        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        tmp.write_text(json.dumps(body, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         try:
             os.chmod(tmp, 0o600)
         except OSError:
@@ -233,6 +310,28 @@ class OfficeVault:
 
     def list_meta(self) -> list[dict[str, Any]]:
         return [dict(e) for e in self.entries]
+
+    def list_public(self) -> list[dict[str, str]]:
+        """Names + descriptions only (safe while locked)."""
+        return [{"name": e["name"], "description": str(e.get("description") or "")} for e in self.entries]
+
+    def set_agents(self, name: str, agents: Any) -> dict[str, Any]:
+        n = validate_name(name)
+        meta = self.get_meta(n)
+        if not meta:
+            raise KeyError(f"unknown secret '{n}'")
+        if agents == "all" or agents is True:
+            meta["agents"] = "all"
+        elif agents is None:
+            meta["agents"] = []
+        elif isinstance(agents, list):
+            meta["agents"] = [str(a) for a in agents]
+        else:
+            meta["agents"] = [str(agents)]
+        self.entries = [e for e in self.entries if e["name"] != n]
+        self.entries.append(self._clean_meta(meta))
+        self._save()
+        return self.get_meta(n) or {}
 
     def get_meta(self, name: str) -> dict[str, Any] | None:
         n = str(name)

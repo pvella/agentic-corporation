@@ -378,7 +378,7 @@ def build_mcp(hub: Any) -> MCPServer:
             "type": "VAULT_NOTICE", "kind": "vault_grant",
             "title": f"Vault grant {name} → {grantee}",
             "detail": f"by {a.name}", "pending": False,
-            "meta": {"name": name, "grantee": grantee, "agents": meta.get("agents", [])},
+            "meta": {"name": name, "grantee": grantee, "agents": meta.get("agents", []), "by": "cos"},
         })
         hub.emit({"type": "VAULT_META", "secrets": vault.list_meta(), "pending": list(vault.pending)})
         return f"granted '{name}' to {grantee}"
@@ -408,7 +408,7 @@ def build_mcp(hub: Any) -> MCPServer:
             "type": "VAULT_NOTICE", "kind": "vault_revoke",
             "title": f"Vault revoke {name} ✕ {grantee}",
             "detail": f"by {a.name}", "pending": False,
-            "meta": {"name": name, "grantee": grantee, "agents": meta.get("agents", [])},
+            "meta": {"name": name, "grantee": grantee, "agents": meta.get("agents", []), "by": "cos"},
         })
         hub.emit({"type": "VAULT_META", "secrets": vault.list_meta(), "pending": list(vault.pending)})
         return f"revoked '{name}' from {grantee}"

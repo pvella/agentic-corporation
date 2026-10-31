@@ -89,3 +89,15 @@ See the [Vault](../README.md#vault) section in the README. Short version:
 - Do not commit `.office_token`, `.office_vault.json`, `agent_cmds.json` secrets, or API keys.
 - `.gitleaks.toml` is available for pre-push scanning.
 - Prefer the Vault over pasting credentials into prompts or `office.json`.
+
+## Office Vault unlock (macOS)
+
+The Executive bank safe sends `VAULT_UNLOCK` to the harness. On macOS the harness runs `tools/vault_unlock`, a small Swift helper using **LocalAuthentication** (`.deviceOwnerAuthentication`):
+
+- Touch ID when enrolled
+- Otherwise the Mac login password dialog
+- Build once: `swiftc -O -o tools/vault_unlock tools/vault_unlock.swift -framework LocalAuthentication`
+- The helper is built automatically on first unlock if `swiftc` is available
+
+On Linux/Windows the harness touches a keyring sentinel instead (desktop keyring prompt). The vault re-locks after 2 minutes idle or when the Safe UI is closed. Metadata HMAC uses a Keychain-held key named `__VAULT_HMAC_KEY__`.
+

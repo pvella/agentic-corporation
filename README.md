@@ -512,26 +512,14 @@ MIT — see [LICENSE](LICENSE).
 
 ## Vault
 
-Shared secrets for live agents. **Values never appear** in the UI, terminal, notice board, git, harness logs, or agent prompts—only names and descriptions do.
+Encrypted secrets for agents, managed from a **bank safe in the Executive room**.
 
-| Piece | Behaviour |
-|---|---|
-| Storage | macOS Keychain via `security` (`agentic-corp.<NAME>`); Linux: `keyring` if installed, else `~/.local/share/agentic-corp/secrets/<NAME>` mode `0600` (outside the repo). |
-| Metadata | Gitignored `.office_vault.json` next to the harness: `name`, `description`, `agents` (`[]` / list / `"all"`), `created_at`, `last_used_at`. Mode `0600`. |
-| Injection | When a CLI/live agent runs, granted secrets are added to its process environment as `$NAME`. |
-| Scrubbing | Harness log lines and captured CLI stdout/stderr replace any known secret value with `[REDACTED]`. |
-| Prompts | System prompts list only allowed names + descriptions (plus CoS management rules). |
+- **Values** live in the OS keychain (macOS Keychain / Linux keyring / 0600 files). They are never written to git, logs, the UI, or prompts.
+- **Metadata** (name, description, ACL, timestamps) is in gitignored `.office_vault.json`, optionally HMAC-signed with a Keychain-held key. Tampering is flagged on the notice board.
+- **Unlock**: click the Executive safe → harness runs macOS LocalAuthentication (Touch ID or login password via `tools/vault_unlock`). Linux/Windows fall back to a keyring prompt. Session lasts **2 minutes** of idle time or until you close/lock. The Server Room safe is decoration only.
+- **While locked**: `/vault` lists **names only**; grant/remove/add need an unlock.
+- **Safe UI**: table of names, descriptions, allowed-agents checkboxes, created/last-used. Values are never shown or copyable. Add uses a masked field; remove asks for confirm.
+- **Audit**: unlock, failed unlock, grant, revoke, add, remove post to the notice board (names only). Chief of Staff MCP grant/revoke are audited the same way.
+- **CoS MCP**: `vault_list`, `vault_grant`, `vault_revoke`, `vault_request_remove` (unchanged; no values).
 
-**Human commands** (terminal or the Vault safe in the Server Room):
-
-- `/vault` — list names, descriptions, ACL, pending requests
-- `/vault add NAME [description]` — masked input; stores in Keychain
-- `/vault grant NAME agent_id|all` / `/vault revoke NAME agent_id|all`
-- `/vault rm NAME` — always asks for confirmation before deleting keychain + metadata
-
-**Agent tools (MCP):**
-
-- Any agent: `request_secret(name, label, description)` → masked card in Godot; submit grants the requester; dismiss = declined (do not ask again). Pending requests pin on the Notice Board until answered.
-- Chief of Staff only: `vault_list`, `vault_grant`, `vault_revoke`, `vault_request_remove` (remove still needs the human owner's confirm). CoS manages metadata only and **never** sees values. CoS vault actions are posted to the Notice Board.
-
-Do not commit `.office_token`, `.office_vault.json`, API keys, or Keychain material. A `.gitleaks.toml` is included for pre-push scanning.
+See [docs/setup.md](docs/setup.md) for keychain notes and the unlock helper.

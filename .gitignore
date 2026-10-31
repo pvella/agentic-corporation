@@ -49,3 +49,4 @@ agent_cmds.json
 # Per-agent Claude Code sessions (live/cli mode)
 .office_claude/
 .office_claude_sessions.json
+tools/vault_unlock

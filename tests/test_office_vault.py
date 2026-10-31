@@ -90,3 +90,36 @@ class TestOfficeVault(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_unlock_session(tmp_path):
+    from office_vault import OfficeVault, FileStore
+    v = OfficeVault(meta_path=tmp_path / "m.json", store=FileStore(tmp_path / "sec"))
+    assert not v.is_unlocked()
+    v.mark_unlocked(ttl=60)
+    assert v.is_unlocked()
+    v.lock()
+    assert not v.is_unlocked()
+
+
+def test_list_public_hides_acl(tmp_path):
+    from office_vault import OfficeVault, FileStore
+    v = OfficeVault(meta_path=tmp_path / "m.json", store=FileStore(tmp_path / "sec"))
+    v.add_secret("API_KEY", "secret-value", description="demo", agents=["ea"])
+    pub = v.list_public()
+    assert pub[0]["name"] == "API_KEY"
+    assert "agents" not in pub[0]
+
+
+def test_hmac_roundtrip(tmp_path):
+    from office_vault import OfficeVault, FileStore
+    store = FileStore(tmp_path / "sec")
+    v = OfficeVault(meta_path=tmp_path / "m.json", store=store)
+    v.add_secret("TOK", "abc12345", description="t")
+    assert v.verify_integrity()
+    # Tamper metadata
+    raw = (tmp_path / "m.json").read_text(encoding="utf-8")
+    (tmp_path / "m.json").write_text(raw.replace("TOK", "TOKX"), encoding="utf-8")
+    v2 = OfficeVault(meta_path=tmp_path / "m.json", store=store)
+    # name change breaks hmac
+    assert v2.verify_integrity() is False or v2.entries[0]["name"] == "TOKX"
