@@ -919,7 +919,7 @@ def verify_no_grass_speckles() -> int:
 
 
 def verify_amenity_pose_room_gate() -> int:
-    """Amenity poses + activity bubbles must be room-correct (near-arrive trusts WP)."""
+    """Amenity poses + activity bubbles must match area_kind_at (never WP name alone)."""
     agent = (ROOT / "Agent.gd").read_text()
     main = (ROOT / "Main.gd").read_text()
     harness = (ROOT / "agent_harness.py").read_text()
@@ -934,7 +934,6 @@ def verify_amenity_pose_room_gate() -> int:
             ("foosball", "break"),
             ("sofa", "break"),
         ):
-            # crude: seat key near expected kind
             if f'"{seat}"' not in agent or kinds not in agent:
                 bad += 1
                 print(f"  seat_map_incomplete seat={seat} need_kind={kinds}")
@@ -943,7 +942,17 @@ def verify_amenity_pose_room_gate() -> int:
         print("  missing _seat_room_ok")
     if "SEAT_ARRIVE_MAX" not in agent:
         bad += 1
-        print("  missing SEAT_ARRIVE_MAX near-arrive trust")
+        print("  missing SEAT_ARRIVE_MAX gap gate")
+    # Blind near-arrive trust lets yoga poses fire in team rooms when stuck.
+    seat_fn = agent.split("func _seat_room_ok", 1)[-1].split("\nfunc ", 1)[0]
+    if "distance_to(_target_pos) <= SEAT_ARRIVE_MAX" in seat_fn:
+        after = seat_fn.split("distance_to(_target_pos) <= SEAT_ARRIVE_MAX", 1)[1][:160]
+        if "return true" in after:
+            bad += 1
+            print("  _seat_room_ok still blind-trusts near-arrive (must check area_kind_at)")
+    if "area_kind_at.call" not in seat_fn:
+        bad += 1
+        print("  _seat_room_ok does not call area_kind_at")
     if "area_kind_at" not in agent:
         bad += 1
         print("  missing area_kind_at Callable")
@@ -953,19 +962,28 @@ def verify_amenity_pose_room_gate() -> int:
     if "_seat_room_ok(_pending_seat)" not in agent and "not _seat_room_ok" not in agent:
         bad += 1
         print("  arrive/process does not call _seat_room_ok")
-    # Activity speech deferred until arrival + room match.
     for needle in ("_show_or_defer_activity_bubble", "_on_agent_arrived", "_activity_text_expected_kind"):
         if needle not in main:
             bad += 1
             print(f"  Main missing {needle}")
+    for block_name in ("_show_or_defer_activity_bubble", "_on_agent_arrived"):
+        if f"func {block_name}" not in main:
+            continue
+        block = main.split(f"func {block_name}", 1)[-1].split("\nfunc ", 1)[0]
+        if "wp_kind" in block and "_room_kind_match(expect, wp_kind)" in block:
+            bad += 1
+            print(f"  {block_name} still ORs waypoint kind into place_ok")
     for needle in ("required_room_for_activity_text", "BREAK_ONLY_SPOTS", "_idle_wander", "CANTEEN_COUNTER"):
         if needle not in harness:
             bad += 1
             print(f"  harness missing {needle}")
-    # Regression: overwriting canteen target with seat before counter phase.
     if "agent.target = seat  # director will re-emit" in harness:
         bad += 1
         print("  canteen still overwrites target with seat (counter phase broken)")
+    route = main.split("func _route", 1)[-1].split("\nfunc ", 1)[0]
+    if "SEAT_ARRIVE_MAX" not in route:
+        bad += 1
+        print("  _route missing near-marker check (stuck holders never re-path)")
     print(f"amenity_pose_gate_bad={bad}")
     if bad:
         print("FAIL: amenity pose room gating incomplete")

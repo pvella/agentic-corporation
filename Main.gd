@@ -2146,13 +2146,22 @@ func _route(agent: Agent, target: String, instant: bool = false) -> void:
 	if office.meeting_groups.has(target):
 		var seats: Array = office.meeting_groups[target]
 		if seats.has(agent.current_waypoint) and _holds_slot(agent, agent.current_waypoint):
-			return
+			# Same meeting seat only if we actually made it there.
+			var held: Node2D = waypoints.get(agent.current_waypoint)
+			if held and agent.is_at_destination() 					and agent.global_position.distance_to(held.global_position) <= Agent.SEAT_ARRIVE_MAX:
+				return
 		target = _free_seat(seats)
 	if not waypoints.has(target):
 		push_warning("Unknown target '%s' for %s" % [target, agent.agent_id])
 		return
+	# Stuck / partial arrivals keep current_waypoint + occupancy while the body
+	# is still elsewhere (often against a wall in the home team room). Re-path
+	# unless we are actually at the marker — otherwise desks never get a sit
+	# and amenity re-routes are silently dropped.
 	if target == agent.current_waypoint and _holds_slot(agent, target) and not instant:
-		return
+		var marker: Node2D = waypoints[target]
+		if agent.is_at_destination() 				and agent.global_position.distance_to(marker.global_position) <= Agent.SEAT_ARRIVE_MAX:
+			return
 	_release(agent)
 	var occupants: Array = _occupancy.get(target, [])
 	var index := occupants.find("")
@@ -2391,6 +2400,8 @@ func _clear_pending_activity(agent: Agent) -> void:
 
 func _show_or_defer_activity_bubble(agent: Agent, text: String, is_thought: bool) -> void:
 	## Gate amenity activity speech on real arrival + room; work/thoughts show immediately.
+	## Never trust waypoint name alone — stuck arrivals keep current_waypoint as
+	## Yoga/Coffee/… while the body is still in a team room against a wall.
 	var expect := _activity_text_expected_kind(text)
 	if expect == "":
 		_clear_pending_activity(agent)
@@ -2400,9 +2411,12 @@ func _show_or_defer_activity_bubble(agent: Agent, text: String, is_thought: bool
 	agent.set_meta("pending_activity_kind", expect)
 	if agent.is_at_destination():
 		var got := _area_kind_at(agent.global_position)
-		var wp_kind := _activity_expected_kind(agent.current_waypoint)
-		if _room_kind_match(expect, got) or (wp_kind != "" and _room_kind_match(expect, wp_kind)):
+		if _room_kind_match(expect, got):
 			agent.show_bubble(Ansi.strip(text), is_thought)
+			_clear_pending_activity(agent)
+		else:
+			# Settled in the wrong room: drop the amenity line (do not chatter
+			# "Tree pose…" while standing in Engineering).
 			_clear_pending_activity(agent)
 	# else: wait for arrived — do not show coffee/yoga/eat while still walking
 
@@ -2413,10 +2427,10 @@ func _on_agent_arrived(agent: Agent, waypoint: String) -> void:
 	var text := str(agent.get_meta("pending_activity_text"))
 	var expect := str(agent.get_meta("pending_activity_kind"))
 	var got := _area_kind_at(agent.global_position)
-	var wp_kind := _activity_expected_kind(waypoint)
-	# Prefer waypoint kind when area rects disagree at edges.
-	var place_ok := _room_kind_match(expect, got) or (wp_kind != "" and _room_kind_match(expect, wp_kind))
-	if expect != "" and place_ok:
+	# Require the body's area kind — never the waypoint name (stuck/partial
+	# arrivals leave current_waypoint as the amenity while still in a team room).
+	var place_ok := expect != "" and _room_kind_match(expect, got)
+	if place_ok:
 		agent.show_bubble(Ansi.strip(text), false)
 	_clear_pending_activity(agent)
 

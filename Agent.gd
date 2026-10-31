@@ -41,7 +41,7 @@ const SLOW_RADIUS := 56.0    ## start easing off this far from the target
 ## Stuck arrivals mid-corridor must not strike a tree pose in the hallway.
 const SEAT_ARRIVE_MAX := 28.0
 const STUCK_NEAR_SEC := 3.0    ## give up quickly when already at the spot
-const STUCK_FAR_SEC := 14.0    ## wait longer while still crossing the campus
+const STUCK_FAR_SEC := 28.0    ## wait longer while still crossing the campus
 const STUCK_FAR_DIST := 64.0   ## "still far" threshold for the patience above
 const OUTLINE := Color(0.15, 0.13, 0.19)
 const HEAD_R := 14.0  ## local; screen size via Iso.PEOPLE_SCALE (~+30%)
@@ -428,7 +428,7 @@ func _physics_process(delta: float) -> void:
 		var far := remaining > STUCK_FAR_DIST
 		var limit := STUCK_FAR_SEC if far else STUCK_NEAR_SEC
 		if _stuck_time > limit:
-			if far and _stuck_retries < 2:
+			if far and _stuck_retries < 4:
 				_stuck_retries += 1
 				_stuck_time = 0.0
 				nav_agent.target_position = _target_pos  # nudge a fresh path
@@ -450,12 +450,10 @@ func _on_velocity_computed(safe_velocity: Vector2) -> void:
 func _seat_room_ok(seat: String) -> bool:
 	if seat == "":
 		return true
-	# Caller already cleared amenity seats when gap > SEAT_ARRIVE_MAX. Within
-	# seating range of the amenity marker, trust the waypoint — area_kind_at
-	# can disagree with markers at room edges and was rejecting Canteen/Rec
-	# sits (5c92eaf regression). Far arrivals never reach here with a seat.
-	if global_position.distance_to(_target_pos) <= SEAT_ARRIVE_MAX:
-		return true
+	# Never trust the waypoint name alone. Stuck / partial arrivals land in the
+	# wrong room (often a team cell against a wall) while current_waypoint is
+	# still Yoga/Coffee/… — pose only when area_kind_at matches. Near-target
+	# gap is gated separately in _arrive via SEAT_ARRIVE_MAX.
 	if not area_kind_at.is_valid():
 		return true
 	var expect: Variant = SEAT_EXPECTED_KINDS.get(seat, [])
