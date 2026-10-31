@@ -2638,9 +2638,9 @@ func _on_vault_secret_resolved(msg: Dictionary) -> void:
 
 
 
-func _bank_safe_world_anchor(exec_rect: Rect2) -> Vector2:
-	## World-space point clearly inside Executive, against the west wall beside
-	## the Chief of Staff desk (not on desks, door gap, or south outer corner).
+func _bank_safe_world_rect(exec_rect: Rect2) -> Rect2:
+	## Cabinet footprint on the Executive west wall beside the Chief of Staff
+	## desk — floor safe sized like a fridge/cabinet, not a billboard sprite.
 	var desk_y := exec_rect.position.y + 110.0
 	for p in office.props:
 		if str(p.get("kind", "")) != "desk":
@@ -2649,21 +2649,21 @@ func _bank_safe_world_anchor(exec_rect: Rect2) -> Vector2:
 			var dr: Rect2 = p.rect
 			desk_y = dr.get_center().y
 			break
-	# Inset from west wall so the billboarded safe reads as against the wall;
-	# keep clear of the north door (desk_y is below ROOM_TOP seating band).
-	var x := exec_rect.position.x + 56.0
-	var y := clampf(desk_y, exec_rect.position.y + 90.0, exec_rect.end.y - 90.0)
-	return Vector2(x, y)
+	const SAFE_W := 36.0
+	const SAFE_D := 32.0
+	# Clear of the 12px wall thickness; keep south of the north door band.
+	var x := exec_rect.position.x + 22.0
+	var y := clampf(desk_y - SAFE_D * 0.5, exec_rect.position.y + 88.0, exec_rect.end.y - SAFE_D - 72.0)
+	return Rect2(x, y, SAFE_W, SAFE_D)
 
 
 func _place_bank_safe() -> void:
-	## Chunky bank safe in the Executive room — the vault entry point.
-	## signs_root is screen/iso space (same as SignTag/Prop), so convert the
-	## world anchor with Iso.to_screen. Prior bug: raw world coords put the
-	## safe far from the projected Executive room.
+	## Iso furniture safe in the Executive room — vault entry point.
+	## Parent under props_root (y-sorted with desks/cabinets); do NOT put it on
+	## signs_root or apply UI scale (that made the old flat sprite huge).
 	if _bank_safe and is_instance_valid(_bank_safe):
 		_bank_safe.queue_free()
-		_bank_safe = null
+	_bank_safe = null
 	var exec_area: Dictionary = {}
 	for a in office.areas:
 		if str(a.get("kind", "")) == "room" and str(a.get("id", "")) == "executive":
@@ -2672,20 +2672,15 @@ func _place_bank_safe() -> void:
 	if exec_area.is_empty():
 		return
 	var r: Rect2 = exec_area.rect
-	var world := _bank_safe_world_anchor(r)
-	var anchor := Iso.to_screen(world)
+	var world_rect := _bank_safe_world_rect(r)
 	var safe: Node2D = BankSafeScript.new()
-	signs_root.add_child(safe)
-	safe.setup(anchor)
+	props_root.add_child(safe)
+	safe.setup(world_rect)
 	if safe.has_signal("unlock_requested"):
 		safe.unlock_requested.connect(_on_bank_safe_unlock)
 	if safe.has_signal("open_panel_requested"):
 		safe.open_panel_requested.connect(_on_bank_safe_open_panel)
 	_bank_safe = safe
-	if _bank_safe not in _sign_tags:
-		_sign_tags.append(_bank_safe)
-	var z := camera.zoom.x if camera else 1.0
-	_bank_safe.scale = Vector2.ONE * _ui_scale_for(z)
 
 
 func _on_bank_safe_unlock() -> void:
