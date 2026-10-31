@@ -115,6 +115,8 @@ var _knowledge_library: Node = null
 var _notices_store = null  ## Notices
 var _notice_board: Control = null
 var _bank_safe: Node2D
+var _vault_list_print_pending := false
+var _vault_touch_ms := 0
 var _vault_panel: Window
 var _vault_roster: Array = []
 var _meeting_active: Dictionary = {}  ## target -> {agents: PackedStringArray, text: String}
@@ -2423,6 +2425,7 @@ func _take_screenshot() -> void:
 func _on_vault_requested(cmd: String, arg: String) -> void:
 	var c := cmd.strip_edges().to_lower()
 	if c in ["list", "ls", ""]:
+		_vault_list_print_pending = true
 		send_json({"action": "VAULT_LIST"})
 		return
 	if c == "add":
@@ -2593,7 +2596,10 @@ func _on_vault_remove_confirm(msg: Dictionary) -> void:
 func _on_vault_meta(msg: Dictionary) -> void:
 	var secrets: Array = msg.get("secrets", [])
 	var pending: Array = msg.get("pending", [])
-	if drawer and drawer.has_method("append_system"):
+	# Only the `/vault` terminal command prints list results.
+	var print_list := _vault_list_print_pending
+	_vault_list_print_pending = false
+	if print_list and drawer and drawer.has_method("append_system"):
 		if secrets.is_empty() and pending.is_empty():
 			drawer.append_system("vault: (empty)")
 		else:
@@ -2689,7 +2695,6 @@ func _on_bank_safe_unlock() -> void:
 
 
 func _on_bank_safe_open_panel() -> void:
-	send_json({"action": "VAULT_LIST"})
 	_open_vault_panel()
 
 
@@ -2715,11 +2720,17 @@ func _open_vault_panel() -> void:
 			_vault_panel = null
 	)
 	panel.activity.connect(func() -> void:
-		# Touch session by listing (extends unlock TTL server-side when unlocked).
-		send_json({"action": "VAULT_LIST"})
+		# Touch session by listing (extends unlock TTL server-side), throttled.
+		var now := Time.get_ticks_msec()
+		if now - _vault_touch_ms >= 30000:
+			_vault_touch_ms = now
+			send_json({"action": "VAULT_LIST"})
 	)
 	_vault_panel = panel
 	panel.popup_centered()
+	# Fetch once on open; later updates arrive as VAULT_META after changes.
+	_vault_touch_ms = Time.get_ticks_msec()
+	send_json({"action": "VAULT_LIST"})
 
 
 func _on_vault_unlocked(msg: Dictionary) -> void:

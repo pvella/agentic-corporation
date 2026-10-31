@@ -121,7 +121,10 @@ func configure(secrets: Array, roster: Array, locked: bool = false) -> void:
 	else:
 		_status.text = "%d secret(s) · click agent boxes to grant/revoke · Lock after 2 min idle" % secrets.size()
 	_rebuild_list(locked)
-	_bump_idle()
+	# Reset idle only — never emit `activity` here: activity → VAULT_LIST →
+	# VAULT_META → configure() was an infinite refresh loop.
+	if _idle_timer:
+		_idle_timer.start()
 
 
 func _rebuild_list(locked: bool) -> void:
@@ -140,6 +143,12 @@ func _rebuild_list(locked: bool) -> void:
 		head.add_child(l)
 	_list.add_child(head)
 
+	if _secrets.is_empty():
+		var empty := Label.new()
+		empty.text = "No secrets yet. Add one below."
+		empty.modulate = Color(1, 1, 1, 0.7)
+		_list.add_child(empty)
+		return
 	for s in _secrets:
 		if typeof(s) != TYPE_DICTIONARY:
 			continue
