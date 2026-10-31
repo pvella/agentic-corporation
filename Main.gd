@@ -274,6 +274,10 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			return
 		if get_viewport().gui_get_focus_owner() is LineEdit or get_viewport().gui_get_focus_owner() is TextEdit:
 			return
+		if k.keycode == KEY_ESCAPE:
+			show_overview()
+			get_viewport().set_input_as_handled()
+			return
 		if k.keycode == KEY_V and k.shift_pressed:
 			send_json({"action": "TOGGLE_TERMINAL_VERBOSE"})
 			get_viewport().set_input_as_handled()
@@ -447,19 +451,31 @@ func _slices(r: Rect2, max_len: float) -> Array[Rect2]:
 
 func _build_signs() -> void:
 	if Iso.enabled:
+		var labelled: Dictionary = {}  # one label per room name
 		for s: Dictionary in office.signs:
 			# Placard on a post in the room's back (north-west) corner.
 			var tag := _add_sign_tag(s, Iso.to_screen((s.rect as Rect2).position + Vector2(18, 20)))
+			labelled[str(s.get("name", "")).to_lower()] = true
 			if s.clickable:
 				var room_id := str(s.room_id)
 				var sname := str(s.get("name", "")).to_lower()
 				if room_id == "__knowledge__" or sname.find("server") >= 0:
-					tag.pressed.connect(func() -> void: _open_knowledge_library())
+					tag.pressed.connect(func() -> void:
+						focus_room(room_id if room_id != "" else "__knowledge__")
+						_open_knowledge_library())
 				else:
-					tag.pressed.connect(func() -> void: open_team(room_id))
+					tag.pressed.connect(func() -> void:
+						focus_room(room_id)
+						open_team(room_id))
 		for f: Dictionary in office.outer_frames:
+			var fname := str(f.name)
+			# Skip duplicate building headings when a room placard already names it.
+			if labelled.has(fname.to_lower()):
+				continue
+			if bool(f.get("hub", false)):
+				continue  # hub title is noise at overview
 			var o: Rect2 = (f.rect as Rect2).grow(Office.EXT_WALL)
-			_add_sign_tag({"name": str(f.name), "style": "building"}, Iso.to_screen(o.position, Office.WALL_H_BACK + 6.0))
+			_add_sign_tag({"name": fname, "style": "building"}, Iso.to_screen(o.position, Office.WALL_H_BACK + 6.0))
 			if f.get("wing", false) and (f.door as Rect2).has_area():
 				_add_sign_tag({"name": "Separate entrance", "style": "note"}, Iso.to_screen((f.door as Rect2).get_center() + Vector2(0, 46)))
 		return
@@ -1161,6 +1177,9 @@ func _on_ask_human(msg: Dictionary) -> void:
 	var aid := str(msg.get("agent_id", ""))
 	var agent: Agent = agents.get(aid)
 	if agent:
+		agent.awaiting_input = true
+		if agent.view:
+			agent.view.queue_redraw()
 		agent.show_bubble("We need to talk", false)
 		var meet := _meeting_target_for(agent)
 		_route(agent, meet)
@@ -1223,6 +1242,11 @@ func _show_next_human_prompt() -> void:
 func _submit_human_reply(agent_id: String, text: String, request_id: String) -> void:
 	if text == "":
 		return
+	var replied: Agent = agents.get(agent_id)
+	if replied:
+		replied.awaiting_input = false
+		if replied.view:
+			replied.view.queue_redraw()
 	send_json({"action": "HUMAN_REPLY", "agent_id": agent_id, "text": text, "request_id": request_id})
 	if _notices_store:
 		if request_id:
@@ -1253,6 +1277,14 @@ func _add_view_button() -> void:
 	hbox.add_child(_view_button)
 	hbox.move_child(_view_button, roster.get_index())
 	_update_view_button()
+	var overview_btn := Button.new()
+	overview_btn.text = "⌂ Overview"
+	overview_btn.focus_mode = Control.FOCUS_NONE
+	overview_btn.add_theme_font_size_override("font_size", 12)
+	overview_btn.tooltip_text = "Return to campus overview (Esc)"
+	overview_btn.pressed.connect(show_overview)
+	hbox.add_child(overview_btn)
+	hbox.move_child(overview_btn, roster.get_index())
 
 
 func _update_view_button() -> void:
@@ -1323,14 +1355,37 @@ func default_view() -> void:
 	camera.focus_on(Iso.to_screen(focus) + Vector2(0, -20), DEFAULT_ZOOM)
 
 
+## Esc / Overview button: close the side panel and return to the campus view.
+func show_overview() -> void:
+	if drawer and drawer.has_method("close"):
+		drawer.close()
+	if _selected and is_instance_valid(_selected):
+		_selected.set_selected(false)
+	_selected = null
+	var main_rect: Rect2 = office.bounds
+	for f: Dictionary in office.outer_frames:
+		if bool(f.get("hub", false)):
+			main_rect = f.rect
+			break
+	var focus := Iso.to_screen(main_rect.get_center()) + Vector2(0, -20)
+	if camera.has_method("focus_on_smooth"):
+		camera.focus_on_smooth(focus, DEFAULT_ZOOM, 0.45)
+	else:
+		camera.focus_on(focus, DEFAULT_ZOOM)
+
+
 ## Moves the camera onto a room (left of where the drawer opens).
 func focus_room(room_id: String) -> void:
 	for a: Dictionary in office.areas:
 		if str(a.get("id", "")) == room_id:
 			var box := Iso.screen_aabb(a.rect, Office.WALL_H_BACK)
 			var view := get_viewport_rect().size - Vector2(drawer.panel_width + 40.0, float(camera.get("top_margin")) + 30.0)
-			var z := clampf(minf(view.x / box.size.x, view.y / box.size.y), 0.45, 1.1)
-			camera.focus_on(box.get_center() + Vector2((drawer.panel_width * 0.5) / z, -12.0 / z), z)
+			var z := clampf(minf(view.x / box.size.x, view.y / box.size.y), 0.55, 1.15)
+			var target := box.get_center() + Vector2((drawer.panel_width * 0.5) / z, -12.0 / z)
+			if camera.has_method("focus_on_smooth"):
+				camera.focus_on_smooth(target, z, 0.5)
+			else:
+				camera.focus_on(target, z)
 			return
 
 
@@ -1979,6 +2034,13 @@ func _spawn_agent(data: Dictionary) -> Agent:
 	var id := str(data.get("agent_id"))
 	var fallback := FALLBACK_COLORS[agents.size() % FALLBACK_COLORS.size()]
 	var colour := Color.from_string(str(data.get("color", "")), fallback)
+	# Department-coloured clothing: shirt takes the room colour when known.
+	var rid := str(data.get("room", office.agent_room.get(id, "")))
+	for room: Dictionary in office.rooms:
+		if str(room.id) == rid:
+			var dept := Color.from_string(str(room.get("color", "")), colour)
+			colour = dept.lerp(colour, 0.25)  # mostly dept, slight personal tint
+			break
 	var desk := str(data.get("desk", office.desk_of.get(id, "")))
 	var agent: Agent = agent_scene.instantiate()
 	agent.setup(id, str(data.get("name", id)), colour, desk, waypoints, _spawn_index)
@@ -2161,20 +2223,27 @@ func _update_counts() -> void:
 		counts_label.text += " · %d error" % int(c.get("ERROR", 0))
 
 
-## Name pills, bubbles and signs grow when zoomed out so they stay legible:
-## about 1.05x their design size on screen at the default zoom, never below
-## ~0.8x when zoomed right out.
+## Labels stay a constant screen size regardless of zoom (inverse of camera zoom).
 func _ui_scale_for(z: float) -> float:
-	return clampf(1.05 / z, 1.0, 3.2)
+	return clampf(0.95 / maxf(z, 0.05), 0.55, 4.0)
 
 
 func _apply_ui_scale(z: float) -> void:
 	var s := _ui_scale_for(z)
+	# Overview LOD: only department labels + agent status icons; names on hover/select.
+	var overview := z < 0.55
 	for a: Agent in agents.values():
 		a.set_ui_scale(s / Iso.PEOPLE_SCALE)
-	for t in _sign_tags:
-		if is_instance_valid(t):
-			t.scale = Vector2.ONE * s
+		if a.has_method("set_overview_lod"):
+			a.set_overview_lod(overview)
+	for tag in _sign_tags:
+		if is_instance_valid(tag):
+			tag.scale = Vector2.ONE * s
+			# Hide building-style duplicates when we already have a room placard.
+			if overview and str(tag.info.get("style", "")) == "note":
+				tag.visible = false
+			else:
+				tag.visible = true
 
 
 # ---------------------------------------------------------------------------

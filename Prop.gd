@@ -157,11 +157,16 @@ func _draw_desk() -> void:
 		_draw_exec_nameplate(r)
 	else:
 		# Monitor: stands on the far edge, screen facing us (the agent sits in front).
-		var mon := Rect2(r.position.x + r.size.x * 0.5 - 32, r.position.y - 40, 64, 44)
-		draw_rect(Rect2(mon.get_center().x - 4, mon.end.y - 2, 8, 9), Color("#37474f"))
-		draw_rect(Rect2(mon.get_center().x - 12, mon.end.y + 6, 24, 3), Color("#37474f"))
-		_rr(mon.grow(1.5), 4, Color("#1c2328"))
-		_rr(mon, 3, Color("#263238"))
+		var soft := bool(data.get("soft_monitor", false)) or str(data.get("set", "")) == "cozy"
+		var mon_w := 52.0 if soft else 64.0
+		var mon_h := 36.0 if soft else 44.0
+		var mon := Rect2(r.position.x + r.size.x * 0.5 - mon_w * 0.5, r.position.y - mon_h + 4.0, mon_w, mon_h)
+		var bezel := Color("#5c6b73") if soft else Color("#1c2328")
+		var frame := Color("#78909c") if soft else Color("#263238")
+		draw_rect(Rect2(mon.get_center().x - 4, mon.end.y - 2, 8, 9), Color("#607d8b") if soft else Color("#37474f"))
+		draw_rect(Rect2(mon.get_center().x - 12, mon.end.y + 6, 24, 3), Color("#607d8b") if soft else Color("#37474f"))
+		_rr(mon.grow(1.5), 4, bezel)
+		_rr(mon, 3, frame)
 		_draw_screen(mon.grow(-3.5))
 		# Keyboard + mouse on the near edge, mug on the side.
 		var kb := Rect2(r.position.x + r.size.x * 0.5 - 22, r.position.y + 14, 44, 9)
@@ -466,11 +471,19 @@ func _plane_reset() -> void:
 
 ## Soft contact shadow on the floor under this slice of `r`.
 func _floor_shadow(r: Rect2, alpha: float = 0.16) -> void:
+	if str(data.get("set", "")) == "cozy":
+		alpha = maxf(alpha, 0.28)
 	var s := Rect2(r.position + Vector2(2, 3), r.size).intersection(clip.grow_individual(0, 0, 3, 4))
 	if not s.has_area():
 		return
 	_plane_top(0.0)
 	draw_rect(s, Color(0, 0, 0, alpha))
+	# Soft oval contact for cozy desks/chairs.
+	if str(data.get("set", "")) == "cozy":
+		var c := s.get_center()
+		draw_set_transform(c, 0.0, Vector2(s.size.x * 0.55, s.size.y * 0.35))
+		draw_circle(Vector2.ZERO, 1.0, Color(0, 0, 0, 0.18))
+		_plane_top(0.0)
 	_plane_reset()
 
 
@@ -560,15 +573,21 @@ func _iso_desk() -> void:
 		_plane_reset()
 	else:
 		# Monitor on the far edge, screen facing the sitter (south).
-		_box(Rect2(cx - 3, r.position.y + 5, 6, 4), DESK_H, 10, Color("#37474f"))
-		_box(Rect2(cx - 10, r.position.y + 4, 20, 8), DESK_H, 1.5, Color("#37474f"))
-		var mon := Rect2(cx - 31, r.position.y + 3, 62, 5)
+		var soft := bool(data.get("soft_monitor", false)) or str(data.get("set", "")) == "cozy"
+		var stand := Color("#78909c") if soft else Color("#37474f")
+		_box(Rect2(cx - 3, r.position.y + 5, 6, 4), DESK_H, 10, stand)
+		_box(Rect2(cx - 10, r.position.y + 4, 20, 8), DESK_H, 1.5, stand)
+		var mw := 50.0 if soft else 62.0
+		var mon := Rect2(cx - mw * 0.5, r.position.y + 3, mw, 5)
 		var z0 := DESK_H + 8.0
-		var mh := 40.0
-		_box(mon, z0, mh, Color("#2b343a"), Color("#1c2328"), Color("#151b1f"))
+		var mh := 32.0 if soft else 40.0
+		var topc := Color("#90a4ae") if soft else Color("#2b343a")
+		var southc := Color("#78909c") if soft else Color("#1c2328")
+		var eastc := Color("#607d8b") if soft else Color("#151b1f")
+		_box(mon, z0, mh, topc, southc, eastc)
 		_plane_south(mon.end.y, z0 + mh)
-		draw_rect(Rect2(cx - 29, 2, 58, mh - 4), Color("#263238"))
-		_draw_screen(Rect2(cx - 27.5, 3.5, 55, mh - 7))
+		draw_rect(Rect2(cx - mw * 0.5 + 2, 2, mw - 4, mh - 4), Color("#546e7a") if soft else Color("#263238"))
+		_draw_screen(Rect2(cx - mw * 0.5 + 3.5, 3.5, mw - 7, mh - 7))
 		_plane_reset()
 
 

@@ -56,15 +56,17 @@ const LEGACY_LAYOUT := {
 }
 
 const THEMES := {
-	"wood": [Color("#d9c09a"), Color("#c9ab80")],
-	"sage": [Color("#c9d8bf"), Color("#b5c9a8")],
-	"lilac": [Color("#d9cce6"), Color("#c6b5d9")],
-	"navy": [Color("#3d4a66"), Color("#34405a")],
-	"tile": [Color("#e8e4dc"), Color("#d6d1c6")],
-	"carpet": [Color("#a99bc4"), Color("#9a8bb7")],
-	"lobby": [Color("#d7d2c8"), Color("#cbc4b8")],
-	"zen": [Color("#c8d9c4"), Color("#b5cbb0")],
-	"corridor": [Color("#bfb6a6"), Color("#b3aa99")],
+	# Low-contrast pairs so checkerboards / planks read as texture, not stripes.
+	"wood": [Color("#dcc8a8"), Color("#d4be9c")],
+	"sage": [Color("#cdd8c4"), Color("#c2d0b8")],
+	"lilac": [Color("#d9cee4"), Color("#d0c4dc")],
+	"navy": [Color("#465372"), Color("#3f4c6a")],
+	"tile": [Color("#e6e2da"), Color("#ddd9d1")],
+	"carpet": [Color("#a99bc4"), Color("#a193bc")],
+	"lobby": [Color("#d6d1c8"), Color("#cfc9c0")],
+	"zen": [Color("#cad8c6"), Color("#c2d1be")],
+	"corridor": [Color("#c0b8aa"), Color("#b9b1a3")],
+	"cozy": [Color("#d8cbb4"), Color("#d1c3ab")],  ## Engineering diorama floor
 }
 
 # ---- Built layout (read by Main) ------------------------------------------
@@ -142,8 +144,8 @@ func build(cfg: Dictionary) -> void:
 	var hub_c := hub.get_center()
 
 	# Elliptical ring radii (Rx > Ry → ~16:9 campus).
-	var ring_rx := 1400.0
-	var ring_ry := 780.0
+	var ring_rx := 1080.0
+	var ring_ry := 600.0
 	var corridor_w := 78.0
 
 	# Satellites around the hub (θ=0 east, +θ clockwise with y-down = south-positive).
@@ -384,13 +386,70 @@ func _text_w(text: String, size: int) -> float:
 
 func _build_team(room: Dictionary, cell: Rect2, content: Rect2) -> void:
 	var col := Color.from_string(str(room.get("color", "#90a4ae")), Color("#90a4ae"))
-	areas.append({"kind": "room", "id": room.id, "rect": cell, "theme": str(room.get("theme", "wood")), "name": room.name, "color": col})
-	var sub := "%d members" % (room.get("members", []) as Array).size()
-	signs.append({"room_id": str(room.id), "name": str(room.name), "sub": sub, "rect": _sign_rect(cell, str(room.name), sub), "color": col, "clickable": true})
+	var is_eng := str(room.id) == "engineering"
+	var theme := "cozy" if is_eng else str(room.get("theme", "wood"))
+	areas.append({"kind": "room", "id": room.id, "rect": cell, "theme": theme, "name": room.name, "color": col})
+	# One placard per room (no member-count subtitle — details live in the side panel).
+	signs.append({"room_id": str(room.id), "name": str(room.name), "sub": "", "rect": _sign_rect(cell, str(room.name)), "color": col, "clickable": true})
+	if is_eng:
+		_build_engineering_diorama(room, cell)
+		return
 	# Centre the desk grid horizontally inside the (possibly wider) cell.
 	var origin := Vector2(cell.position.x + (cell.size.x - content.size.x) * 0.5, cell.position.y)
 	_desk_grid(room, origin)
 	_prop("plant", Rect2(cell.end.x - 44, cell.position.y + 10, 30, 30))
+	_chat("Chat_" + str(room.id), Vector2(cell.get_center().x, cell.end.y - 46))
+
+
+## Engineering-only cozy office diorama: clustered workstations, whiteboard,
+## plants, lamps, softer monitors, contact shadows. Keeps the same door / chat
+## / desk waypoint contract so nav and harness seating still work.
+func _build_engineering_diorama(room: Dictionary, cell: Rect2) -> void:
+	var members: Array = room.get("members", [])
+	var desks := maxi(int(room.get("desks", 1)), members.size())
+	desks = maxi(desks, 1)
+	# Tighter cluster than the default 3-col grid: two columns of pods.
+	var cols := 2 if desks <= 4 else mini(3, desks)
+	var rows := ceili(desks / float(cols))
+	var cell_w := 148.0
+	var cell_h := 138.0
+	var pad_x := 22.0
+	var top := 78.0
+	var cluster_w := cols * cell_w
+	var origin_x := cell.position.x + (cell.size.x - cluster_w) * 0.5
+	var origin_y := cell.position.y + top
+	# Soft area rug under the pod (drawn as a rug prop so y-sort works).
+	var rug := Rect2(origin_x - 10, origin_y - 8, cluster_w + 20, rows * cell_h + 36)
+	_prop("rug", rug, {"set": "cozy", "color": "#4fc3f7"})
+	# Whiteboard on the north wall.
+	var wb := Rect2(cell.position.x + cell.size.x * 0.5 - 70, cell.position.y + 10, 140, 28)
+	_prop("whiteboard", wb, {"set": "cozy"})
+	# Corner plants + floor lamps (warm pool, no layout impact beyond tiny footprints).
+	_prop("plant", Rect2(cell.position.x + 10, cell.position.y + 12, 28, 28), {"set": "cozy"})
+	_prop("plant", Rect2(cell.end.x - 40, cell.position.y + 12, 28, 28), {"set": "cozy"})
+	_prop("plant", Rect2(cell.position.x + 10, cell.end.y - 44, 28, 28), {"set": "cozy"})
+	_prop("lamp", Rect2(cell.end.x - 36, cell.end.y - 52, 20, 34), {"set": "cozy"})
+	_prop("lamp", Rect2(cell.position.x + 12, cell.position.y + cell.size.y * 0.45, 20, 34), {"set": "cozy"})
+	for i in desks:
+		var c := i % cols
+		var row := int(i / cols)
+		var owner := ""
+		var desk_name := ""
+		var color := ""
+		if i < members.size():
+			owner = str(members[i].agent_id)
+			desk_name = str(members[i].get("desk", "Desk_" + owner))
+			color = str(members[i].get("color", ""))
+		var cx := origin_x + c * cell_w + cell_w * 0.5
+		var cy := origin_y + row * cell_h
+		var desk := Rect2(cx - 40, cy + 28, 80, 34)
+		_prop("desk", desk, {"owner": owner, "color": color, "set": "cozy", "soft_monitor": true})
+		var seat := Vector2(cx, desk.end.y + 12)
+		_prop("chair", Rect2(seat.x - 12, seat.y - 20, 24, 22), {"sort_y": seat.y + 2.0, "set": "cozy"})
+		# Tiny desk plant instead of a second black slab.
+		_prop("plant", Rect2(desk.end.x + 4, desk.position.y + 4, 18, 18), {"set": "cozy"})
+		if not desk_name.is_empty():
+			_wp(desk_name, seat, "up", "desk")
 	_chat("Chat_" + str(room.id), Vector2(cell.get_center().x, cell.end.y - 46))
 
 
@@ -667,7 +726,7 @@ func _prop(kind: String, r: Rect2, extra: Dictionary = {}) -> void:
 	d.merge(extra, true)
 	props.append(d)
 	# Walkable surface props (mats, rugs, cushions, floor lamps glow) must not block nav.
-	if kind not in ["chair", "rug", "yoga_mat", "cushion"]:
+	if kind not in ["chair", "rug", "yoga_mat", "cushion", "lamp"]:
 		obstacles.append(r)
 
 
@@ -1041,12 +1100,13 @@ func _draw_floor(a: Dictionary) -> void:
 	var c2: Color = pal[1]
 	draw_rect(r, c1)
 	match str(a.get("theme", "wood")):
-		"tile", "lobby":
+		"tile", "lobby", "cozy":
 			var t := 32
 			for x in range(int(r.position.x), int(r.end.x), t):
 				for y in range(int(r.position.y), int(r.end.y), t):
 					if int((x - r.position.x) / t + (y - r.position.y) / t) % 2 == 0:
-						draw_rect(Rect2(x, y, t, t).intersection(r), c2)
+						# Soft wash — keep checker readable without high contrast.
+						draw_rect(Rect2(x, y, t, t).intersection(r), Color(c2, 0.55))
 		"carpet", "navy":
 			for y in range(int(r.position.y), int(r.end.y), 8):
 				draw_line(Vector2(r.position.x, y), Vector2(r.end.x, y), Color(c2, 0.5), 1.0)
@@ -1282,7 +1342,7 @@ func _draw_iso() -> void:
 		if a.kind in ["corridor", "hub"]:
 			continue
 		var r: Rect2 = a.rect
-		var gc := Color(0, 0, 0, 0.045)
+		var gc := Color(0, 0, 0, 0.022)
 		var x := ceilf(r.position.x / 32.0) * 32.0
 		while x < r.end.x:
 			draw_line(Vector2(x, r.position.y), Vector2(x, r.end.y), gc, 1.0)

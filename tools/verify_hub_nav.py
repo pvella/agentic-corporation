@@ -236,7 +236,7 @@ def build(cfg: dict):
     hub_size = (1320.0, 700.0)
     hub = Rect(ORIGIN[0] + 760.0, ORIGIN[1] + 420.0, hub_size[0], hub_size[1])
     hub_c = hub.center()
-    ring_rx, ring_ry = 1400.0, 780.0
+    ring_rx, ring_ry = 1080.0, 600.0
     corridor_w = 78.0
     door_w = corridor_w + 10.0
 

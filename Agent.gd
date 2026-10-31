@@ -44,14 +44,14 @@ const STUCK_NEAR_SEC := 3.0    ## give up quickly when already at the spot
 const STUCK_FAR_SEC := 14.0    ## wait longer while still crossing the campus
 const STUCK_FAR_DIST := 64.0   ## "still far" threshold for the patience above
 const OUTLINE := Color(0.15, 0.13, 0.19)
-const HEAD_R := 14.0
+const HEAD_R := 18.0
 ## How far the drawing drops when sitting, per seat type.
 const SIT_DROP := {"desk": 3.0, "chair": 6.0, "sofa": 9.0, "foosball": 0.0, "yoga": 0.0, "meditate": 10.0, "": 0.0}
 
 const SKINS: Array[Color] = [Color("#ffdbbf"), Color("#f1c27d"), Color("#e0ac69"), Color("#c68642"), Color("#8d5524"), Color("#ffe0d0")]
 const HAIRS: Array[Color] = [Color("#3b2a20"), Color("#6d4c41"), Color("#b5651d"), Color("#e6c07b"), Color("#1c1c1c"), Color("#9e9e9e"), Color("#a83f2e"), Color("#5e3a8c")]
 const HAIR_STYLES: PackedStringArray = ["short", "spiky", "bob", "ponytail", "bun", "curly", "sidepart", "long", "buzz"]
-const ACCESSORIES: PackedStringArray = ["", "glasses", "headphones", "beard", "cap", "bow", "", "glasses", "beanie"]
+const ACCESSORIES: PackedStringArray = ["glasses", "headphones", "beard", "cap", "bow", "beanie", "glasses", "headphones", "cap"]
 const PANTS: Array[Color] = [Color("#37474f"), Color("#3e4a7a"), Color("#5d4037"), Color("#263238"), Color("#4e5b31")]
 ## Hand-picked looks for the legacy agents (others are derived from agent_id).
 const PRESET_LOOKS := {
@@ -78,6 +78,8 @@ var state: String = "IDLE"
 var last_text: String = ""
 ## Unread dashboard messages waiting in this (real) bot's inbox: envelope badge.
 var unread: int = 0
+## True while a human reply dialog is outstanding (raised-hand pose).
+var awaiting_input: bool = false
 var current_waypoint: String = ""
 var log_lines: PackedStringArray = []
 ## name -> Marker2D (meta: facing, seat), injected by Main.
@@ -108,6 +110,9 @@ const KILL_HOVER_TINT := Color(1.0, 0.35, 0.35, 1.0)
 var _hovered := false
 var _selected := false
 var _ui_scale := 1.0
+## Main sets false at overview zoom so only status icons show; hover/select force on.
+var _name_forced := false
+var _overview_lod := false
 var _blink_seed := 0.0
 
 @onready var nav_agent: NavigationAgent2D = $NavigationAgent2D
@@ -124,11 +129,13 @@ func _ready() -> void:
 	click_area.input_event.connect(_on_click_area_input_event)
 	click_area.mouse_entered.connect(func() -> void:
 		_hovered = true
+		_refresh_name_visibility()
 		if _kill_mode_active:
 			_set_kill_hover(true)
 	)
 	click_area.mouse_exited.connect(func() -> void:
 		_hovered = false
+		_refresh_name_visibility()
 		if _kill_mode_active:
 			_set_kill_hover(false)
 	)
@@ -188,6 +195,7 @@ func _apply_identity() -> void:
 	name_label.add_theme_stylebox_override("normal", sb)
 	name_label.add_theme_color_override("font_color", Color.WHITE)
 	_layout_name()
+	_refresh_name_visibility()
 	queue_redraw()
 
 
@@ -322,6 +330,9 @@ func is_phone_out() -> bool:
 
 func set_selected(value: bool) -> void:
 	_selected = value
+	_refresh_name_visibility()
+	if view:
+		view.queue_redraw()
 
 
 func is_at_destination() -> bool:
@@ -351,6 +362,19 @@ func set_ui_scale(s: float) -> void:
 	name_label.scale = Vector2.ONE * s
 	if bubble.visible and not (_bubble_tween and _bubble_tween.is_running()):
 		bubble.scale = Vector2.ONE * s
+
+
+## Overview LOD: hide name pills (status rings/icons remain). Hover/select override.
+func set_overview_lod(active: bool) -> void:
+	_overview_lod = active
+	_refresh_name_visibility()
+
+
+func _refresh_name_visibility() -> void:
+	if not is_instance_valid(name_label):
+		return
+	var show := _selected or _hovered or _name_forced or not _overview_lod
+	name_label.visible = show
 
 
 # ---------------------------------------------------------------------------
@@ -501,7 +525,7 @@ func _play_anim() -> void:
 
 
 func _head_top() -> float:
-	return -44.0 - HEAD_R + SIT_DROP.get(_seat, 0.0) * _sit
+	return -50.0 - HEAD_R + SIT_DROP.get(_seat, 0.0) * _sit
 
 
 func _position_bubble() -> void:
@@ -528,9 +552,14 @@ func _paint() -> void:
 	_c.draw_set_transform(Vector2.ZERO, 0.0, Vector2(1.0, 0.42))
 	_c.draw_circle(Vector2.ZERO, 16.0, Color(0, 0, 0, 0.22))
 	_c.draw_circle(Vector2.ZERO, 11.0, Color(0, 0, 0, 0.12))
-	_c.draw_arc(Vector2.ZERO, 19.0, 0.0, TAU, 40, Color(state_col, 0.9), 2.5, true)
-	if _selected or _hovered:
-		_c.draw_arc(Vector2.ZERO, 24.0, 0.0, TAU, 40, Color(1, 1, 1, 0.95 if _selected else 0.5), 2.0, true)
+	_c.draw_arc(Vector2.ZERO, 22.0, 0.0, TAU, 48, Color(state_col, 0.95), 3.0, true)
+	if _selected:
+		# Clear selection: bright outline + filled floor ring.
+		_c.draw_circle(Vector2.ZERO, 28.0, Color(1, 1, 1, 0.18))
+		_c.draw_arc(Vector2.ZERO, 28.0, 0.0, TAU, 48, Color(1, 1, 1, 0.98), 3.2, true)
+		_c.draw_arc(Vector2.ZERO, 32.0, 0.0, TAU, 48, Color(body_color, 0.85), 2.0, true)
+	elif _hovered:
+		_c.draw_arc(Vector2.ZERO, 26.0, 0.0, TAU, 40, Color(1, 1, 1, 0.55), 2.0, true)
 	_c.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 	var drop: float = SIT_DROP.get(_seat, 0.0) * _sit
@@ -605,7 +634,7 @@ func _draw_front() -> void:
 	var seated := _sit > 0.5 and _seat in ["chair", "sofa", "desk", "meditate"]
 	var phone := is_phone_out()
 	var skin: Color = _look.skin
-	var H := Vector2(side * 1.5, -44.0 + bob)
+	var H := Vector2(side * 1.5, -50.0 + bob)
 	if phone:
 		H.y += 1.0  # looking down at the phone
 
@@ -674,6 +703,11 @@ func _draw_front() -> void:
 		_arm(L, Vector2(-14, sh + 8), Vector2(-12, sh + 15))
 		_arm(R, Vector2(13, sh + 9), Vector2(5, sh + 3))
 		_draw_phone(Vector2(4, sh - 3), false)
+	elif awaiting_input:
+		# Raised hand — needs a human reply.
+		_arm(L, Vector2(-12, sh + 9), Vector2(-8, sh + 14))
+		_arm(R, Vector2(12, sh), Vector2(10, H.y - 8))
+		_c.draw_circle(Vector2(10, H.y - 10), 4.0, _look.skin)
 	elif state == "THINKING":
 		_arm(L, Vector2(-12, sh + 9), Vector2(1, sh + 9))
 		_arm(R, Vector2(13, sh + 8), Vector2(6, H.y + 10))
@@ -840,7 +874,7 @@ func _draw_back() -> void:
 	var at_desk := _seat in ["desk", "foosball"] and _sit > 0.5
 	var seated := _sit > 0.5 and _seat not in ["foosball", "yoga"]
 	var skin: Color = _look.skin
-	var H := Vector2(0, -44.0 + bob)
+	var H := Vector2(0, -50.0 + bob)
 	var sh := -28.0 + bob
 
 	if not seated:
@@ -856,7 +890,10 @@ func _draw_back() -> void:
 	var tap_l := sin(t * 18.0) * 1.6 if typing else 0.0
 	var tap_r := sin(t * 18.0 + 2.0) * 1.6 if typing else 0.0
 	if at_desk:
-		if state == "THINKING":
+		if awaiting_input:
+			_arm(Vector2(-11, sh), Vector2(-16, sh + 2), Vector2(-12, sh + 8))
+			_arm(Vector2(11, sh), Vector2(14, sh - 12), Vector2(8, H.y - 6))
+		elif state == "THINKING":
 			_arm(Vector2(-11, sh), Vector2(-17, sh - 2), Vector2(-15, sh - 6))
 		else:
 			_arm(Vector2(-11, sh), Vector2(-17, sh - 1), Vector2(-15, sh - 5 + tap_l))
@@ -1058,14 +1095,24 @@ func _draw_overlays(drop: float) -> void:
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color.WHITE)
 		_c.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	if state == "ERROR":
-		# A pulsing red "!" badge (a real bot reported a failure).
-		var p := Vector2(16, _head_top() - 10)
-		var pulse := 1.0 + 0.1 * sin(t * 6.0)
-		_c.draw_set_transform(p, 0.0, Vector2.ONE * pulse * _ui_scale)
-		_c.draw_circle(Vector2.ZERO, 9.5, OUTLINE)
-		_c.draw_circle(Vector2.ZERO, 8.0, STATE_COLORS["ERROR"])
-		_c.draw_rect(Rect2(-1.4, -5.5, 2.8, 7.0), Color.WHITE)
-		_c.draw_circle(Vector2(0, 4.2), 1.5, Color.WHITE)
+		# Unmistakable warning triangle + bang (colour + shape + pulse).
+		var p := Vector2(18, _head_top() - 12)
+		var pulse := 1.0 + 0.14 * sin(t * 7.0)
+		_c.draw_set_transform(p, 0.0, Vector2.ONE * pulse * maxf(_ui_scale, 1.0))
+		var tri := PackedVector2Array([Vector2(0, -12), Vector2(12, 10), Vector2(-12, 10)])
+		_c.draw_colored_polygon(tri, OUTLINE)
+		_c.draw_colored_polygon(PackedVector2Array([Vector2(0, -9), Vector2(9.5, 8), Vector2(-9.5, 8)]), Color("#ffc107"))
+		_c.draw_colored_polygon(PackedVector2Array([Vector2(0, -6), Vector2(6.5, 6), Vector2(-6.5, 6)]), STATE_COLORS["ERROR"])
+		_c.draw_rect(Rect2(-1.5, -3.5, 3.0, 6.0), Color.WHITE)
+		_c.draw_circle(Vector2(0, 5.0), 1.6, Color.WHITE)
+		_c.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+	if awaiting_input and state != "ERROR":
+		var p2 := Vector2(18, _head_top() - 8)
+		var bob2 := sin(t * 4.0) * 2.0
+		_c.draw_set_transform(p2 + Vector2(0, bob2), 0.0, Vector2.ONE * maxf(_ui_scale, 1.0))
+		_c.draw_circle(Vector2.ZERO, 9.0, OUTLINE)
+		_c.draw_circle(Vector2.ZERO, 7.5, Color("#ffb74d"))
+		_c.draw_string(ThemeDB.fallback_font, Vector2(-3.5, 4.0), "?", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("#3e2723"))
 		_c.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	if t < _ping_until:
 		var k := clampf((_ping_until - t) / 1.4, 0.0, 1.0)

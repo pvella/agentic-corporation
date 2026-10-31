@@ -46,6 +46,20 @@ func focus_on(world_pos: Vector2, z: float) -> void:
 	position = world_pos
 	_clamp_position()
 
+## Smoothly pans and zooms to `world_pos` over `duration` seconds.
+func focus_on_smooth(world_pos: Vector2, z: float, duration: float = 0.45) -> void:
+	z = clampf(z, min_zoom, max_zoom)
+	_target_zoom = z
+	var tw := create_tween()
+	tw.set_parallel(true)
+	tw.set_ease(Tween.EASE_IN_OUT)
+	tw.set_trans(Tween.TRANS_CUBIC)
+	tw.tween_property(self, "position", world_pos, duration)
+	tw.tween_method(_set_zoom, zoom.x, z, duration)
+	tw.chain().tween_callback(_clamp_position)
+
+
+
 
 func _set_zoom(z: float) -> void:
 	zoom = Vector2(z, z)
