@@ -47,6 +47,15 @@ const OUTLINE := Color(0.15, 0.13, 0.19)
 const HEAD_R := 14.0  ## local; screen size via Iso.PEOPLE_SCALE (~+30%)
 ## How far the drawing drops when sitting, per seat type.
 const SIT_DROP := {"desk": 3.0, "chair": 6.0, "sofa": 9.0, "foosball": 0.0, "yoga": 0.0, "meditate": 10.0, "": 0.0}
+## Amenity poses only valid inside these area kinds (hub zones / rooms).
+const SEAT_EXPECTED_KINDS := {
+	"yoga": ["rec"],
+	"meditate": ["rec"],
+	"foosball": ["break"],
+	"sofa": ["break"],
+	"chair": ["canteen", "meeting", "break"],
+	"desk": ["room", "wing", "team"],
+}
 
 const SKINS: Array[Color] = [Color("#ffdbbf"), Color("#f1c27d"), Color("#e0ac69"), Color("#c68642"), Color("#8d5524"), Color("#ffe0d0")]
 const HAIRS: Array[Color] = [Color("#3b2a20"), Color("#6d4c41"), Color("#b5651d"), Color("#e6c07b"), Color("#1c1c1c"), Color("#9e9e9e"), Color("#a83f2e"), Color("#5e3a8c")]
@@ -238,6 +247,8 @@ func go_to_waypoint(marker_name: String, offset: Vector2 = Vector2.ZERO, instant
 		global_position = target
 		_target_pos = target
 		_nav_active = false
+		if seat != "" and not _seat_room_ok(seat):
+			seat = ""
 		_seat = seat
 		_sit = 1.0 if seat != "" else 0.0
 		return
@@ -248,6 +259,9 @@ func go_to_waypoint(marker_name: String, offset: Vector2 = Vector2.ZERO, instant
 
 
 var _pending_seat := ""
+## Injected by Main: Callable(Vector2) -> String area kind at world pos.
+var area_kind_at: Callable = Callable()
+
 
 
 func go_to_position(world_pos: Vector2) -> void:
@@ -424,6 +438,23 @@ func _on_velocity_computed(safe_velocity: Vector2) -> void:
 	move_and_slide()
 
 
+
+func _seat_room_ok(seat: String) -> bool:
+	if seat == "" or not area_kind_at.is_valid():
+		return true
+	var expect: Variant = SEAT_EXPECTED_KINDS.get(seat, [])
+	if expect == null or (expect is Array and expect.is_empty()):
+		return true
+	var got := str(area_kind_at.call(global_position))
+	for k in expect:
+		if str(k) == got:
+			return true
+		# Desk cells authored as room/wing/team interchangeably.
+		if seat == "desk" and got in ["room", "wing", "team"] and str(k) in ["room", "wing", "team"]:
+			return true
+	return false
+
+
 func _arrive() -> void:
 	if not _nav_active:
 		return
@@ -440,6 +471,9 @@ func _arrive() -> void:
 	# Amenity poses only at the real spot. A stuck/partial arrival in a spoke
 	# corridor or team room must not yoga / meditate / sit foosball there.
 	if gap > SEAT_ARRIVE_MAX:
+		_pending_seat = ""
+	# Pose must match the room we actually stand in (not just the target name).
+	if _pending_seat != "" and not _seat_room_ok(_pending_seat):
 		_pending_seat = ""
 	_finish_settle()
 
@@ -463,6 +497,9 @@ func _process(delta: float) -> void:
 	_walk_phase += spd * delta * 0.11
 	if spd > 5.0:
 		_dir = _dir.lerp(velocity.normalized() if velocity.length() > 1.0 else _dir, clampf(delta * 6.0, 0.0, 1.0))
+	if _seat != "" and not _nav_active and not _seat_room_ok(_seat):
+		_seat = ""
+		_pending_seat = ""
 	var sit_target := 1.0 if (_seat != "" and is_at_destination()) else 0.0
 	_sit = move_toward(_sit, sit_target, delta * 3.0)
 	if sprite.visible:

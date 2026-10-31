@@ -9,6 +9,11 @@ Mirrors Office.gd hub geometry (including `_fit_satellite_ring`). Asserts:
   5) headless idle grid reach: hub → canteen seat and hub → rec mat
   6) no floor / rug / wall / path footprint lies on the grass outside a
      room or corridor polygon (catches leftover patches after ring moves)
+  7) floor props (rug/mat/cushion) sort under agents (iso_anchor NW + z_index)
+  8) no decorative grass speckles (read as grey leftover dots)
+  9) amenity seat poses gated to the correct room kinds in Agent.gd
+ 10) every seeded desk is inside its team room; door→desk grid reach
+ 11) walk polys cover rooms+corridors only (no grass walkable samples)
 Non-zero exit on any failure.
 """
 from __future__ import annotations
@@ -839,6 +844,228 @@ def verify_hub_zone_no_plank_floor() -> int:
     print("OK: hub zones use overlay; no EXT_WALL base-pad spill")
     return 0
 
+
+def verify_floor_prop_sort() -> int:
+    """Rugs/mats/cushions must y-sort under agents (NW iso_anchor + low z_index)
+    and cushions must be flat (no raised _box)."""
+    prop = ROOT / "Prop.gd"
+    src = prop.read_text()
+    bad = 0
+    # iso_anchor must special-case floor kinds
+    start = src.find("func iso_anchor() -> void:")
+    if start < 0:
+        start = src.find("func iso_anchor() -> Vector2:")
+    end = src.find("\nfunc ", start + 10) if start >= 0 else -1
+    block = src[start:end] if start >= 0 else ""
+    if '"rug", "yoga_mat", "cushion"' not in block and '"rug"' not in block:
+        bad += 1
+        print("  floor_prop_anchor_missing: iso_anchor lacks rug/yoga_mat/cushion case")
+    elif "r.position.x" not in block and "position.x" not in block:
+        bad += 1
+        print("  floor_prop_anchor_not_nw: expected NW (min x+y) corner for floor props")
+    if 'kind in ["rug", "yoga_mat", "cushion"]' not in src and "z_index = -20" not in src:
+        bad += 1
+        print("  floor_prop_z_index_missing: rugs/mats need z_index under standing props")
+    # Flat cushion
+    cstart = src.find("func _iso_cushion() -> void:")
+    cend = src.find("\nfunc ", cstart + 10) if cstart >= 0 else -1
+    cblock = src[cstart:cend] if cstart >= 0 else ""
+    if "_box(" in cblock:
+        bad += 1
+        print("  cushion_still_raised: _iso_cushion uses _box (sorts above walkers)")
+    if "_plane_top(0" not in cblock and "plane_top(0" not in cblock:
+        bad += 1
+        print("  cushion_not_flat_plane: expected _plane_top(0) floor cushion")
+    # Flat rug
+    rstart = src.find("func _iso_rug() -> void:")
+    rend = src.find("\nfunc ", rstart + 10) if rstart >= 0 else -1
+    rblock = src[rstart:rend] if rstart >= 0 else ""
+    if "_box(" in rblock:
+        bad += 1
+        print("  rug_still_raised: _iso_rug uses _box")
+    print(f"floor_prop_sort_bad={bad}")
+    if bad:
+        print("FAIL: floor props do not sort flat under agents")
+        return bad
+    print("OK: floor props use NW iso_anchor, low z_index, flat draw")
+    return 0
+
+
+def verify_no_grass_speckles() -> int:
+    """Decorative grass draw_circle speckles read as leftover grey dots."""
+    office = (ROOT / "Office.gd").read_text()
+    start = office.find("func _draw_iso() -> void:")
+    end = office.find("\nfunc ", start + 10) if start >= 0 else -1
+    block = office[start:end] if start >= 0 else ""
+    bad = 0
+    if "draw_circle" in block and "6e955d" in block:
+        bad += 1
+        print("  iso_grass_speckles_present")
+    if "for i in 140:" in block and "draw_circle" in block:
+        bad += 1
+        print("  iso_grass_speckle_loop_present")
+    # Top-down too
+    if 'Color("#6e955d")' in office and "draw_circle" in office:
+        # Allow if only outside _draw_iso and commented — count live calls near grass
+        if "for i in 60:" in office and 'Color("#6e955d")' in office:
+            bad += 1
+            print("  topdown_grass_speckles_present")
+    print(f"grass_speckle_bad={bad}")
+    if bad:
+        print("FAIL: grass speckles still drawn (look like grey leftover dots)")
+        return bad
+    print("OK: solid grass only (no decorative speckles)")
+    return 0
+
+
+def verify_amenity_pose_room_gate() -> int:
+    """Agent.gd must refuse amenity poses outside the expected room kinds."""
+    agent = (ROOT / "Agent.gd").read_text()
+    main = (ROOT / "Main.gd").read_text()
+    bad = 0
+    if "SEAT_EXPECTED_KINDS" not in agent:
+        bad += 1
+        print("  missing SEAT_EXPECTED_KINDS")
+    else:
+        for seat, kinds in (
+            ("yoga", "rec"),
+            ("meditate", "rec"),
+            ("foosball", "break"),
+            ("sofa", "break"),
+        ):
+            # crude: seat key near expected kind
+            if f'"{seat}"' not in agent or kinds not in agent:
+                bad += 1
+                print(f"  seat_map_incomplete seat={seat} need_kind={kinds}")
+    if "func _seat_room_ok" not in agent:
+        bad += 1
+        print("  missing _seat_room_ok")
+    if "area_kind_at" not in agent:
+        bad += 1
+        print("  missing area_kind_at Callable")
+    if 'Callable(self, "_area_kind_at")' not in main and "area_kind_at =" not in main:
+        bad += 1
+        print("  Main does not inject area_kind_at on spawn")
+    if "_seat_room_ok(_pending_seat)" not in agent and "not _seat_room_ok" not in agent:
+        bad += 1
+        print("  arrive/process does not call _seat_room_ok")
+    print(f"amenity_pose_gate_bad={bad}")
+    if bad:
+        print("FAIL: amenity pose room gating incomplete")
+        return bad
+    print("OK: amenity poses gated to Rec/Break/Canteen room kinds")
+    return 0
+
+
+def verify_seeded_desks_in_rooms(rooms: list[dict], cfg: dict) -> int:
+    """Every seeded member desk waypoint formula lands inside its team room."""
+    bad = 0
+    seeded = 0
+    for room in rooms:
+        if room["id"] in ("hub", "meeting", "server") or room.get("kind") in ("hub", "meeting", "server"):
+            # still check members if any
+            pass
+        members = []
+        # rooms from build() may not carry members — read cfg
+        for cr in cfg.get("rooms", []):
+            if str(cr.get("id")) == room["id"]:
+                members = cr.get("members", [])
+                break
+        if not members:
+            continue
+        rr: Rect = room["rect"]
+        desks = max(int(room.get("desks", len(members))), len(members), 1)
+        cols = min(3, desks)
+        for i, m in enumerate(members):
+            seeded += 1
+            col = i % cols
+            row = i // cols
+            # Mirror Office.gd diorama desk placement (approx centre of cell).
+            cell_x = rr.x + PAD_X + col * CELL[0] + CELL[0] * 0.5
+            cell_y = rr.y + ROOM_TOP + row * CELL[1] + CELL[1] * 0.55
+            if not (rr.x + 8 <= cell_x <= rr.end_x - 8 and rr.y + 8 <= cell_y <= rr.end_y - 8):
+                bad += 1
+                print(f"  desk_outside room={room['id']} agent={m.get('agent_id')} pos=({cell_x:.0f},{cell_y:.0f})")
+    print(f"seeded_desks_checked={seeded} bad={bad}")
+    if bad:
+        print("FAIL: seeded desks outside their rooms")
+        return bad
+    if seeded < 10:
+        print(f"FAIL: expected ~13 seeded agents, found {seeded}")
+        return 1
+    print(f"OK: {seeded} seeded desks inside team rooms")
+    return 0
+
+
+def verify_walkmesh_coverage(rooms: list[dict], walls: list[Rect], spokes: list[dict], corridor_w: float) -> int:
+    """Walkable = rooms + corridor strips only. Grass samples must not be on campus;
+    door and room-centre samples must be."""
+    bad = 0
+
+    for r in rooms:
+        cx, cy = r["rect"].center()
+        if not point_in_campus((cx, cy), rooms, spokes, corridor_w):
+            bad += 1
+            print(f"  room_center_not_walkable {r['id']}")
+        sat_exit = r.get("sat_exit")
+        if sat_exit and not point_in_campus(sat_exit, rooms, spokes, corridor_w):
+            bad += 1
+            print(f"  door_not_walkable {r['id']} {sat_exit}")
+        hub_exit = r.get("hub_exit")
+        if hub_exit and not point_in_campus(hub_exit, rooms, spokes, corridor_w):
+            bad += 1
+            print(f"  hub_door_not_walkable {r['id']} {hub_exit}")
+
+    min_x = min(r["rect"].x for r in rooms) - 120
+    min_y = min(r["rect"].y for r in rooms) - 120
+    max_x = max(r["rect"].end_x for r in rooms) + 120
+    max_y = max(r["rect"].end_y for r in rooms) + 120
+    grass_pts = [
+        (min_x + 20, min_y + 20),
+        (max_x - 20, min_y + 20),
+        (min_x + 20, max_y - 20),
+        (max_x - 20, max_y - 20),
+        (min_x + 20, (min_y + max_y) * 0.5),
+        (max_x - 20, (min_y + max_y) * 0.5),
+    ]
+    for gp in grass_pts:
+        if point_in_campus(gp, rooms, spokes, corridor_w):
+            bad += 1
+            print(f"  grass_sample_walkable {gp}")
+    print(f"walkmesh_coverage_bad={bad}")
+    if bad:
+        print("FAIL: walkmesh coverage holes or grass walkable")
+        return bad
+    print("OK: walkmesh covers rooms/doors/corridors; grass samples not walkable")
+    return 0
+
+
+def verify_desk_reach_from_hub(rooms: list[dict], walls: list[Rect], hub_center: tuple[float, float]) -> int:
+    """Each team room centre must be grid-reachable from the hub (door→desk path)."""
+    min_x = min(r["rect"].x for r in rooms) - 40
+    min_y = min(r["rect"].y for r in rooms) - 40
+    max_x = max(r["rect"].end_x for r in rooms) + 40
+    max_y = max(r["rect"].end_y for r in rooms) + 40
+    bounds = Rect(min_x, min_y, max_x - min_x, max_y - min_y)
+    bad = 0
+    checked = 0
+    for r in rooms:
+        if r["id"] in ("hub",):
+            continue
+        if r.get("kind") in ("hub",):
+            continue
+        goal = r["rect"].center()
+        checked += 1
+        if not grid_reachable(hub_center, goal, walls, bounds):
+            bad += 1
+            print(f"  desk_reach_fail room={r['id']} goal={goal}")
+    print(f"desk_reach_checked={checked} bad={bad}")
+    if bad:
+        print("FAIL: some rooms unreachable from hub (door/path break)")
+        return bad
+    print("OK: hub → every room centre reachable")
+    return 0
+
 def verify_prop_iso_draw_routing() -> int:
     """Rugs/cushions/lamps in iso must use _iso_* — _draw_* paints world AABBs
     in screen space and leaves grey-brown rectangles on the grass."""
@@ -889,6 +1116,12 @@ def verify_prop_iso_draw_routing() -> int:
 
 def main() -> int:
     if verify_prop_iso_draw_routing():
+        return 1
+    if verify_floor_prop_sort():
+        return 1
+    if verify_no_grass_speckles():
+        return 1
+    if verify_amenity_pose_room_gate():
         return 1
     cfg = json.loads((ROOT / "office.json").read_text())
     rooms, walls, spokes, door_w, corridor_w, signs, ring = build(cfg)
@@ -1046,6 +1279,19 @@ def main() -> int:
         return 1
 
     if verify_bank_safe(rooms, cfg):
+        return 1
+    if verify_floor_prop_sort():
+        return 1
+    if verify_no_grass_speckles():
+        return 1
+    if verify_amenity_pose_room_gate():
+        return 1
+    if verify_seeded_desks_in_rooms(rooms, cfg):
+        return 1
+    if verify_walkmesh_coverage(rooms, walls, spokes, corridor_w):
+        return 1
+    hub_c = hub["center"]
+    if verify_desk_reach_from_hub(rooms, walls, hub_c):
         return 1
     return 0
 

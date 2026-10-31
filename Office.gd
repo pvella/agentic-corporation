@@ -510,8 +510,8 @@ func _build_engineering_diorama(room: Dictionary, cell: Rect2) -> void:
 	_prop("plant", Rect2(cell.position.x + 10, cell.position.y + 12, 28, 28), {"set": "cozy"})
 	_prop("plant", Rect2(cell.end.x - 40, cell.position.y + 12, 28, 28), {"set": "cozy"})
 	_prop("plant", Rect2(cell.position.x + 10, cell.end.y - 44, 28, 28), {"set": "cozy"})
-	_prop("lamp", Rect2(cell.end.x - 36, cell.end.y - 52, 20, 34), {"set": "cozy"})
-	_prop("lamp", Rect2(cell.position.x + 12, cell.position.y + cell.size.y * 0.45, 20, 34), {"set": "cozy"})
+	_prop("lamp", Rect2(cell.end.x - 48, cell.end.y - 56, 18, 28), {"set": "cozy"})
+	_prop("lamp", Rect2(cell.position.x + 28, cell.position.y + cell.size.y * 0.45, 18, 28), {"set": "cozy"})
 
 
 ## Executive: larger desks, bookcases (east wall — bank safe stays on west),
@@ -526,8 +526,8 @@ func _build_executive_diorama(room: Dictionary, cell: Rect2) -> void:
 	_prop("bookcase", Rect2(cell.end.x - 42, cell.position.y + 160, 28, 70), {"set": "cozy"})
 	_prop("plant", Rect2(cell.end.x - 48, cell.end.y - 48, 30, 30), {"set": "cozy"})
 	_prop("plant", Rect2(cell.position.x + 48, cell.end.y - 48, 30, 30), {"set": "cozy"})
-	_prop("lamp", Rect2(cell.end.x - 56, cell.position.y + 18, 20, 34), {"set": "cozy"})
-	_prop("lamp", Rect2(cell.position.x + 48, cell.position.y + 18, 20, 34), {"set": "cozy"})
+	_prop("lamp", Rect2(cell.end.x - 56, cell.position.y + 48, 18, 28), {"set": "cozy"})
+	_prop("lamp", Rect2(cell.position.x + 48, cell.position.y + 48, 18, 28), {"set": "cozy"})
 
 
 ## Product & Design: colourful seating, pinboards / mood boards, drafting table.
@@ -543,7 +543,7 @@ func _build_product_diorama(room: Dictionary, cell: Rect2) -> void:
 	})
 	_prop("chair", Rect2(cell.end.x - 78, cell.end.y - 88, 26, 24), {"set": "cozy", "color": "#ffcc80", "sort_y": cell.end.y - 70})
 	_prop("plant", Rect2(cell.position.x + 10, cell.end.y - 44, 28, 28), {"set": "cozy"})
-	_prop("lamp", Rect2(cell.position.x + 12, cell.position.y + cell.size.y * 0.4, 20, 34), {"set": "cozy"})
+	_prop("lamp", Rect2(cell.position.x + 28, cell.position.y + cell.size.y * 0.4, 18, 28), {"set": "cozy"})
 
 
 ## Operations & Support: headset desk cluster, ticket/kanban wall, water cooler.
@@ -557,7 +557,7 @@ func _build_operations_diorama(room: Dictionary, cell: Rect2) -> void:
 	_prop("water", water, {"set": "cozy"})
 	_wp("Ops_Water_Cooler", Vector2(water.get_center().x, water.end.y + 22), "down")
 	_prop("plant", Rect2(cell.position.x + 10, cell.end.y - 44, 28, 28), {"set": "cozy"})
-	_prop("lamp", Rect2(cell.position.x + 12, cell.position.y + 16, 20, 34), {"set": "cozy"})
+	_prop("lamp", Rect2(cell.position.x + 28, cell.position.y + 44, 18, 28), {"set": "cozy"})
 
 
 ## Finance: tidy desks, filing cabinets, wall chart.
@@ -569,7 +569,7 @@ func _build_finance_diorama(room: Dictionary, cell: Rect2) -> void:
 	_prop("filing", Rect2(cell.end.x - 44, cell.position.y + 56, 30, 50), {"set": "cozy"})
 	_prop("filing", Rect2(cell.end.x - 44, cell.position.y + 120, 30, 50), {"set": "cozy"})
 	_prop("plant", Rect2(cell.position.x + 10, cell.end.y - 44, 26, 26), {"set": "cozy"})
-	_prop("lamp", Rect2(cell.position.x + 12, cell.position.y + 16, 20, 34), {"set": "cozy"})
+	_prop("lamp", Rect2(cell.position.x + 28, cell.position.y + 44, 18, 28), {"set": "cozy"})
 
 
 ## Special Projects: lab / workbench feel.
@@ -583,8 +583,8 @@ func _build_lab_diorama(room: Dictionary, cell: Rect2) -> void:
 		"set": "cozy", "style": "workbench", "soft_monitor": false, "owner": "",
 	})
 	_prop("plant", Rect2(cell.end.x - 40, cell.end.y - 44, 28, 28), {"set": "cozy"})
-	_prop("lamp", Rect2(cell.position.x + 12, cell.position.y + 16, 20, 34), {"set": "cozy"})
-	_prop("lamp", Rect2(cell.end.x - 36, cell.position.y + 16, 20, 34), {"set": "cozy"})
+	_prop("lamp", Rect2(cell.position.x + 28, cell.position.y + 44, 18, 28), {"set": "cozy"})
+	_prop("lamp", Rect2(cell.end.x - 48, cell.position.y + 44, 18, 28), {"set": "cozy"})
 
 
 func _desk_grid(room: Dictionary, origin: Vector2) -> void:
@@ -750,7 +750,7 @@ func _build_server(cell: Dictionary, r: Rect2) -> void:
 	_wp("Server_Rack_1", Vector2(p.x + 56, p.y + 180), "up")
 	_wp("Server_Rack_2", Vector2(p.x + 210, p.y + 180), "up")
 	# Tiny status lamp, no leafy plant (keeps the antistatic look).
-	_prop("lamp", Rect2(r.end.x - 36, r.end.y - 52, 18, 30), {"set": "server"})
+	_prop("lamp", Rect2(r.end.x - 48, r.end.y - 56, 16, 26), {"set": "server"})
 	_chat("Chat_Server", Vector2(p.x + r.size.x * 0.5, r.end.y - 36))
 
 
@@ -766,8 +766,8 @@ func _build_rec(cell: Dictionary, r: Rect2) -> void:
 	var rug := Rect2(p.x + m, p.y + 70, r.size.x - m * 2.0, r.size.y - 120).intersection(r.grow(-4.0))
 	if rug.has_area():
 		_prop("rug", rug, {"sort_y": rug.position.y + 2.0})
-	_prop("lamp", Rect2(p.x + m, p.y + 48, 22, 36), {"set": "rec"})
-	_prop("lamp", Rect2(e.x - m - 22, p.y + 48, 22, 36), {"set": "rec"})
+	_prop("lamp", Rect2(p.x + m + 12, p.y + 64, 18, 28), {"set": "rec"})
+	_prop("lamp", Rect2(e.x - m - 34, p.y + 64, 18, 28), {"set": "rec"})
 	_prop("fountain", Rect2(r.get_center().x - 28, p.y + 40, 56, 48), {"set": "rec"})
 	_prop("plant", Rect2(r.get_center().x - 70, p.y + 44, 30, 30))
 	_prop("plant", Rect2(r.get_center().x + 40, p.y + 44, 30, 30))
@@ -827,8 +827,8 @@ func _build_meeting(cell: Dictionary, r: Rect2) -> void:
 	meeting_groups["Meeting_Room"] = names
 	_prop("plant", Rect2(r.end.x - 48, r.end.y - 48, 34, 34), {"set": "cozy"})
 	_prop("plant", Rect2(r.position.x + 14, r.end.y - 48, 34, 34), {"set": "cozy"})
-	_prop("lamp", Rect2(r.position.x + 14, r.position.y + 16, 20, 34), {"set": "cozy"})
-	_prop("lamp", Rect2(r.end.x - 36, r.position.y + 16, 20, 34), {"set": "cozy"})
+	_prop("lamp", Rect2(r.position.x + 28, r.position.y + 44, 18, 28), {"set": "cozy"})
+	_prop("lamp", Rect2(r.end.x - 48, r.position.y + 44, 18, 28), {"set": "cozy"})
 
 
 func _build_wing(room: Dictionary, wing: Rect2) -> Rect2:
@@ -1222,10 +1222,7 @@ func _draw() -> void:
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE * Iso.SCALE)
 	# Grass / outdoor ground around the buildings.
 	draw_rect(bounds.grow(400), Color("#7da36b"))
-	for i in 60:
-		var gx := bounds.position.x + fmod(i * 137.0, bounds.size.x)
-		var gy := bounds.position.y + fmod(i * 89.0, bounds.size.y)
-		draw_circle(Vector2(gx, gy), 3.0, Color("#6e955d"))
+	# No grass speckles — they read as leftover grey prop dots in screenshots.
 	# Wing entrance paths only (hub/satellite doors must not paint AABB streaks).
 	for f: Dictionary in outer_frames:
 		if not bool(f.get("wing", false)):
@@ -1531,11 +1528,7 @@ func _draw_iso() -> void:
 	# Grass all around, in screen space.
 	var sb := Iso.screen_aabb(bounds, WALL_H_BACK)
 	draw_rect(sb.grow(1600), Color("#7da36b"))
-	for i in 140:
-		var gx := sb.position.x - 300 + fmod(i * 137.0, sb.size.x + 600)
-		var gy := sb.position.y - 200 + fmod(i * 89.0, sb.size.y + 400)
-		draw_circle(Vector2(gx, gy), 3.0, Color("#6e955d"))
-		draw_circle(Vector2(gx + 9, gy + 2), 2.0, Color("#8db27a"))
+	# Solid grass only — speckles looked like stray grey dots outside rooms.
 	# Building foundations: a slab edge under each building (skip hub — drawn as rect floor).
 	for f: Dictionary in outer_frames:
 		if bool(f.get("hub", false)):

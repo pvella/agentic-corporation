@@ -37,7 +37,13 @@ func setup(d: Dictionary, slice: Rect2 = Rect2()) -> void:
 	if Iso.enabled:
 		position = Iso.to_screen(iso_anchor())
 	else:
-		position = Vector2(rect.position.x, float(d.get("sort_y", rect.end.y))) * Iso.SCALE
+		# Floor coverings sort at the top edge so they stay under walkers.
+		var sy := float(d.get("sort_y", rect.position.y if kind in ["rug", "yoga_mat", "cushion"] else rect.end.y))
+		position = Vector2(rect.position.x, sy) * Iso.SCALE
+	# Rugs/mats are floor paint — keep them under every agent and standing prop.
+	if kind in ["rug", "yoga_mat", "cushion"]:
+		z_index = -20
+		z_as_relative = false
 	set_process(kind in ["desk", "foosball", "servers", "coffee", "water", "plant", "vending", "fridge", "microwave", "fountain", "lamp"])
 
 
@@ -55,6 +61,11 @@ func iso_anchor() -> Vector2:
 			return clip.get_center() + Vector2(0, 6)
 		"sofaback":
 			return Vector2(clip.get_center().x, rect.position.y)
+		# Floor layer: north-west corner (min x+y) so rugs/mats always y-sort
+		# under agents and furniture standing on them — never a raised slab.
+		"rug", "yoga_mat", "cushion":
+			var r := clip if clip.has_area() else rect
+			return Vector2(r.position.x, r.position.y)
 	return clip.get_center()
 
 
@@ -1210,9 +1221,14 @@ func _iso_yoga_mat() -> void:
 
 
 func _iso_cushion() -> void:
+	# Flat floor cushion — no raised box (raised height sorted above walkers).
 	var tint := Color.from_string(str(data.get("tint", "#ce93d8")), Color("#ce93d8"))
 	var r := Rect2(rect.get_center() - Vector2(16, 12), Vector2(32, 24))
-	_box(r, 0, 10, tint.darkened(0.15), tint, tint.lightened(0.12), false)
+	_plane_top(0.0)
+	draw_circle(r.get_center() + Vector2(1, 2), minf(r.size.x, r.size.y) * 0.48, Color(0, 0, 0, 0.14))
+	draw_circle(r.get_center(), minf(r.size.x, r.size.y) * 0.48, tint.darkened(0.08))
+	draw_circle(r.get_center() + Vector2(-2, -2), minf(r.size.x, r.size.y) * 0.36, tint.lightened(0.1))
+	_plane_reset()
 
 
 func _iso_fountain() -> void:
@@ -1224,11 +1240,12 @@ func _iso_fountain() -> void:
 
 
 func _iso_lamp() -> void:
-	var base := Rect2(rect.get_center() - Vector2(6, 6), Vector2(12, 12))
-	_box(base, 0, 28, Color("#5d4037"), Color("#6d4c41"), Color("#8d6e63"), false)
-	var pulse := 0.2 + 0.08 * sin(_t * 1.6)
+	# Compact stem — a tall SE face near a wall used to read as a grey grass dot.
+	var base := Rect2(rect.get_center() - Vector2(4, 4), Vector2(8, 8))
+	_box(base, 0, 18, Color("#5d4037"), Color("#6d4c41"), Color("#8d6e63"), false)
+	var pulse := 0.16 + 0.06 * sin(_t * 1.6)
 	var c := Iso.to_screen(rect.get_center()) - position
-	draw_circle(c + Vector2(0, -30), 16.0, Color(1.0, 0.92, 0.55, pulse))
+	draw_circle(c + Vector2(0, -20), 11.0, Color(1.0, 0.92, 0.55, pulse))
 
 
 # ---- room-personality props (cozy diorama rollout) ---------------------------

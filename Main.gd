@@ -2050,6 +2050,7 @@ func _spawn_agent(data: Dictionary) -> Agent:
 	var desk := str(data.get("desk", office.desk_of.get(id, "")))
 	var agent: Agent = agent_scene.instantiate()
 	agent.setup(id, str(data.get("name", id)), colour, desk, waypoints, _spawn_index)
+	agent.area_kind_at = Callable(self, "_area_kind_at")
 	_spawn_index += 1
 	agent.role = str(data.get("role", ""))
 	agent.room_id = str(data.get("room", office.agent_room.get(id, "")))
