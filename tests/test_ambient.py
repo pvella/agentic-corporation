@@ -108,23 +108,27 @@ class IdleOnlyTests(AmbientCase):
             players = [a for a in self.hub.agents.values() if a.activity == "foosball"]
             if players:
                 sizes.add(len(players))
-                self.assertTrue(all(a.group == h.SHARED_GROUP for a in players), "PTC never plays foosball")
+                self.assertTrue(all(a.group == h.SHARED_GROUP for a in players), "isolated wings never play foosball")
         self.assertTrue(sizes and sizes <= {1, 2, 3, 4}, sizes)  # 1 = the last one walking back
         self.assertTrue(sizes & {3, 4}, f"only ever 2 players: {sizes}")
 
-    def test_ptc_stays_in_its_wing(self) -> None:
+    def test_isolated_wing_stays_put(self) -> None:
+        """Isolated rooms (if any) keep their agents in-wing; shared agents stay out."""
         self.run_for(7200)
-        ptc = [a for a in self.hub.agents.values() if a.group != h.SHARED_GROUP]
+        isolated = [a for a in self.hub.agents.values() if a.group != h.SHARED_GROUP]
         shared = [a for a in self.hub.agents.values() if a.group == h.SHARED_GROUP]
-        self.assertTrue(ptc and shared)
-        for a in ptc:
+        if not isolated:
+            self.skipTest("no isolated wing in current office seed")
+        self.assertTrue(shared)
+        for a in isolated:
             targets = self.targets_of(a.agent_id)
             self.assertGreater(len(targets), 1, f"{a.agent_id} never left its desk")
             for t in targets:
                 self.assertTrue(t == a.desk or t.startswith(a.group + "_"), f"{a.agent_id} wandered to {t}")
         for a in shared:
             for t in self.targets_of(a.agent_id):
-                self.assertFalse(t.startswith("ptc_"), f"{a.agent_id} went into the PTC wing ({t})")
+                for iso in {x.group for x in isolated}:
+                    self.assertFalse(t.startswith(iso + "_"), f"{a.agent_id} went into {iso} wing ({t})")
 
     def test_ambient_never_overrides_a_real_report(self) -> None:
         self.run_for(300)

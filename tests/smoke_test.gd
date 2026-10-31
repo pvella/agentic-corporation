@@ -110,8 +110,8 @@ func _office() -> void:
 	await physics_frame
 	await physics_frame
 	_check(not main.using_legacy_layout and main.agents.is_empty(), "OFFICE_LAYOUT rebuilds the office and clears old agents")
-	_check(main.office.rooms.size() == 4, "4 team rooms built")
-	for wp in ["Desk_ios_dev", "Desk_ptc_odoo", "Coffee_Machine", "Sofa_2", "Foosball_1", "Foosball_4", "Meeting_Table_6", "ptc_Coffee", "ptc_Meeting_4", "ptc_Entrance", "Entrance"]:
+	_check(main.office.rooms.size() == 3, "3 team rooms built")
+	for wp in ["Desk_ios_dev", "Desk_support_desk", "Coffee_Machine", "Sofa_2", "Foosball_1", "Foosball_4", "Meeting_Table_6", "Entrance"]:
 		_check(main.waypoints.has(wp), "waypoint %s exists" % wp)
 
 	var agents: Array = []
@@ -127,19 +127,19 @@ func _office() -> void:
 		if d.agent_id == "ios_dev":
 			d.state = "IDLE"
 			d.target = "Sofa_1"
-		elif d.agent_id == "ptc_odoo":
+		elif d.agent_id == "support_desk":
 			d.state = "IDLE"
-			d.target = "ptc_Coffee"
+			d.target = "Coffee_Machine"
 			d.unread = 3
 	main.handle_message({"type": "SNAPSHOT", "server": {"mode": "mock", "tempo": "calm", "office": layout.office.name}, "agents": agents})
 	await _wait(1.0)
-	_check(main.agents.size() == 23, "23 agents spawned (%d)" % main.agents.size())
+	_check(main.agents.size() == 11, "11 agents spawned (%d)" % main.agents.size())
 	var android: Agent = main.agents["android_dev"]
 	var ios: Agent = main.agents["ios_dev"]
 	_check(android.is_seated_at_desk() and _dist(android, "Desk_android_dev") < 2.0, "agents start seated at their own desks")
 	_check(main._desk_props["android_dev"].owner_agent == android, "desk monitor is linked to its owner")
 	_check(ios.is_away_from_desk() and _dist(ios, "Sofa_1") < 2.0, "ios_dev starts on the break-room sofa")
-	_check(main.agents["ptc_odoo"].unread == 3, "snapshot restores the unread badge")
+	_check(main.agents["support_desk"].unread == 3, "snapshot restores the unread badge")
 
 	main.handle_message({"type": "LOG_ENTRY", "agent_id": "ios_dev", "log": "[notify] build finished"})
 	_check(ios.is_phone_out(), "LOG_ENTRY while away: agent pulls out the phone")
@@ -149,30 +149,26 @@ func _office() -> void:
 	# Foosball: two idle agents play, the table animates.
 	main.handle_message({"type": "STATE_CHANGE", "agent_id": "finance_bot", "state": "IDLE", "target": "Foosball_1", "text": "Foosball?"})
 	main.handle_message({"type": "STATE_CHANGE", "agent_id": "ea", "state": "IDLE", "target": "Foosball_2", "text": "You're on!"})
-	# PTC meeting stays inside the wing.
-	main.handle_message({"type": "COLLABORATE", "agents": ["ptc_powerbrain", "ptc_chief_of_staff"], "target": "ptc_Meeting_Room"})
+	# Meeting uses the shared meeting room (no isolated wing in the generic seed).
+	main.handle_message({"type": "COLLABORATE", "agents": ["product_manager", "systems_architect"], "target": "Meeting_Room"})
 	await _wait(18.0)
 	var fb: Agent = main.agents["finance_bot"]
 	var ea: Agent = main.agents["ea"]
 	_check(_dist(fb, "Foosball_1") < 4.0 and _dist(ea, "Foosball_2") < 4.0, "foosball players reached the table (%.1f, %.1f)" % [_dist(fb, "Foosball_1"), _dist(ea, "Foosball_2")])
 	_check(main._foosball_props.size() == 1 and main._foosball_props[0].playing, "foosball table animates while two play")
-	var pb: Agent = main.agents["ptc_powerbrain"]
-	_check(pb.current_waypoint.begins_with("ptc_Meeting_") and _dist(pb, pb.current_waypoint) < 4.0, "PTC meeting uses the wing's own table (%s)" % pb.current_waypoint)
+	var pm: Agent = main.agents["product_manager"]
+	_check(pm.current_waypoint.begins_with("Meeting_Table_") and _dist(pm, pm.current_waypoint) < 4.0, "shared meeting uses Meeting_Table seats (%s)" % pm.current_waypoint)
 
-	# Hard wall: no navigation path from the PTC wing into the main building.
+	# Shared spots stay walkable across the main building (generic seed has no isolated wing).
 	var map: RID = main.nav_region.get_navigation_map()
-	var from: Vector2 = main.waypoints["Desk_ptc_odoo"].global_position
+	var from: Vector2 = main.waypoints["Desk_support_desk"].global_position
 	var to: Vector2 = main.waypoints["Coffee_Machine"].global_position
 	var path := NavigationServer2D.map_get_path(map, from, to, true)
-	var end_gap := to.distance_to(path[path.size() - 1]) if path.size() > 0 else INF
-	_check(end_gap > 100.0, "PTC wing has no walkable route to the shared break room (gap %.0f px)" % end_gap)
-	var to2: Vector2 = main.waypoints["ptc_Coffee"].global_position
-	var path2 := NavigationServer2D.map_get_path(map, from, to2, true)
-	_check(path2.size() > 0 and to2.distance_to(path2[path2.size() - 1]) < 4.0, "PTC desks reach the wing's own kitchenette")
-	# Ambient-life spots: chat triples face each other; the wing has its own.
-	for wp in ["Vending_Machine", "Chat_Break_1", "Chat_Corridor_3", "Chat_dev_team_2", "ptc_Sofa_1", "ptc_Sofa_2", "ptc_Chat_1", "ptc_Chat_3"]:
+	_check(path.size() > 0 and to.distance_to(path[path.size() - 1]) < 4.0, "support desk reaches the shared break room")
+	# Ambient-life spots: chat triples face each other.
+	for wp in ["Vending_Machine", "Chat_Break_1", "Chat_Corridor_3", "Chat_dev_team_2"]:
 		_check(main.waypoints.has(wp), "waypoint %s exists" % wp)
-	for spot in ["Chat_Break", "Chat_Corridor", "Chat_dev_team", "ptc_Chat"]:
+	for spot in ["Chat_Break", "Chat_Corridor", "Chat_dev_team"]:
 		var w: Marker2D = main.waypoints[spot + "_1"]
 		var e: Marker2D = main.waypoints[spot + "_2"]
 		var n: Marker2D = main.waypoints[spot + "_3"]
@@ -181,19 +177,6 @@ func _office() -> void:
 		_check(ok, "%s: the three chat slots face each other" % spot)
 		var p1 := NavigationServer2D.map_get_path(map, w.global_position, e.global_position, true)
 		_check(p1.size() > 0 and e.global_position.distance_to(p1[p1.size() - 1]) < 4.0, "%s slots are on walkable floor" % spot)
-	var wing_rect := Rect2()
-	for a: Dictionary in main.office.areas:
-		if str(a.get("kind", "")) == "wing":
-			wing_rect = a.rect
-	for spot in ["ptc_Chat_1", "ptc_Chat_2", "ptc_Chat_3", "ptc_Sofa_1", "ptc_Sofa_2", "ptc_Coffee", "ptc_Water"]:
-		var pos: Vector2 = main.waypoints[spot].global_position
-		var inside := wing_rect.has_point(pos)
-		var p3 := NavigationServer2D.map_get_path(map, from, pos, true)
-		# Seats sit just inside the furniture: agents settle the last few px.
-		var reach := p3.size() > 0 and pos.distance_to(p3[p3.size() - 1]) < 40.0
-		var p4 := NavigationServer2D.map_get_path(map, main.waypoints["Coffee_Machine"].global_position, pos, true)
-		var leak := p4.size() > 0 and pos.distance_to(p4[p4.size() - 1]) < 100.0
-		_check(inside and reach and not leak, "%s is inside the PTC wing, reachable from its desks only" % spot)
 
 	# An update while away and without a target: phone glance.
 	main.handle_message({"type": "STATE_CHANGE", "agent_id": "ea", "state": "THINKING", "text": "hmm"})
