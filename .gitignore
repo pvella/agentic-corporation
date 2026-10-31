@@ -49,3 +49,10 @@ agent_cmds.json
 .office_claude/
 .office_claude_sessions.json
 tools/vault_unlock
+
+# Deploy / agent scratch files (keep out of the repo; agents read the tree)
+.deploy_*
+.safe_*
+.iso_*
+_ac_*
+.ac_*

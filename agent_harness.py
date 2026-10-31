@@ -381,6 +381,9 @@ def vault_notice_payload(kind: str, title: str, detail: str = "", *, pending: bo
 
 _VAULT_PROMPT_HOOK = None  # set by Harness
 
+DEFAULT_AGENT_CMD = "claude -p --output-format text {prompt}"
+
+
 def format_job_system_prompt(job: dict | None, name: str = "", role: str = "", agent_id: str = "") -> str:
     """Turn a member job{} into the Claude --append-system-prompt text."""
     job = job or {}
@@ -669,6 +672,8 @@ class Hub:
         self.verbose_terminal: bool = False
         # Harness hooks so hire/fire can start workers + persist.
         self.on_hired: Callable[[Agent], None] | None = None
+        # Harness sets this so DISPATCH can auto-bind missing agent_cmds entries.
+        self.on_ensure_cli: Callable[[Agent], bool] | None = None
         self.on_fired: Callable[[str], None] | None = None
         self.vault: OfficeVault | None = None
 
@@ -800,21 +805,21 @@ class Hub:
         agent.thinking_until = 0.0
         if action == "start_task":
             text = detail or "Starting a task"
-            self.log_line(aid, f"\x1b[1;36m\u25b6 {text}\x1b[0m")
+            self.log_line(aid, f"\x1b[1;36m\u25b6 {text}\x1b[0m", important=True)
             self.state(aid, "WORKING", target=agent.desk, text=text)
             agent.activity = "desk"
         elif action == "thinking":
             text = detail or "Thinking..."
-            self.log_line(aid, f"\x1b[33m\u2026 {text}\x1b[0m")
+            self.log_line(aid, f"\x1b[33m\u2026 {text}\x1b[0m", important=True)
             self.state(aid, "THINKING", target=agent.desk, text=text)
             agent.activity = "desk"
         elif action == "run_tool":
             text = detail or "Running a tool"
-            self.log_line(aid, f"\x1b[2m$ {text}\x1b[0m")
+            self.log_line(aid, f"\x1b[2m$ {text}\x1b[0m", important=True)
             self.state(aid, "WORKING", target=agent.desk, text=text)
             agent.activity = "desk"
         elif action == "finish":
-            self.log_line(aid, f"\x1b[1;32m\u2714 Done:\x1b[0m {detail}" if detail else "\x1b[1;32m\u2714 Done\x1b[0m")
+            self.log_line(aid, f"\x1b[1;32m\u2714 Done:\x1b[0m {detail}" if detail else "\x1b[1;32m\u2714 Done\x1b[0m", important=True)
             spot = random.choice(agent.break_spots)
             self.state(aid, "IDLE", target=spot, text="Done! Coffee time." if "Coffee" in spot else "Done!")
             agent.activity = "break"
@@ -824,7 +829,7 @@ class Hub:
                 self.on_release(agent)
         elif action == "error":
             text = detail or "Something went wrong"
-            self.log_line(aid, f"\x1b[1;31m\u2716 Error:\x1b[0m {text}", stream="stderr")
+            self.log_line(aid, f"\x1b[1;31m\u2716 Error:\x1b[0m {text}", stream="stderr", important=True)
             self.state(aid, "ERROR", target=agent.desk, text=text)
             agent.activity = "desk"
         else:
@@ -932,6 +937,23 @@ class Hub:
                 return
             log.info("DISPATCH_PROMPT -> %s: %s", agent_id, prompt)
             agent = self.agents[agent_id]
+            if self.on_ensure_cli is not None:
+                try:
+                    self.on_ensure_cli(agent)
+                except Exception:
+                    log.exception("on_ensure_cli failed for %s", agent_id)
+            # When agent_cmds.json is configured, a still-unbound agent is an error
+            # (do not silently park the prompt in the MCP inbox).
+            if (self.mode in ("live", "cli") and self.cmds_path
+                    and self.on_ensure_cli is not None
+                    and not bool(self.on_ensure_cli(agent))):
+                msg = (f"No CLI command for '{agent_id}'. "
+                       f"Add an entry to agent_cmds.json "
+                       f"(default: {DEFAULT_AGENT_CMD}).")
+                self.log_line(agent_id, f"\x1b[31m{msg}\x1b[0m", stream="stderr", important=True)
+                await self.reply(ws, {"type": "ERROR", "action": action, "agent_id": agent_id,
+                                      "message": msg})
+                return
             if self.inbox_for(agent):
                 item = self.queue_message(agent, prompt)
                 if item is None:
@@ -1586,37 +1608,46 @@ class Hub:
         except OSError as exc:
             log.error("could not save office %s: %s", self.office_path, exc)
 
-    def bind_default_cli(self, agent_id: str, role: str = "") -> None:
-        """Ensure a newly hired agent has a Claude binding in agent_cmds.json + live CliRunner."""
-        # Live map is owned by Harness via on_hired; here we only persist the file template.
+    def bind_default_cli(self, agent_id: str, role: str = "") -> dict[str, Any] | None:
+        """Ensure agent_id has a Claude binding in agent_cmds.json. Returns the entry (existing or new)."""
         path = self.cmds_path
         if not path:
-            return
+            return None
         try:
-            data = {}
+            data: dict[str, Any] = {}
             if os.path.exists(path):
                 with open(path, encoding="utf-8") as fh:
-                    data = json.load(fh)
-            if not isinstance(data, dict):
-                data = {}
-            if agent_id in data:
-                return
-            # Prefer an explicit job dict from the live agent if present.
-            job = {}
+                    raw = json.load(fh)
+                if isinstance(raw, dict):
+                    data = raw
+            existing = data.get(agent_id)
+            if isinstance(existing, str) and existing.strip():
+                return {"cmd": existing.strip(), "cwd": ".", "system": ""}
+            if isinstance(existing, dict) and str(existing.get("cmd") or existing.get("command") or "").strip():
+                return dict(existing)
+            job: dict[str, Any] = {}
             live = self.agents.get(agent_id)
-            if live is not None and getattr(live, "job", None):
-                job = dict(live.job)
-            data[agent_id] = {
-                "cmd": "claude -p --output-format text {prompt}",
+            name = agent_id
+            use_role = role
+            if live is not None:
+                if getattr(live, "job", None):
+                    job = dict(live.job)
+                name = getattr(live, "name", None) or name
+                use_role = getattr(live, "role", None) or use_role or role
+            entry = {
+                "cmd": DEFAULT_AGENT_CMD,
                 "cwd": ".",
-                "system": format_job_system_prompt(job, name=agent_id, role=role),
+                "system": format_job_system_prompt(job, name=name, role=use_role, agent_id=agent_id),
             }
+            data[agent_id] = entry
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, indent=2, ensure_ascii=False)
                 fh.write("\n")
             log.info("added CLI binding for %s -> %s", agent_id, path)
+            return entry
         except (OSError, ValueError) as exc:
             log.error("could not update agent cmds %s: %s", path, exc)
+            return None
 
     async def _action_hire(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
         """Spawn a new agent at a desk (recruiter desk / harness hire). Plays AGENT_HIRE FX."""
@@ -1759,11 +1790,6 @@ class Hub:
         if not agent_id or agent_id not in self.agents:
             await self.reply(ws, {"type": "ERROR", "action": "FIRE_AGENT",
                                   "message": f"unknown agent '{agent_id}'"})
-            return
-        # Protect the recruiter itself from accidental archive via preview.
-        if agent_id == "dr_eggbot" and not msg.get("force"):
-            await self.reply(ws, {"type": "ERROR", "action": "FIRE_AGENT",
-                                  "message": "won't archive the recruiter (pass force=true to override)"})
             return
         agent = self.unregister(agent_id)
         if self.office:
@@ -3225,6 +3251,7 @@ class Harness:
             self.hub.office_path = args.office or DEFAULT_OFFICE_FILE
         self.hub.cmds_path = cmds_file
         self.hub.on_hired = self._on_hired
+        self.hub.on_ensure_cli = self._bind_live_cli
         self.hub.on_fired = self._on_fired
         vault_meta = Path.cwd() / ".office_vault.json"
         office_arg = getattr(args, "office", None)
@@ -3252,9 +3279,10 @@ class Harness:
                 if getattr(agent, "job", None):
                     self.cli.systems[aid] = format_job_system_prompt(
                         agent.job, name=agent.name, role=agent.role, agent_id=aid)
-        if self.cli is not None and commands:
-            log.info("CLI bindings: %s", ", ".join(sorted(commands)))
-        elif self.cli is not None and not commands:
+        self._ensure_roster_cli_bindings()
+        if self.cli is not None and self.cli.commands:
+            log.info("CLI bindings: %s", ", ".join(sorted(self.cli.commands)))
+        elif self.cli is not None and not self.cli.commands:
             log.warning("%s mode without any --agent-cmd / agent_cmds.json: "
                         "dashboard prompts go to the MCP inbox and nothing runs them", args.mode)
         self.tasks: list[asyncio.Task[Any]] = []
@@ -3281,15 +3309,50 @@ class Harness:
                     self.director.place_initial(agent)
 
 
+    def _bind_live_cli(self, agent: Agent, *, force: bool = False) -> bool:
+        """Bind default Claude cmd + job system prompt (live map + agent_cmds.json).
+
+        Without a cmds file, leave the agent unbound so live-mode prompts stay on
+        the MCP inbox (tests / MCP-only). force=True for mid-session hires.
+        """
+        if self.cli is None:
+            return False
+        if self.cli.handles(agent.agent_id):
+            return True
+        if not force and not self.hub.cmds_path:
+            return False
+        entry = self.hub.bind_default_cli(agent.agent_id, role=agent.role) or {}
+        cmd = str(entry.get("cmd") or entry.get("command") or DEFAULT_AGENT_CMD).strip() or DEFAULT_AGENT_CMD
+        system = str(entry.get("system") or entry.get("system_prompt") or "").strip()
+        if not system:
+            system = format_job_system_prompt(
+                getattr(agent, "job", None), name=agent.name, role=agent.role, agent_id=agent.agent_id)
+        cwd = str(entry.get("cwd") or ".").strip() or "."
+        self.cli.commands[agent.agent_id] = cmd
+        self.cli.systems[agent.agent_id] = system
+        self.cli.cwds[agent.agent_id] = cwd
+        return True
+
+    def _ensure_roster_cli_bindings(self) -> None:
+        """When agent_cmds.json is configured, every roster agent gets a binding from job{}."""
+        if self.cli is None or not self.hub.cmds_path:
+            return
+        added: list[str] = []
+        for aid, agent in list(self.hub.agents.items()):
+            if self.cli.handles(aid):
+                if aid not in self.cli.systems and getattr(agent, "job", None):
+                    self.cli.systems[aid] = format_job_system_prompt(
+                        agent.job, name=agent.name, role=agent.role, agent_id=aid)
+                continue
+            if self._bind_live_cli(agent):
+                added.append(aid)
+        if added:
+            log.info("auto-bound CLI for roster agents missing cmds: %s", ", ".join(sorted(added)))
+
     def _on_hired(self, agent: Agent) -> None:
         """Start a worker and bind Claude for a mid-session hire."""
         self.tasks.append(asyncio.create_task(self.worker(agent), name=f"worker-{agent.agent_id}"))
-        if self.cli is not None:
-            self.cli.commands[agent.agent_id] = "claude -p --output-format text {prompt}"
-            self.cli.systems[agent.agent_id] = format_job_system_prompt(
-                getattr(agent, "job", None), name=agent.name, role=agent.role,
-                agent_id=agent.agent_id)
-            log.info("CLI bound for new hire %s", agent.agent_id)
+        self._bind_live_cli(agent, force=True)
         if self.director and self.director.agent_filter(agent):
             self.director.place_initial(agent)
         # Refresh clients so the new agent appears even before FX finishes.
@@ -3331,8 +3394,13 @@ class Harness:
             async with agent.lock:
                 runner = self.cli if (self.cli and self.cli.handles(agent.agent_id)) else self.mock
                 if self.args.mode == "live" and runner is self.mock:
-                    log.warning("live mode: no command bound to %s; prompt not run: %s",
-                                agent.agent_id, clean_line(prompt, 80))
+                    msg = (f"No CLI command for '{agent.agent_id}'. "
+                           f"Add an entry to agent_cmds.json "
+                           f"(default: {DEFAULT_AGENT_CMD}).")
+                    log.warning("live mode: %s prompt not run: %s", msg, clean_line(prompt, 80))
+                    self.hub.log_line(agent.agent_id, f"\x1b[31m{msg}\x1b[0m",
+                                      stream="stderr", important=True)
+                    self.hub.state(agent.agent_id, "ERROR", text="No CLI command")
                     agent.queue.task_done()
                     continue
                 try:

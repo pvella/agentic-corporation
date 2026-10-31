@@ -48,7 +48,6 @@ const HireFireFxScript := preload("res://HireFireFx.gd")
 const KnowledgeLibraryScript := preload("res://KnowledgeLibrary.gd")
 const NoticesScript := preload("res://Notices.gd")
 const NoticeBoardScript := preload("res://NoticeBoard.gd")
-const VaultDoorScript := preload("res://VaultDoor.gd")
 const BankSafeScript := preload("res://BankSafe.gd")
 const VaultPanelScript := preload("res://VaultPanel.gd")
 const AgentViewScript := preload("res://AgentView.gd")
@@ -115,8 +114,9 @@ var _knowledge_racks: Array = []
 var _knowledge_library: Node = null
 var _notices_store = null  ## Notices
 var _notice_board: Control = null
-var _vault_door: Node2D
 var _bank_safe: Node2D
+var _vault_list_print_pending := false
+var _vault_touch_ms := 0
 var _vault_panel: Window
 var _vault_roster: Array = []
 var _meeting_active: Dictionary = {}  ## target -> {agents: PackedStringArray, text: String}
@@ -408,7 +408,7 @@ func _build_visuals() -> void:
 	_add_server_rack_hotspots()
 	_build_signs()
 	_place_notice_board()
-	_place_vault_door()
+	# Decorative Server Room mini-safe removed — only the Executive BankSafe is the vault entry.
 	_place_bank_safe()
 	office.queue_redraw()
 
@@ -2425,6 +2425,7 @@ func _take_screenshot() -> void:
 func _on_vault_requested(cmd: String, arg: String) -> void:
 	var c := cmd.strip_edges().to_lower()
 	if c in ["list", "ls", ""]:
+		_vault_list_print_pending = true
 		send_json({"action": "VAULT_LIST"})
 		return
 	if c == "add":
@@ -2595,7 +2596,10 @@ func _on_vault_remove_confirm(msg: Dictionary) -> void:
 func _on_vault_meta(msg: Dictionary) -> void:
 	var secrets: Array = msg.get("secrets", [])
 	var pending: Array = msg.get("pending", [])
-	if drawer and drawer.has_method("append_system"):
+	# Only the `/vault` terminal command prints list results.
+	var print_list := _vault_list_print_pending
+	_vault_list_print_pending = false
+	if print_list and drawer and drawer.has_method("append_system"):
 		if secrets.is_empty() and pending.is_empty():
 			drawer.append_system("vault: (empty)")
 		else:
@@ -2639,35 +2643,33 @@ func _on_vault_secret_resolved(msg: Dictionary) -> void:
 	_set_status("Vault request %s" % str(msg.get("status", "done")), Color("#ffd54f"))
 
 
-func _place_vault_door() -> void:
-	## Decorative mini-safe in the Server Room (non-interactive). No walkmesh/door/hex changes.
-	if _vault_door and is_instance_valid(_vault_door):
-		_vault_door.queue_free()
-		_vault_door = null
-	var server: Dictionary = {}
-	for a in office.areas:
-		if str(a.get("kind", "")) == "server":
-			server = a
+
+func _bank_safe_world_rect(exec_rect: Rect2) -> Rect2:
+	## Cabinet footprint on the Executive west wall beside the Chief of Staff
+	## desk — floor safe sized like a fridge/cabinet, not a billboard sprite.
+	var desk_y := exec_rect.position.y + 110.0
+	for p in office.props:
+		if str(p.get("kind", "")) != "desk":
+			continue
+		if str(p.get("owner", "")) == "chief_of_staff" or str(p.get("style", "")) == "executive":
+			var dr: Rect2 = p.rect
+			desk_y = dr.get_center().y
 			break
-	if server.is_empty():
-		return
-	var r: Rect2 = server.rect
-	var anchor := Vector2(r.position.x + r.size.x * 0.5 + 70.0, r.position.y + 210.0)
-	var door: Node2D = VaultDoorScript.new()
-	signs_root.add_child(door)
-	door.setup(anchor)
-	_vault_door = door
-	if _vault_door not in _sign_tags:
-		_sign_tags.append(_vault_door)
-	var z := camera.zoom.x if camera else 1.0
-	_vault_door.scale = Vector2.ONE * _ui_scale_for(z)
+	const SAFE_W := 36.0
+	const SAFE_D := 32.0
+	# Clear of the 12px wall thickness; keep south of the north door band.
+	var x := exec_rect.position.x + 22.0
+	var y := clampf(desk_y - SAFE_D * 0.5, exec_rect.position.y + 88.0, exec_rect.end.y - SAFE_D - 72.0)
+	return Rect2(x, y, SAFE_W, SAFE_D)
 
 
 func _place_bank_safe() -> void:
-	## Chunky bank safe in the Executive room — the vault entry point.
+	## Iso furniture safe in the Executive room — vault entry point.
+	## Parent under props_root (y-sorted with desks/cabinets); do NOT put it on
+	## signs_root or apply UI scale (that made the old flat sprite huge).
 	if _bank_safe and is_instance_valid(_bank_safe):
 		_bank_safe.queue_free()
-		_bank_safe = null
+	_bank_safe = null
 	var exec_area: Dictionary = {}
 	for a in office.areas:
 		if str(a.get("kind", "")) == "room" and str(a.get("id", "")) == "executive":
@@ -2676,20 +2678,15 @@ func _place_bank_safe() -> void:
 	if exec_area.is_empty():
 		return
 	var r: Rect2 = exec_area.rect
-	# Front-right of the Executive room, clearly visible, no layout changes.
-	var anchor := Vector2(r.position.x + r.size.x - 90.0, r.position.y + r.size.y - 120.0)
+	var world_rect := _bank_safe_world_rect(r)
 	var safe: Node2D = BankSafeScript.new()
-	signs_root.add_child(safe)
-	safe.setup(anchor)
+	props_root.add_child(safe)
+	safe.setup(world_rect)
 	if safe.has_signal("unlock_requested"):
 		safe.unlock_requested.connect(_on_bank_safe_unlock)
 	if safe.has_signal("open_panel_requested"):
 		safe.open_panel_requested.connect(_on_bank_safe_open_panel)
 	_bank_safe = safe
-	if _bank_safe not in _sign_tags:
-		_sign_tags.append(_bank_safe)
-	var z := camera.zoom.x if camera else 1.0
-	_bank_safe.scale = Vector2.ONE * _ui_scale_for(z)
 
 
 func _on_bank_safe_unlock() -> void:
@@ -2698,7 +2695,6 @@ func _on_bank_safe_unlock() -> void:
 
 
 func _on_bank_safe_open_panel() -> void:
-	send_json({"action": "VAULT_LIST"})
 	_open_vault_panel()
 
 
@@ -2724,11 +2720,17 @@ func _open_vault_panel() -> void:
 			_vault_panel = null
 	)
 	panel.activity.connect(func() -> void:
-		# Touch session by listing (extends unlock TTL server-side when unlocked).
-		send_json({"action": "VAULT_LIST"})
+		# Touch session by listing (extends unlock TTL server-side), throttled.
+		var now := Time.get_ticks_msec()
+		if now - _vault_touch_ms >= 30000:
+			_vault_touch_ms = now
+			send_json({"action": "VAULT_LIST"})
 	)
 	_vault_panel = panel
 	panel.popup_centered()
+	# Fetch once on open; later updates arrive as VAULT_META after changes.
+	_vault_touch_ms = Time.get_ticks_msec()
+	send_json({"action": "VAULT_LIST"})
 
 
 func _on_vault_unlocked(msg: Dictionary) -> void:

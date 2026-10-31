@@ -466,6 +466,51 @@ def verify_hub_amenities(hub: Rect) -> int:
     return bad
 
 
+
+
+def bank_safe_world_rect(exec_rect: Rect, cos_desk_center_y: float | None = None) -> Rect:
+    """Mirror Main.gd `_bank_safe_world_rect` (cabinet footprint, world space)."""
+    SAFE_W, SAFE_D = 36.0, 32.0
+    desk_y = exec_rect.y + 110.0 if cos_desk_center_y is None else cos_desk_center_y
+    x = exec_rect.x + 22.0
+    y = min(max(desk_y - SAFE_D * 0.5, exec_rect.y + 88.0), exec_rect.end_y - SAFE_D - 72.0)
+    return Rect(x, y, SAFE_W, SAFE_D)
+
+
+def verify_bank_safe(rooms: list[dict], cfg: dict) -> int:
+    """Fail if the Executive bank-safe footprint is outside the Executive room."""
+    exec_room = next((r for r in rooms if r["id"] == "executive"), None)
+    if exec_room is None:
+        print("FAIL: no executive room for bank safe")
+        return 1
+    er: Rect = exec_room["rect"]
+    # Approximate CoS desk centre y the same way Office.gd lays it out.
+    room_cfg = next((r for r in cfg.get("rooms", []) if r.get("id") == "executive"), {})
+    cw, _ch = team_size(room_cfg) if room_cfg else (er.w / 1.28, er.h / 1.18)
+    origin_y = er.y
+    desk_y = origin_y + ROOM_TOP + 26.0 + 21.0  # desk top + half height
+    sr = bank_safe_world_rect(er, desk_y)
+    cx, cy = sr.x + sr.w * 0.5, sr.y + sr.h * 0.5
+    inside = (
+        er.x <= sr.x
+        and sr.end_x <= er.end_x
+        and er.y <= sr.y
+        and sr.end_y <= er.end_y
+    )
+    # Cabinet-sized, against west wall, clear of north door band.
+    size_ok = 30.0 <= sr.w <= 48.0 and 28.0 <= sr.h <= 44.0
+    margin_ok = (sr.y >= er.y + 80.0) and (sr.end_y <= er.end_y - 60.0) and (sr.x >= er.x + 16.0)
+    print(
+        f"bank_safe_rect=({sr.x:.1f},{sr.y:.1f},{sr.w:.1f}x{sr.h:.1f}) center=({cx:.1f},{cy:.1f}) "
+        f"executive=({er.x:.1f},{er.y:.1f},{er.w:.1f}x{er.h:.1f}) "
+        f"{'OK' if inside and margin_ok and size_ok else 'OUT'}"
+    )
+    if not (inside and margin_ok and size_ok):
+        print("FAIL: bank safe world footprint not a cabinet-sized rect inside Executive")
+        return 1
+    print("OK: bank safe world footprint inside Executive room")
+    return 0
+
 def main() -> int:
     cfg = json.loads((ROOT / "office.json").read_text())
     rooms, walls, spokes, door_w, corridor_w = build(cfg)
@@ -513,6 +558,9 @@ def main() -> int:
         print(f"FAIL: {amenity_bad} amenity waypoints outside their zone or in obstacles")
         return 1
     print("OK: amenity waypoints inside Break/Canteen/Rec zones")
+
+    if verify_bank_safe(rooms, cfg):
+        return 1
     return 0
 
 

@@ -65,10 +65,10 @@ func _ready() -> void:
 		if agent and is_instance_valid(agent):
 			archive_requested.emit(agent.agent_id)
 	)
-	# Hire button — shown for the recruiter (dr_eggbot).
+	# Hire button — shown for recruiter desks (Hiring Board is preferred).
 	hire_button = Button.new()
 	hire_button.text = "Hire…"
-	hire_button.tooltip_text = "Recruiter desk: hire a new bot (persists to office.json)"
+	hire_button.tooltip_text = "Open hire help (Hiring Board is preferred)"
 	hire_button.visible = false
 	close_button.get_parent().add_child(hire_button)
 	close_button.get_parent().move_child(hire_button, close_button.get_index())

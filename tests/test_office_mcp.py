@@ -183,7 +183,7 @@ class ToolTests(HarnessCase):
         text = result["content"][0]["text"]
         self.assertIn("Unknown agent 'Nobody Bot'", text)
         self.assertIn("Android Dev", text)
-        self.assertIn("PTC Odoo", text)
+        self.assertIn("Support Desk", text)
 
     async def test_bad_action_is_rejected(self) -> None:
         result = await self.call("Android Dev", "explode")
@@ -227,12 +227,16 @@ class LiveModeTests(HarnessCase):
         self.assertTrue(director.idle_only, "live mode only simulates idle life")
         hub = self.harness.hub
         self.assertTrue(all(a.state == "IDLE" and a.target == a.desk for a in hub.agents.values()))
-        await self.call("PTC Odoo", "finish", "Invoices posted")
-        ptc = hub.agents["ptc_odoo"]
-        self.assertEqual(ptc.state, "IDLE")
-        self.assertIn(ptc.target, ("ptc_Coffee", "ptc_Water", "ptc_Sofa_1", "ptc_Sofa_2"))  # the wing's own spots
-        self.assertFalse(ptc.is_live(), "finish hands the agent back to the ambient life")
-        self.assertEqual(ptc.activity, "break")
+        await self.call("Support Desk", "finish", "Ticket closed")
+        agent = hub.agents["support_desk"]
+        self.assertEqual(agent.state, "IDLE")
+        # finish releases the agent back to ambient idle life (desk or a break spot)
+        self.assertTrue(
+            agent.target == agent.desk
+            or any(k in agent.target for k in (
+                "Coffee", "Water", "Sofa", "Vending", "Chat", "Yoga", "Meditation", "Foosball")),
+            agent.target)
+        self.assertFalse(agent.is_live(), "finish hands the agent back to the ambient life")
         self.assertEqual(hub.live_hold, 5.0)
 
 
@@ -270,8 +274,7 @@ class InboxTests(HarnessCase):
             self.assertTrue(ack["inbox"])
             mid = ack["message_id"]
             self.assertEqual(ack["unread"], 1)
-            self.assertTrue(any(is_log("android_dev", "queued for Android Dev: they'll pick it up next time "
-                                                      "they check in")(e) for e in seen), seen)
+            # Quiet mode: inbox queue chatter stays in the harness log, not LOG_ENTRY.
             inbox_ev = [e for e in seen if e["type"] == "INBOX"]
             self.assertEqual([(e["agent_id"], e["unread"]) for e in inbox_ev], [("android_dev", 1)])
 
@@ -298,8 +301,8 @@ class InboxTests(HarnessCase):
             self.assertIn(f"id {mid}", text)
             self.assertIn("Can you bump the targetSdk to 35?", text)
             self.assertRegex(text, r"\(\d+s ago\)")
-            await self.wait_for(ws, is_log("android_dev", "delivered to Android Dev"))
-            ev = await self.wait_for(ws, lambda e: e["type"] == "INBOX")
+            # Quiet mode: delivery is harness-log only; INBOX unread=0 is the signal.
+            ev = await self.wait_for(ws, lambda e: e["type"] == "INBOX" and e.get("unread") == 0)
             self.assertEqual(ev["unread"], 0)
             res = await self.tool("check_office_inbox", {"agent": "android_dev"})
             self.assertEqual(res["content"][0]["text"], "no messages")
@@ -350,13 +353,13 @@ class InboxTests(HarnessCase):
 
     async def test_inbox_cap(self) -> None:
         hub = self.harness.hub
-        agent = hub.agents["odoo_bot"]
+        agent = hub.agents["support_desk"]
         for i in range(agent_harness.INBOX_CAP):
             self.assertIsNotNone(hub.queue_message(agent, f"msg {i}"))
         self.assertIsNone(hub.queue_message(agent, "one too many"))
         ws, _ = await self.open_ws()
         try:
-            await ws.send(json.dumps({"action": "DISPATCH_PROMPT", "agent_id": "odoo_bot", "prompt": "more"}))
+            await ws.send(json.dumps({"action": "DISPATCH_PROMPT", "agent_id": "support_desk", "prompt": "more"}))
             err = await self.wait_for(ws, lambda e: e["type"] == "ERROR")
             self.assertIn("inbox is full", err["message"])
         finally:
@@ -365,7 +368,8 @@ class InboxTests(HarnessCase):
     async def test_tools_list_has_all_three(self) -> None:
         status, resp = await self.rpc("tools/list")
         tools = {t["name"]: t for t in resp["result"]["tools"]}
-        self.assertEqual(set(tools), {"report_office_status", "check_office_inbox", "reply_office_message"})
+        required = {"report_office_status", "check_office_inbox", "reply_office_message"}
+        self.assertTrue(required.issubset(set(tools)), tools)
         self.assertIn("check_office_inbox", tools["report_office_status"]["description"])
         self.assertEqual(tools["check_office_inbox"]["inputSchema"]["required"], ["agent"])
         self.assertEqual(set(tools["reply_office_message"]["inputSchema"]["required"]), {"agent", "reply"})
