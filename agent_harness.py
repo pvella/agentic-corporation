@@ -562,6 +562,7 @@ class Hub:
     def __init__(self, mode: str, tempo: str = "calm", office: dict[str, Any] | None = None) -> None:
         self.mode = mode
         self.tempo = tempo
+        self.connectivity: ConnectivityMonitor | None = None
         self.office = office  # None = legacy fixed office (client uses its built-in layout)
         self.office_path: str | None = None  # where to persist hire/fire (set by Harness)
         self.cmds_path: str | None = None  # agent_cmds.json to extend on hire
@@ -617,7 +618,8 @@ class Hub:
         return {
             "type": "SNAPSHOT",
             "server": {"name": "agent_harness", "version": __version__, "mode": self.mode, "tempo": self.tempo,
-                       "office": self.office.get("name") if self.office else None},
+                       "office": self.office.get("name") if self.office else None,
+                       "connectivity": (self.connectivity.payload() if self.connectivity else None)},
             "agents": [{**a.to_json(), "unread": self.inbox.unread(a.agent_id)} for a in self.agents.values()],
             "ts": now_ms(),
         }
@@ -802,6 +804,8 @@ class Hub:
             if layout:  # layout first, so the client can build rooms before spawning agents
                 await ws.send(json.dumps(layout, ensure_ascii=False))
             await ws.send(json.dumps(self.snapshot(), ensure_ascii=False))
+            if self.connectivity is not None:
+                await ws.send(json.dumps(self.connectivity.payload(), ensure_ascii=False))
             async for raw in ws:
                 await self.on_message(ws, raw)
         except ConnectionClosed as exc:
@@ -862,6 +866,15 @@ class Hub:
                                                            "message": "no office layout (legacy mode)"})
         elif action == "PING":
             await self.reply(ws, {"type": "PONG", "ts": now_ms()})
+        elif action in ("CHECK_CONNECTIVITY", "REACTIVATE_CLAUDE"):
+            mon = self.connectivity
+            if mon is None:
+                await self.reply(ws, {"type": "CONNECTIVITY", "harness": True, "claude": "down",
+                                      "reason": "connectivity monitor off (mock mode without Claude)",
+                                      "mode": self.mode, "ts": now_ms()})
+            else:
+                payload = await mon.check(force=True)
+                await self.reply(ws, payload)
         elif action in ("SET_TERMINAL_VERBOSE", "TOGGLE_TERMINAL_VERBOSE"):
             if action == "TOGGLE_TERMINAL_VERBOSE":
                 self.verbose_terminal = not self.verbose_terminal
@@ -1759,7 +1772,7 @@ class MockRunner:
         files = re.findall(r"[\w./-]+\.(?:py|ts|js|go|rs|gd|md|json|kt|swift|tf)", prompt)
         task = f"Editing {files[0]}" if files else random.choice(profile.topics)[1]
 
-        hub.log_line(aid, f"\x1b[1;36m> {prompt}\x1b[0m")
+        hub.log_line(aid, f"\x1b[1;36m> {prompt}\x1b[0m", important=True)
         hub.state(aid, "THINKING", text=f"Reading: {short}")
         await self.sleep(1.5)
         hub.log_line(aid, "\x1b[2mLoading context...\x1b[0m")
@@ -1770,7 +1783,7 @@ class MockRunner:
         for line in random.sample(profile.logs, k=min(3, len(profile.logs))):
             hub.log_line(aid, profile.fill(line))
             await self.sleep(1.2)
-        hub.log_line(aid, f"\x1b[1;32m\u2714 Done:\x1b[0m {prompt}")
+        hub.log_line(aid, f"\x1b[1;32m\u2714 Done:\x1b[0m {prompt}", important=True)
         spot = random.choice(agent.break_spots)
         hub.state(aid, "IDLE", target=spot, text="Done! Coffee time." if "Coffee" in spot else "Done!")
 
@@ -2413,6 +2426,191 @@ class AmbientDirector:
                 self.hub.state(speaker.agent_id, "IDLE", text=line)
 
 
+
+# ---------------------------------------------------------------------------
+# Claude / harness connectivity (banner indicator + CoS awareness)
+# ---------------------------------------------------------------------------
+CLAUDE_AUTH_MARKERS = (
+    "not logged in",
+    "please run /login",
+    "please run `claude /login`",
+    "authentication_error",
+    "unauthorized",
+    "invalid api key",
+    "couldn't authenticate",
+    "could not authenticate",
+    "login required",
+)
+
+
+def looks_like_claude_auth_failure(text: str) -> bool:
+    low = (text or "").casefold()
+    return any(m in low for m in CLAUDE_AUTH_MARKERS)
+
+
+class ConnectivityMonitor:
+    """Cached Claude reachability for the HUD indicator and agent system prompts."""
+
+    CACHE_TTL = 45.0
+    CHECK_TIMEOUT = 25.0
+
+    def __init__(self, hub: "Hub") -> None:
+        self.hub = hub
+        self.claude: str = "checking"  # ok | checking | down
+        self.reason: str = "Checking Claude…"
+        self._last_check: float = 0.0
+        self._lock = asyncio.Lock()
+        self._prev: str | None = None
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "type": "CONNECTIVITY",
+            "harness": True,
+            "claude": self.claude,
+            "reason": self.reason,
+            "mode": self.hub.mode,
+            "ts": now_ms(),
+        }
+
+    def blurb_for_prompt(self) -> str:
+        if self.claude == "ok":
+            return ("\n\n[Office connectivity] Claude Code is connected. "
+                    "You may answer Paul normally.")
+        if self.claude == "checking":
+            return ("\n\n[Office connectivity] Claude reachability is still being checked. "
+                    "If a reply fails, ask Paul to click the banner indicator.")
+        return (
+            "\n\n[Office connectivity] Claude Code is UNAVAILABLE "
+            f"({self.reason}). Tell Paul to click the connectivity indicator in the "
+            "top banner (or run `claude /login` in Terminal). Do not pretend tools ran."
+        )
+
+    def broadcast(self, *, notice: bool = False) -> None:
+        self.hub.emit(self.payload())
+        if notice and self.claude in ("ok", "down") and self._prev != self.claude:
+            if self.claude == "ok":
+                self.hub.emit({
+                    "type": "OFFICE_NOTICE",
+                    "kind": "claude_ok",
+                    "title": "Claude connected",
+                    "detail": self.reason or "Claude Code is reachable",
+                    "icon": "✔",
+                    "color": "#81c784",
+                })
+            elif self.claude == "down":
+                self.hub.emit({
+                    "type": "OFFICE_NOTICE",
+                    "kind": "claude_down",
+                    "title": "Claude disconnected",
+                    "detail": self.reason or "Claude Code unreachable",
+                    "icon": "⚠",
+                    "color": "#e57373",
+                })
+        self._prev = self.claude
+
+    def note_failure(self, detail: str) -> None:
+        detail = clean_line(detail or "Claude call failed", 200)
+        if looks_like_claude_auth_failure(detail) or "No such file" in detail or "not found" in detail.casefold():
+            self.claude = "down"
+            if looks_like_claude_auth_failure(detail):
+                self.reason = "Not logged in — click indicator to run claude /login"
+            elif "not found" in detail.casefold() or "No such file" in detail:
+                self.reason = "claude binary not found on PATH"
+            else:
+                self.reason = detail
+            self._last_check = time.monotonic()
+            self.broadcast(notice=True)
+
+    def note_success(self) -> None:
+        if self.claude != "ok":
+            self.claude = "ok"
+            self.reason = "Claude Code reachable"
+            self._last_check = time.monotonic()
+            self.broadcast(notice=True)
+
+    async def check(self, *, force: bool = False) -> dict[str, Any]:
+        async with self._lock:
+            now = time.monotonic()
+            if not force and self._last_check and (now - self._last_check) < self.CACHE_TTL and self.claude != "checking":
+                return self.payload()
+            prev = self.claude
+            self.claude = "checking"
+            self.reason = "Checking Claude…"
+            if prev != "checking":
+                self.broadcast(notice=False)
+            ok, reason = await self._probe()
+            self.claude = "ok" if ok else "down"
+            self.reason = reason
+            self._last_check = time.monotonic()
+            self.broadcast(notice=True)
+            return self.payload()
+
+    async def _probe(self) -> tuple[bool, str]:
+        env = {**os.environ, "FORCE_COLOR": "0", "PYTHONUNBUFFERED": "1"}
+        home = env.get("HOME") or os.path.expanduser("~")
+        env["HOME"] = home
+        try:
+            import getpass as _getpass
+            user = env.get("USER") or env.get("LOGNAME") or _getpass.getuser()
+        except Exception:
+            user = env.get("USER") or env.get("LOGNAME") or Path(home).name
+        env.setdefault("USER", user)
+        env.setdefault("LOGNAME", user)
+        parts = [p for p in env.get("PATH", "").split(os.pathsep) if p]
+        for extra in (str(Path(home) / ".local" / "bin"), "/opt/homebrew/bin", "/usr/local/bin"):
+            if extra not in parts:
+                parts.insert(0, extra)
+        env["PATH"] = os.pathsep.join(parts)
+
+        # Prefer a cheap auth status if the CLI supports it.
+        for argv in (
+            ["claude", "auth", "status"],
+            ["claude", "-p", "--output-format", "text", "Reply with exactly: PONG"],
+        ):
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *argv,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                    start_new_session=True,
+                )
+            except FileNotFoundError:
+                return False, "claude binary not found on PATH"
+            except OSError as exc:
+                return False, f"cannot start claude: {exc}"
+            try:
+                out_b, err_b = await asyncio.wait_for(proc.communicate(), self.CHECK_TIMEOUT)
+            except asyncio.TimeoutError:
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+                if argv[1:2] == ["auth"]:
+                    continue  # try the ping fallback
+                return False, "Claude health check timed out"
+            out = (out_b or b"").decode("utf-8", "replace")
+            err = (err_b or b"").decode("utf-8", "replace")
+            blob = f"{out}\n{err}"
+            code = proc.returncode if proc.returncode is not None else -1
+            if looks_like_claude_auth_failure(blob):
+                return False, "Not logged in — click indicator to run claude /login"
+            if argv[1:2] == ["auth"]:
+                # Unknown subcommand → fall through to ping.
+                if code != 0 and ("unknown" in blob.casefold() or "invalid" in blob.casefold()
+                                  or "usage" in blob.casefold()):
+                    continue
+                if code == 0:
+                    return True, "Claude auth ok"
+                # Auth status failed for another reason — still try ping once.
+                continue
+            if code == 0:
+                return True, "Claude Code reachable"
+            detail = clean_line(err or out or f"exit {code}", 160)
+            return False, detail or f"claude exited {code}"
+        return False, "Claude health check failed"
+
 class CliRunner:
     """Runs a real CLI (typically `claude -p`) per agent and posts the final
     reply into that agent's terminal. Debug/argv chatter stays in the harness log.
@@ -2501,6 +2699,9 @@ class CliRunner:
         has_sys = any(t in ("--append-system-prompt", "--system-prompt",
                             "--append-system-prompt-file", "--system-prompt-file") for t in tokens)
         sys_prompt = self.systems.get(agent_id, "").strip()
+        mon = getattr(self.hub, "connectivity", None)
+        if mon is not None:
+            sys_prompt = (sys_prompt + mon.blurb_for_prompt()).strip()
         if sys_prompt and not has_sys:
             insert_at = len(tokens) - 1 if prompt and tokens and tokens[-1] == prompt else len(tokens)
             tokens[insert_at:insert_at] = ["--append-system-prompt", sys_prompt]
@@ -2599,6 +2800,12 @@ class CliRunner:
         except (OSError, ValueError) as exc:
             log.error("CLI %s failed to start: %s", aid, exc)
             hub.log_line(aid, f"\x1b[31mFailed to start: {exc}\x1b[0m", stream="stderr", important=True)
+            if "No such file" in str(exc) or isinstance(exc, FileNotFoundError):
+                hub.log_line(aid, "\x1b[31mClaude not connected — click the indicator\x1b[0m",
+                             stream="stderr", important=True)
+            mon = getattr(hub, "connectivity", None)
+            if mon is not None:
+                mon.note_failure(str(exc))
             hub.state(aid, "IDLE", target=random.choice(agent.break_spots), text="Failed to start")
             return
 
@@ -2665,6 +2872,9 @@ class CliRunner:
         if ok and out_text:
             self.started.add(aid)
             self._save_started()
+            mon = getattr(hub, "connectivity", None)
+            if mon is not None:
+                mon.note_success()
             hub.post_reply(agent, out_text, bubble=True)
             hub.state(aid, "IDLE", target=agent.desk, text=clean_line(out_text, 60))
         elif ok:
@@ -2673,6 +2883,12 @@ class CliRunner:
         else:
             detail = clean_line(err_text or out_text or f"exit {code}", 200)
             hub.log_line(aid, f"\x1b[31m{detail}\x1b[0m", stream="stderr", important=True)
+            mon = getattr(hub, "connectivity", None)
+            if mon is not None:
+                mon.note_failure(detail)
+            if looks_like_claude_auth_failure(detail) or "not found" in detail.casefold():
+                hub.log_line(aid, "\x1b[31mClaude not connected — click the indicator\x1b[0m",
+                             stream="stderr", important=True)
             hub.state(aid, "IDLE", target=random.choice(agent.break_spots),
                       text=f"Failed (exit {code})")
 
@@ -2913,6 +3129,8 @@ class Harness:
         self.cli = CliRunner(self.hub, commands, args.prompt_mode, args.cwd, args.cmd_timeout,
                              cwds=cmd_cwds, systems=cmd_systems) \
             if args.mode in ("cli", "live") else None
+        self.hub.connectivity = ConnectivityMonitor(self.hub)
+        # Always track Claude so the banner works even before the first prompt.
         # Persist paths + live hire/fire hooks.
         if office is not None:
             self.hub.office_path = args.office or DEFAULT_OFFICE_FILE
@@ -3029,7 +3247,16 @@ class Harness:
                     agent.queue.task_done()
                     continue
                 try:
-                    await runner.run_prompt(agent, prompt)
+                    mon = self.hub.connectivity
+                    if (runner is self.cli and mon is not None and mon.claude == "down"
+                            and looks_like_claude_auth_failure(mon.reason)):
+                        self.hub.log_line(agent.agent_id,
+                                          "\x1b[31mClaude not connected — click the indicator\x1b[0m",
+                                          stream="stderr", important=True)
+                        self.hub.state(agent.agent_id, "IDLE",
+                                      text="Claude not connected")
+                    else:
+                        await runner.run_prompt(agent, prompt)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # keep the worker alive whatever happens
@@ -3040,6 +3267,22 @@ class Harness:
                     agent.queue.task_done()
                     if self.director and agent.queue.empty() and self.director.agent_filter(agent):
                         self.director.after_prompt(agent)
+
+    async def _connectivity_loop(self) -> None:
+        """Periodic cheap Claude health check for the banner indicator."""
+        mon = self.hub.connectivity
+        if mon is None:
+            return
+        # First check soon after boot so the banner is not stuck on amber.
+        await asyncio.sleep(2.0)
+        while True:
+            try:
+                await mon.check(force=False)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("connectivity check failed")
+            await asyncio.sleep(ConnectivityMonitor.CACHE_TTL)
 
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
@@ -3060,6 +3303,8 @@ class Harness:
             self.tasks.append(asyncio.create_task(self.worker(agent), name=f"worker-{agent.agent_id}"))
         if self.director:
             self.tasks.append(asyncio.create_task(self.director.run(), name="ambient"))
+        if self.hub.connectivity is not None:
+            self.tasks.append(asyncio.create_task(self._connectivity_loop(), name="connectivity"))
 
         async with serve(self.hub.handler, self.args.host, self.args.port, max_size=2 ** 22) as server:
             log.info("agent_harness %s (%s mode, %s tempo, websockets %s API) listening on ws://%s:%d",
