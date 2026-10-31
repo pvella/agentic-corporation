@@ -55,6 +55,12 @@ import secrets
 import unicodedata
 import json
 import logging
+from office_vault import (
+    COS_AGENT_ID,
+    OfficeVault,
+    format_vault_system_addon,
+    validate_name as vault_validate_name,
+)
 import os
 import random
 import re
@@ -258,7 +264,35 @@ class Inbox:
 # Registry
 # ---------------------------------------------------------------------------
 
-def format_job_system_prompt(job: dict | None, name: str = "", role: str = "") -> str:
+def is_chief_of_staff(agent: "Agent | None", agent_id: str = "") -> bool:
+    """True for the single Chief of Staff role (agent_id or role/name match)."""
+    if agent is not None:
+        if agent.agent_id == COS_AGENT_ID:
+            return True
+        role = (agent.role or "").casefold()
+        name = (agent.name or "").casefold()
+        if "chief of staff" in role or name == "chief of staff":
+            return True
+    aid = (agent_id or (agent.agent_id if agent else "")).casefold()
+    return aid == COS_AGENT_ID
+
+
+def vault_notice_payload(kind: str, title: str, detail: str = "", *, pending: bool = False,
+                         meta: dict | None = None) -> dict:
+    """Server to client notice event. Names only — never values."""
+    return {
+        "type": "VAULT_NOTICE",
+        "kind": kind,
+        "title": title,
+        "detail": detail,
+        "pending": pending,
+        "meta": meta or {},
+    }
+
+
+_VAULT_PROMPT_HOOK = None  # set by Harness
+
+def format_job_system_prompt(job: dict | None, name: str = "", role: str = "", agent_id: str = "") -> str:
     """Turn a member job{} into the Claude --append-system-prompt text."""
     job = job or {}
     title = str(job.get("title") or role or name or "Agent").strip() or "Agent"
@@ -300,6 +334,13 @@ def format_job_system_prompt(job: dict | None, name: str = "", role: str = "") -
     kb = format_knowledge_system_addon()
     if kb:
         lines.append(kb)
+    if _VAULT_PROMPT_HOOK is not None:
+        try:
+            addon = _VAULT_PROMPT_HOOK(agent_id or name or "")
+        except Exception:
+            addon = ""
+        if addon:
+            lines.append(addon)
     return "\n".join(lines)
 
 
@@ -539,6 +580,7 @@ class Hub:
         # Harness hooks so hire/fire can start workers + persist.
         self.on_hired: Callable[[Agent], None] | None = None
         self.on_fired: Callable[[str], None] | None = None
+        self.vault: OfficeVault | None = None
 
     # -- registry ----------------------------------------------------------
     def unregister(self, agent_id: str, *, variant: str = "") -> Agent | None:
@@ -620,6 +662,11 @@ class Hub:
     def log_line(self, agent_id: str, line: str, stream: str = "stdout", *,
                  important: bool = False) -> None:
         """Office terminal line. Quiet mode drops non-important chatter (tool/queue/ambient)."""
+        if self.vault is not None:
+            try:
+                line = self.vault.scrub(line)
+            except Exception:
+                pass
         if not important and not self.verbose_terminal:
             log.debug("quiet skip %s: %s", agent_id, strip_ansi(line)[:120])
             return
@@ -848,6 +895,24 @@ class Hub:
             payload = {"type": "OPEN_HIRING_BOARD"}
             self.emit(payload)
             await self.reply(ws, {"type": "ACK", "action": "OPEN_HIRING_BOARD"})
+        elif action == "VAULT_LIST":
+            await self._action_vault_list(ws, msg)
+        elif action == "VAULT_ADD":
+            await self._action_vault_add(ws, msg)
+        elif action == "VAULT_GRANT":
+            await self._action_vault_grant(ws, msg)
+        elif action == "VAULT_REVOKE":
+            await self._action_vault_revoke(ws, msg)
+        elif action == "VAULT_RM":
+            await self._action_vault_rm(ws, msg)
+        elif action == "VAULT_CONFIRM_RM":
+            await self._action_vault_confirm_rm(ws, msg)
+        elif action == "VAULT_CANCEL_RM":
+            await self._action_vault_cancel_rm(ws, msg)
+        elif action == "VAULT_SUBMIT_SECRET":
+            await self._action_vault_submit_secret(ws, msg)
+        elif action == "VAULT_DISMISS_SECRET":
+            await self._action_vault_dismiss_secret(ws, msg)
         else:
             await self.reply(ws, {"type": "ERROR", "message": f"unknown action '{action}'"})
 
@@ -1053,6 +1118,199 @@ class Hub:
         }
         self.emit(payload)
         await self.reply(ws, {"type": "ACK", "action": "ASK_HUMAN", "agent_id": agent_id, "request_id": request_id})
+
+
+
+    def _vault_or_error(self) -> OfficeVault | None:
+        return self.vault
+
+    async def _action_vault_list(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        vault = self._vault_or_error()
+        if vault is None:
+            await self.reply(ws, {"type": "ERROR", "action": "VAULT_LIST", "message": "vault unavailable"})
+            return
+        entries = vault.list_meta()
+        pending = list(vault.pending)
+        self.emit({"type": "VAULT_META", "secrets": entries, "pending": pending})
+        await self.reply(ws, {"type": "ACK", "action": "VAULT_LIST", "count": len(entries),
+                              "pending": len(pending)})
+
+    async def _action_vault_add(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        vault = self._vault_or_error()
+        if vault is None:
+            await self.reply(ws, {"type": "ERROR", "action": "VAULT_ADD", "message": "vault unavailable"})
+            return
+        name = str(msg.get("name", "")).strip()
+        value = str(msg.get("value", ""))
+        description = str(msg.get("description", "")).strip()
+        agents = msg.get("agents", [])
+        try:
+            meta = vault.add_secret(name, value, description=description, agents=agents)
+        except Exception as exc:
+            await self.reply(ws, {"type": "ERROR", "action": "VAULT_ADD", "message": str(exc)})
+            return
+        self.emit(vault_notice_payload(
+            "vault_add", f"Vault + {meta['name']}",
+            meta.get("description") or "secret stored (value in keychain)",
+            meta={"name": meta["name"], "agents": meta.get("agents", [])},
+        ))
+        self.emit({"type": "VAULT_META", "secrets": vault.list_meta(), "pending": list(vault.pending)})
+        await self.reply(ws, {"type": "ACK", "action": "VAULT_ADD", "name": meta["name"]})
+
+    async def _action_vault_grant(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        vault = self._vault_or_error()
+        if vault is None:
+            await self.reply(ws, {"type": "ERROR", "action": "VAULT_GRANT", "message": "vault unavailable"})
+            return
+        name = str(msg.get("name", "")).strip()
+        grantee = str(msg.get("agent_id", msg.get("grantee", ""))).strip()
+        try:
+            meta = vault.grant(name, grantee)
+        except Exception as exc:
+            await self.reply(ws, {"type": "ERROR", "action": "VAULT_GRANT", "message": str(exc)})
+            return
+        self.emit(vault_notice_payload(
+            "vault_grant", f"Vault grant {name} → {grantee}",
+            "access updated (names only)",
+            meta={"name": name, "grantee": grantee, "agents": meta.get("agents", [])},
+        ))
+        self.emit({"type": "VAULT_META", "secrets": vault.list_meta(), "pending": list(vault.pending)})
+        await self.reply(ws, {"type": "ACK", "action": "VAULT_GRANT", "name": name, "grantee": grantee})
+
+    async def _action_vault_revoke(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        vault = self._vault_or_error()
+        if vault is None:
+            await self.reply(ws, {"type": "ERROR", "action": "VAULT_REVOKE", "message": "vault unavailable"})
+            return
+        name = str(msg.get("name", "")).strip()
+        grantee = str(msg.get("agent_id", msg.get("grantee", ""))).strip()
+        try:
+            meta = vault.revoke(name, grantee)
+        except Exception as exc:
+            await self.reply(ws, {"type": "ERROR", "action": "VAULT_REVOKE", "message": str(exc)})
+            return
+        self.emit(vault_notice_payload(
+            "vault_revoke", f"Vault revoke {name} ✕ {grantee}",
+            "access updated (names only)",
+            meta={"name": name, "grantee": grantee, "agents": meta.get("agents", [])},
+        ))
+        self.emit({"type": "VAULT_META", "secrets": vault.list_meta(), "pending": list(vault.pending)})
+        await self.reply(ws, {"type": "ACK", "action": "VAULT_REVOKE", "name": name, "grantee": grantee})
+
+    async def _action_vault_rm(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        vault = self._vault_or_error()
+        if vault is None:
+            await self.reply(ws, {"type": "ERROR", "action": "VAULT_RM", "message": "vault unavailable"})
+            return
+        name = str(msg.get("name", "")).strip()
+        if not vault.get_meta(name):
+            await self.reply(ws, {"type": "ERROR", "action": "VAULT_RM", "message": f"unknown secret '{name}'"})
+            return
+        request_id = f"vault_rm_{int(now_ms())}_{name}"
+        self.emit({
+            "type": "VAULT_REMOVE_CONFIRM",
+            "name": name,
+            "request_id": request_id,
+            "prompt": f"Delete vault secret '{name}' from the keychain? This cannot be undone.",
+        })
+        self.emit(vault_notice_payload(
+            "vault_rm_pending", f"Vault remove pending — {name}",
+            "waiting for human confirmation",
+            pending=True, meta={"name": name, "request_id": request_id},
+        ))
+        await self.reply(ws, {"type": "ACK", "action": "VAULT_RM", "name": name, "request_id": request_id})
+
+    async def _action_vault_confirm_rm(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        vault = self._vault_or_error()
+        if vault is None:
+            await self.reply(ws, {"type": "ERROR", "action": "VAULT_CONFIRM_RM", "message": "vault unavailable"})
+            return
+        name = str(msg.get("name", "")).strip()
+        try:
+            vault.remove(name)
+        except Exception as exc:
+            await self.reply(ws, {"type": "ERROR", "action": "VAULT_CONFIRM_RM", "message": str(exc)})
+            return
+        self.emit(vault_notice_payload(
+            "vault_rm", f"Vault − {name}", "removed from keychain + metadata",
+            meta={"name": name},
+        ))
+        self.emit({"type": "VAULT_META", "secrets": vault.list_meta(), "pending": list(vault.pending)})
+        await self.reply(ws, {"type": "ACK", "action": "VAULT_CONFIRM_RM", "name": name})
+
+    async def _action_vault_cancel_rm(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        name = str(msg.get("name", "")).strip()
+        self.emit(vault_notice_payload(
+            "vault_rm_cancelled", f"Vault remove cancelled — {name}", "",
+            meta={"name": name},
+        ))
+        await self.reply(ws, {"type": "ACK", "action": "VAULT_CANCEL_RM", "name": name})
+
+    async def _action_vault_submit_secret(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        vault = self._vault_or_error()
+        if vault is None:
+            await self.reply(ws, {"type": "ERROR", "action": "VAULT_SUBMIT_SECRET", "message": "vault unavailable"})
+            return
+        request_id = str(msg.get("request_id", "")).strip()
+        value = str(msg.get("value", ""))
+        try:
+            result = vault.submit_request(request_id, value)
+        except Exception as exc:
+            await self.reply(ws, {"type": "ERROR", "action": "VAULT_SUBMIT_SECRET", "message": str(exc)})
+            return
+        req = result["request"]
+        meta = result["meta"]
+        agent_id = str(req.get("agent_id", ""))
+        name = str(meta.get("name", ""))
+        self.emit(vault_notice_payload(
+            "vault_add", f"Vault + {name}",
+            f"granted to {agent_id} (from request)",
+            meta={"name": name, "agent_id": agent_id, "request_id": request_id},
+        ))
+        if agent_id in self.agents:
+            self.log_line(
+                agent_id,
+                f"\x1b[32mvault: ${name} is now available in your environment\x1b[0m",
+                important=True,
+            )
+            agent = self.agents[agent_id]
+            if self.inbox_for(agent):
+                self.inbox.push(
+                    agent_id,
+                    f"[vault] Secret '{name}' is available as env var ${name}. Do not print its value.",
+                )
+        self.emit({"type": "VAULT_META", "secrets": vault.list_meta(), "pending": list(vault.pending)})
+        self.emit({"type": "VAULT_SECRET_RESOLVED", "request_id": request_id, "name": name,
+                   "agent_id": agent_id, "status": "granted"})
+        await self.reply(ws, {"type": "ACK", "action": "VAULT_SUBMIT_SECRET", "name": name})
+
+    async def _action_vault_dismiss_secret(self, ws: ServerConnection, msg: dict[str, Any]) -> None:
+        vault = self._vault_or_error()
+        if vault is None:
+            await self.reply(ws, {"type": "ERROR", "action": "VAULT_DISMISS_SECRET", "message": "vault unavailable"})
+            return
+        request_id = str(msg.get("request_id", "")).strip()
+        req = vault.dismiss_request(request_id)
+        if not req:
+            await self.reply(ws, {"type": "ERROR", "action": "VAULT_DISMISS_SECRET", "message": "unknown request"})
+            return
+        agent_id = str(req.get("agent_id", ""))
+        name = str(req.get("name", ""))
+        self.emit(vault_notice_payload(
+            "vault_declined", f"Vault request declined — {name}",
+            f"agent {agent_id} must not ask again",
+            meta={"name": name, "agent_id": agent_id, "request_id": request_id},
+        ))
+        if agent_id in self.agents:
+            self.log_line(
+                agent_id,
+                f"\x1b[33mvault: request for ${name} was declined — do not ask again\x1b[0m",
+                important=True,
+            )
+        self.emit({"type": "VAULT_META", "secrets": vault.list_meta(), "pending": list(vault.pending)})
+        self.emit({"type": "VAULT_SECRET_RESOLVED", "request_id": request_id, "name": name,
+                   "agent_id": agent_id, "status": "declined"})
+        await self.reply(ws, {"type": "ACK", "action": "VAULT_DISMISS_SECRET", "name": name})
 
 
     def save_office(self) -> None:
@@ -2184,6 +2442,11 @@ class CliRunner:
         # `claude -p` prints "Not logged in · Please run /login" and exits 1.
         # Never store tokens; only fill HOME/USER/PATH/CLAUDE_CONFIG_DIR.
         env = {**os.environ, "FORCE_COLOR": "0", "PYTHONUNBUFFERED": "1"}
+        if getattr(self.hub, "vault", None) is not None:
+            try:
+                env.update(self.hub.vault.env_for_agent(aid))
+            except Exception as exc:
+                log.warning("vault env inject failed for %s: %s", aid, exc)
         home = env.get("HOME") or os.path.expanduser("~")
         env["HOME"] = home
         try:
@@ -2242,7 +2505,13 @@ class CliRunner:
                 line = raw.decode("utf-8", "replace").rstrip("\r\n")
                 bucket.append(line)
                 # Harness log only — never flood the office terminal mid-run.
-                (log.debug if name == "stdout" else log.info)("CLI %s %s: %s", aid, name, strip_ansi(line)[:200])
+                safe_line = line
+                if getattr(hub, "vault", None) is not None:
+                    try:
+                        safe_line = hub.vault.scrub(line)
+                    except Exception:
+                        pass
+                (log.debug if name == "stdout" else log.info)("CLI %s %s: %s", aid, name, strip_ansi(safe_line)[:200])
 
         try:
             pumps = asyncio.gather(pump(proc.stdout, stdout_buf, "stdout"),
@@ -2267,6 +2536,12 @@ class CliRunner:
 
         out_text = "\n".join(stdout_buf).strip()
         err_text = "\n".join(stderr_buf).strip()
+        if getattr(hub, "vault", None) is not None:
+            try:
+                out_text = hub.vault.scrub(out_text)
+                err_text = hub.vault.scrub(err_text)
+            except Exception:
+                pass
         ok = code == 0
         log.info("CLI %s exited %s (%d stdout chars, %d stderr chars)",
                  aid, code, len(out_text), len(err_text))
@@ -2527,6 +2802,24 @@ class Harness:
         self.hub.cmds_path = cmds_file
         self.hub.on_hired = self._on_hired
         self.hub.on_fired = self._on_fired
+        vault_meta = Path.cwd() / ".office_vault.json"
+        office_arg = getattr(args, "office", None)
+        if office_arg and str(office_arg).lower() != "none":
+            vault_meta = Path(office_arg).expanduser().resolve().parent / ".office_vault.json"
+        self.hub.vault = OfficeVault(meta_path=vault_meta)
+        global _VAULT_PROMPT_HOOK
+        def _vault_addon(aid: str) -> str:
+            v = self.hub.vault
+            if v is None:
+                return ""
+            agent = self.hub.agents.get(aid)
+            return format_vault_system_addon(v, aid, is_cos=is_chief_of_staff(agent, aid))
+        _VAULT_PROMPT_HOOK = _vault_addon
+        if self.cli is not None:
+            for aid, agent in self.hub.agents.items():
+                if getattr(agent, "job", None):
+                    self.cli.systems[aid] = format_job_system_prompt(
+                        agent.job, name=agent.name, role=agent.role, agent_id=aid)
         if self.cli is not None and commands:
             log.info("CLI bindings: %s", ", ".join(sorted(commands)))
         elif self.cli is not None and not commands:
@@ -2562,7 +2855,8 @@ class Harness:
         if self.cli is not None:
             self.cli.commands[agent.agent_id] = "claude -p --output-format text {prompt}"
             self.cli.systems[agent.agent_id] = format_job_system_prompt(
-                getattr(agent, "job", None), name=agent.name, role=agent.role)
+                getattr(agent, "job", None), name=agent.name, role=agent.role,
+                agent_id=agent.agent_id)
             log.info("CLI bound for new hire %s", agent.agent_id)
         if self.director and self.director.agent_filter(agent):
             self.director.place_initial(agent)

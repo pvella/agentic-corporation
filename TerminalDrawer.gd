@@ -13,6 +13,7 @@ signal hire_submit(name: String, role: String)  ## real hire from /hire Name | R
 signal fire_preview_requested(variant: String)  ## /fire-preview [variant]
 signal verbose_toggled(verbose: bool)  ## /verbose or /quiet
 signal notices_requested  ## /notices — open / dump the hub notice board
+signal vault_requested(cmd: String, arg: String)  ## /vault …
 signal job_description_requested(agent_id: String)
 signal dm_requested(to_agent: String, text: String)
 signal kb_requested(subcommand: String, arg: String)
@@ -205,7 +206,7 @@ func open_for(a: Agent) -> void:
 	_render_all()
 	panel.visible = true
 	_animate_to(1.0)
-	prompt_input.placeholder_text = "Prompt for %s — /jd · /verbose · /msg · /kb · /notices" % a.display_name
+	prompt_input.placeholder_text = "Prompt for %s — /jd · /verbose · /msg · /kb · /notices · /vault" % a.display_name
 	prompt_input.grab_focus.call_deferred()
 	if archive_button:
 		archive_button.visible = false
@@ -294,6 +295,25 @@ func _submit() -> void:
 	if lower == "/notices" or lower == "/notice" or lower.begins_with("/notices "):
 		prompt_input.clear()
 		notices_requested.emit()
+		return
+	if lower == "/vault" or lower.begins_with("/vault "):
+		prompt_input.clear()
+		var vrest := text.substr(6).strip_edges()
+		if vrest.is_empty() or vrest.to_lower() in ["list", "ls"]:
+			vault_requested.emit("list", "")
+			append_system("vault: listing (names only)…")
+			return
+		var vparts := vrest.split(" ", false, 1)
+		var vsub := vparts[0].strip_edges().to_lower()
+		var varg := vparts[1].strip_edges() if vparts.size() > 1 else ""
+		if vsub in ["add", "grant", "revoke", "rm", "remove", "del"]:
+			if varg == "" and vsub != "add":
+				append_system("usage: /vault %s <NAME> [agent|all]" % vsub)
+				return
+			vault_requested.emit(vsub, varg)
+			append_system("vault: %s %s…" % [vsub, varg])
+			return
+		append_system("usage: /vault | /vault add NAME [desc] | /vault grant|revoke NAME agent|all | /vault rm NAME")
 		return
 	if lower == "/kb" or lower.begins_with("/kb "):
 		prompt_input.clear()

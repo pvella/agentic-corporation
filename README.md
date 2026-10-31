@@ -2,9 +2,9 @@
 
 **Agentic Corporation** is a mission-control dashboard for autonomous agents such as Claude Code, Grok, Hermes or any command-line agent. It looks like a cosy Sims / Habbo / Stardew office. The visual client is called **Agent Office**: a 2D office built in Godot 4 where every agent is a small chibi character at its own desk, and what it does on screen shows what the agent is actually doing.
 
-![Agent Office overview in the isometric view: four team rooms, the shared break room and meeting room, and the separate Power Tech Consulting wing](docs/images/agent-office-overview.png)
+![Agent Office overview in the isometric view: four team rooms, the shared break room and meeting room, and the shared hub rooms](docs/images/agent-office-overview.png)
 
-The office is laid out from **`office.json`**: team rooms with a desk per member and a clickable name sign, a central corridor, a shared **Break Room** (coffee, water cooler, vending machine, sofa and a foosball table) and **Meeting Room**, and optionally **isolated wings** with their own entrance, kitchenette and meeting nook (the Power Tech Consulting wing has no walkable route into the rest of the building).
+The office is laid out from **`office.json`** as a **hex hub**: department rooms around a central hub that holds the **Break Room**, **Canteen**, **Rec Room** (yoga / cushions), **Meeting Room**, and **Server Room** (knowledge library). Each team room has a desk per member and a clickable name sign. A **Hiring Board** lists seeded roles (including the Executive Assistant catalogue); there is a single **Chief of Staff** on the live roster. A cork **Notice Board** sits in the Canteen; a small **Vault** safe sits in the Server Room.
 
 | State | What you see |
 |---|---|
@@ -23,6 +23,28 @@ A small Python **event bridge** (`agent_harness.py`) drives the office over a lo
 
 ![The break room: a four-player foosball game, three colleagues chatting by the counter, two on the sofa](docs/images/agent-office-break-room.png)
 
+## Office layout and features
+
+The default floor plan is a **hex hub**: department rooms around a shared centre with:
+
+| Area | What it is for |
+|---|---|
+| **Break Room** | Coffee, water cooler, vending, sofa, foosball |
+| **Canteen** | Lunch tables, serving counter, cork **Notice Board** (`/notices`) |
+| **Rec Room** | Yoga / cushions / downtime |
+| **Meeting Room** | Seated collaboration (`COLLAB` / meeting turns) |
+| **Server Room** | Knowledge library (`knowledge/`, `/kb`, `/kb rm`, `INDEX.md`) and the **Vault** safe |
+
+**Hiring Board** — open from the HUD (**+ Add Agent**) to hire from the seeded role catalogue (51 roles, including the **Executive Assistant**). Only one **Chief of Staff** may be on the live roster (unique-role guard).
+
+**Kill Agent mode** — archive/fire an agent with cartoon exit animations; preview with `/fire-preview` (or `/fire-preview ambulance|ufo|stomp|anvil|trapdoor|escort`).
+
+**Terminal drawer** — `/jd` rich job description, `/msg` / `/dm` to another agent, `/verbose` vs `/quiet`, `/kb`, `/notices`, `/vault`. Agents can also raise an **ask_human** card when they need a decision.
+
+**Vault** — shared bot secrets. Values live only in the OS keychain (macOS `security`, Linux keyring or `~/.local/share/agentic-corp/secrets/` mode 0600). Gitignored `.office_vault.json` holds names, descriptions and ACL only. See [Vault](#vault) below.
+
+For a step-by-step first run (prerequisites, ports, Claude login, `agent_cmds.json`), see [docs/setup.md](docs/setup.md).
+
 ### 3D (isometric) and top-down views
 
 The office opens in a Habbo-style **isometric view**: a 2:1 dimetric projection, about 45 degrees. Floors are diamond tiles in each room's colour. The north and west walls of each building are tall, with windows. Interior walls are waist height and the front walls are low, so you can always see into the rooms. Furniture is drawn as shaded 3D blocks, and people stand upright and are sorted by depth, so they walk behind and in front of desks, tables and walls correctly. Press **V**, or the **Top view** / **3D view** button in the header, to switch to the classic top-down view and back. The choice is saved in `user://agent_office.cfg`. To force one view at startup, pass `-- --view=top` or `-- --view=iso`.
@@ -35,7 +57,7 @@ Only the drawing changes between the views. The layout, the navigation mesh and 
 
 ## Quick start
 
-> **macOS shortcut:** double-click `run-mac.command` to create the venv on first run (Python 3.10+; it picks the newest `python3.x` it finds), start the bridge with the MCP connector on port 8766, print where the token is, and open the Godot client (needs `godot` on your PATH, e.g. `brew install --cask godot`). The bridge stops when you close the game. It reinstalls the requirements whenever `requirements.txt` changes.
+> **macOS shortcut:** double-click `run-mac.command` to create the venv on first run (Python 3.10+; it picks the newest `python3.x` it finds), start the bridge with the MCP connector on **port 8766** (Godot WebSocket **8765**), print where the token is, and open the Godot client (**Godot 4.3+**; `godot` on your PATH, e.g. `brew install --cask godot`). Copy `agent_cmds.example.json` to `agent_cmds.json` (gitignored) so live agents bind to `claude -p`; run `claude` once and complete `/login` so Keychain auth works. The bridge stops when you close the game. It reinstalls the requirements whenever `requirements.txt` changes. Full checklist: [docs/setup.md](docs/setup.md).
 
 ### 1. Run the harness
 
@@ -120,8 +142,8 @@ In cli mode, agents without a `--agent-cmd` fall back to the mock runner when gi
   "rooms": [
     {"id": "dev_team", "name": "Dev Team", "color": "#4fc3f7", "theme": "wood", "desks": 6,
      "members": [{"agent_id": "ios_dev", "name": "iOS Dev", "role": "iOS apps"}]},
-    {"id": "ptc", "name": "Power Tech Consulting", "color": "#ffb74d", "theme": "navy", "isolated": true,
-     "members": [{"agent_id": "ptc_odoo", "name": "PTC Odoo", "role": "Odoo"}]}
+    {"id": "partners", "name": "Partners", "color": "#ffb74d", "theme": "navy",
+     "members": [{"agent_id": "partner_ops", "name": "Partner Ops", "role": "Ops"}]}
   ],
   "shared": {"break_room": {"name": "Break Room"}, "meeting_room": {"name": "Meeting Room", "seats": 6}}
 }
@@ -195,7 +217,7 @@ Grok Bot (cloud) --HTTPS--> https://<mac>.<tailnet>.ts.net/mcp --Funnel--> 127.0
 | `start_task` | Walks to its desk and starts typing (`WORKING`); `detail` appears as a bubble and a `▶` line in its terminal. |
 | `thinking` | At the desk, scratching its head with a thought bubble (`THINKING`). |
 | `run_tool` | Keeps working at the desk; `detail` goes in the bubble and as a `$ ...` line in the terminal. |
-| `finish` | Logs `✔ Done`, then heads off for a break (its room's break spots: the shared break room, or the PTC wing's own kitchenette). |
+| `finish` | Logs `✔ Done`, then heads off for a break (its room's break spots in the shared Break Room). |
 | `error` | Stays at the desk with a red monitor, a pulsing red `!` and a red ring (`ERROR`); the HUD counts errors. The next report clears it. |
 
 The result is `ok`, or `ok (N unread messages: call check_office_inbox)` when you've left that bot messages, so bots discover them as they report.
@@ -216,7 +238,7 @@ Type a prompt into a real bot's terminal and it goes into that bot's **inbox** i
 ### Mixed and live modes
 
 - **Mock mode (default):** everyone is simulated, but as soon as a bot reports for real the simulation leaves **that** agent alone for 10 minutes after its latest report (`--live-hold`), so real status is never overwritten. Everyone else keeps the calm simulation. When the hold runs out, the simulation picks up again from where the bot left off.
-- **Live mode (`--mode live`):** no fake work. Only real reports (or CLI runs bound with `--agent-cmd`) make anyone work, think or log, and the header says so: `LIVE · 23 agents · 1 working · 0 thinking · 22 idle (ambient)`. Agents that aren't busy with a real report live a calm idle office life instead: they sit at their desk with the screen on its screensaver, fetch a coffee or water, visit the vending machine, sit on the sofa, play foosball (2 to 4 players), stop for small talk in twos and threes (in the break room, the corridor or their own room) and now and then look at their phone. None of it shows task text or log lines. A real report takes over that agent at once, even mid-chat. After `finish` (or when the `--live-hold` window runs out without one) the agent goes back to the idle life. The Power Tech Consulting wing has its own kitchenette, sofa and chat corner, and its people never mingle with the main building. `--no-ambient` turns the idle life off (everyone stays at their desk until a report arrives). Prompts typed into the dashboard for agents without a command go to their inbox (see above).
+- **Live mode (`--mode live`):** no fake work. Only real reports (or CLI runs bound with `--agent-cmd`) make anyone work, think or log, and the header says so: `LIVE · 23 agents · 1 working · 0 thinking · 22 idle (ambient)`. Agents that aren't busy with a real report live a calm idle office life instead: they sit at their desk with the screen on its screensaver, fetch a coffee or water, visit the vending machine, sit on the sofa, play foosball (2 to 4 players), stop for small talk in twos and threes (in the break room, the corridor or their own room) and now and then look at their phone. None of it shows task text or log lines. A real report takes over that agent at once, even mid-chat. After `finish` (or when the `--live-hold` window runs out without one) the agent goes back to the idle life. `--no-ambient` turns the idle life off (everyone stays at their desk until a report arrives). Prompts typed into the dashboard for agents without a command go to their inbox (see above).
 
 ```bash
 python3 agent_harness.py                    # simulated office + live overrides, MCP on :8766
@@ -260,7 +282,7 @@ Then add this to each bot's instructions, with its own name:
 
 > Whenever you start a task, make real progress, or finish/fail a job, call report_office_status with agent="<your name>" and a one-sentence detail. If the call fails, ignore it and carry on.
 >
-> At the start of each task, on every routine check-in, and whenever report_office_status says you have unread messages, call check_office_inbox with agent="<your name>". Treat each message as a request from Paul: do it (or say why you can't), then answer with reply_office_message, passing its message_id and a short plain-text reply. If there are no messages, carry on.
+> At the start of each task, on every routine check-in, and whenever report_office_status says you have unread messages, call check_office_inbox with agent="<your name>". Treat each message as a request from the human operator: do it (or say why you can't), then answer with reply_office_message, passing its message_id and a short plain-text reply. If there are no messages, carry on.
 
 Test it from a terminal first:
 
@@ -307,6 +329,11 @@ There is no packaged build or store listing yet. Agentic Corporation is a **loca
 |---|---|
 | `agent_harness.py` | WebSocket server. Holds the agent registry and broadcasts every event. Loads `office.json`, includes `MockRunner` (role-flavoured scripted runs), `AmbientDirector` (the tempo-driven background simulation), `CliRunner` (wraps a real process and streams its output) and a per-agent prompt queue. |
 | `office.json` | Rooms, members and shared spaces (see "Editing office.json"). |
+| `office_vault.py` | Vault metadata + Keychain/file secret store. Scrubs values from harness logs and CLI output. |
+| `VaultDoor.gd` | Clickable safe placard in the Server Room (opens vault list). |
+| `Notices.gd` / `NoticeBoard.gd` | Canteen notice board store + cork UI (`/notices`). |
+| `HireFireFx.gd` | Hire beam / fire (kill-agent) animations. |
+| `KnowledgeLibrary.gd` | Server Room knowledge browser. |
 | `office_mcp.py` | The MCP connector: the `report_office_status`, `check_office_inbox` and `reply_office_message` tools, bearer-token check, rate limits, token file. Started by the harness. The inbox itself (`Inbox`, persisted to `.office_inbox.json`) lives in `agent_harness.py`. |
 | `requirements.txt` | Python dependencies (`websockets>=13`, `mcp>=2.3,<3`). |
 | `project.godot` | Godot project settings: 1280x800, resizable (stretch `canvas_items`, aspect `expand`), GL Compatibility, main scene `Main.tscn`. |
@@ -325,7 +352,8 @@ There is no packaged build or store listing yet. Agentic Corporation is a **loca
 | `tests/test_ansi.gd` | Headless unit tests for the colour converter. |
 | `tests/smoke_test.gd` | Headless integration test that loads `Main.tscn` and feeds it protocol messages (legacy office and the team-room office). It also checks the iso projection round-trip, clicking people and room signs in the iso view, and the top-down toggle. |
 | `tests/fixtures/office_layout.json` | The `OFFICE_LAYOUT` the harness sends for the default `office.json`, used by the smoke test. |
-| `tests/test_ambient.py` | Python unit tests for the ambient office life on a fake clock (live mode never fakes work, chats use facing slots within a group, foosball for 2 to 4, PTC stays in its wing, a real report always wins, finish hands the agent back). |
+| `tests/test_ambient.py` | Python unit tests for the ambient office life on a fake clock (live mode never fakes work, chats use facing slots within a group, foosball for 2 to 4, a real report always wins, finish hands the agent back). |
+| `tests/test_office_vault.py` | Vault metadata isolation, ACL, scrub, request/decline (no Keychain required). |
 | `tests/test_office_mcp.py` | Python unit tests for the MCP connector (auth, tools/list, tool calls reaching a WebSocket client, unknown agents, truncation, mixed and live modes, rate limit, token file, and the inbox: queue, persist, deliver, reply, badge events, cap, escaping). |
 | `tools/test_client.py` | Python test client for the harness protocol, in mock and cli modes. |
 | `tools/funnel-mac.sh` | `on` / `off` / `status` / `url` helper for Tailscale Funnel on the MCP port. |
@@ -412,6 +440,8 @@ Example:
 {"action": "DISPATCH_PROMPT", "agent_id": "coder_agent", "prompt": "Fix bug in auth.py"}
 ```
 
+Vault (names/ACL only over the wire; values only in masked dialogs → harness → keychain): `VAULT_LIST`, `VAULT_ADD`, `VAULT_GRANT`, `VAULT_REVOKE`, `VAULT_RM`, `VAULT_CONFIRM_RM`, `VAULT_CANCEL_RM`, `VAULT_SUBMIT_SECRET`, `VAULT_DISMISS_SECRET`.
+
 ## Running the tests
 
 ```bash
@@ -442,13 +472,14 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 # Godot tests. Import once so the class cache exists, then run headless.
 godot --headless --path . --import
 godot --headless --path . --script res://tests/test_ansi.gd     # colour converter unit tests
-godot --headless --path . --script res://tests/smoke_test.gd    # layouts, spawning, seating, meetings, foosball, chat spots, phone, PTC wall, drawer, iso view + picking
+godot --headless --path . --script res://tests/smoke_test.gd    # layouts, spawning, seating, meetings, foosball, chat spots, phone, drawer, iso view + picking
 ```
 
 `smoke_test.gd` needs no harness: it feeds messages straight into `Main`. Each script exits with code 0 on success and 1 on failure. If you change `office.json`, regenerate the fixture with `python3 -c "import json, agent_harness as h; json.dump({'type': 'OFFICE_LAYOUT', 'office': h.load_office(None)}, open('tests/fixtures/office_layout.json', 'w'), indent=1)"`.
 
 ## Security
 
+- **Office Vault** values stay in the OS keychain (or a 0600 file outside the repo). Metadata in `.office_vault.json` is git-ignored. Agents only receive env vars they are granted; output is scrubbed. The Chief of Staff can manage ACLs but cannot read values.
 - The WebSocket listens on **127.0.0.1 only** and has **no authentication**. Any local process can connect and send prompts.
 - The **MCP connector** also binds to 127.0.0.1 and is the only part meant to be exposed (through Tailscale Funnel). Every request needs the bearer token (compared in constant time); bad tokens get 401 and are throttled per client, valid traffic is rate-limited (`--mcp-rate`), request bodies are capped at 64 KB, and `detail` is cleaned and capped at 200 characters. The tools can only move characters, add log lines and hand over the messages you typed for that bot: they can't run commands or send prompts. Bot replies are shown as plain text. `.office_inbox.json` holds your messages in plain text (chmod 600, git-ignored); note that any bot holding the token can read any agent's inbox by name. Keep `.office_token` private (it's git-ignored and chmod 600) and rotate it by deleting the file and restarting.
 - In **cli mode, a prompt runs a real command** on your machine with your user's permissions, in `--cwd`. Only bind commands you trust, and point `--cwd` at a working copy you're happy for an agent to change.
@@ -479,6 +510,28 @@ godot --headless --path . --script res://tests/smoke_test.gd    # layouts, spawn
 
 MIT — see [LICENSE](LICENSE).
 
-## Secrets
+## Vault
 
-Do not commit `.office_token`, API keys, or Keychain material. A `.gitleaks.toml` is included for pre-push scanning.
+Shared secrets for live agents. **Values never appear** in the UI, terminal, notice board, git, harness logs, or agent prompts—only names and descriptions do.
+
+| Piece | Behaviour |
+|---|---|
+| Storage | macOS Keychain via `security` (`agentic-corp.<NAME>`); Linux: `keyring` if installed, else `~/.local/share/agentic-corp/secrets/<NAME>` mode `0600` (outside the repo). |
+| Metadata | Gitignored `.office_vault.json` next to the harness: `name`, `description`, `agents` (`[]` / list / `"all"`), `created_at`, `last_used_at`. Mode `0600`. |
+| Injection | When a CLI/live agent runs, granted secrets are added to its process environment as `$NAME`. |
+| Scrubbing | Harness log lines and captured CLI stdout/stderr replace any known secret value with `[REDACTED]`. |
+| Prompts | System prompts list only allowed names + descriptions (plus CoS management rules). |
+
+**Human commands** (terminal or the Vault safe in the Server Room):
+
+- `/vault` — list names, descriptions, ACL, pending requests
+- `/vault add NAME [description]` — masked input; stores in Keychain
+- `/vault grant NAME agent_id|all` / `/vault revoke NAME agent_id|all`
+- `/vault rm NAME` — always asks for confirmation before deleting keychain + metadata
+
+**Agent tools (MCP):**
+
+- Any agent: `request_secret(name, label, description)` → masked card in Godot; submit grants the requester; dismiss = declined (do not ask again). Pending requests pin on the Notice Board until answered.
+- Chief of Staff only: `vault_list`, `vault_grant`, `vault_revoke`, `vault_request_remove` (remove still needs the human owner's confirm). CoS manages metadata only and **never** sees values. CoS vault actions are posted to the Notice Board.
+
+Do not commit `.office_token`, `.office_vault.json`, API keys, or Keychain material. A `.gitleaks.toml` is included for pre-push scanning.
