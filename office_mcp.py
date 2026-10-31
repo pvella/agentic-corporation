@@ -450,6 +450,146 @@ def build_mcp(hub: Any) -> MCPServer:
         return f"removal of '{name}' awaits human confirmation"
 
 
+    # --- Agents-manage-agents (Chief of Staff) — inspired by AgentSystemLabs/agent-office MIT ---
+
+    @server.tool(
+        name="list_agents",
+        title="List office agents",
+        description="Chief of Staff: list all agents with state, room, needs-you, and busy flags.",
+    )
+    def list_agents(
+        agent: AgentName,
+    ) -> str:
+        a = _agent(hub, agent)
+        from agent_harness import is_chief_of_staff
+        if not is_chief_of_staff(a):
+            return "only the Chief of Staff may list the full roster this way"
+        lines = []
+        for other in sorted(hub.agents.values(), key=lambda x: x.name.lower()):
+            flags = []
+            if getattr(other, "needs_you", False) or getattr(other, "awaiting_input", False):
+                flags.append("NEEDS_YOU")
+            if other.lock.locked():
+                flags.append("busy")
+            flag_s = (" [" + ",".join(flags) + "]") if flags else ""
+            lines.append(
+                f"- {other.name} ({other.agent_id}) {other.role} @ {other.room}/{other.desk} "
+                f"state={other.state}{flag_s}"
+            )
+        return "Agents:\n" + "\n".join(lines) if lines else "No agents"
+
+    @server.tool(
+        name="hire_agent",
+        title="Hire an agent",
+        description="Chief of Staff: hire a new agent into a room (archive-friendly roster). Plays hire FX on clients.",
+    )
+    def hire_agent(
+        agent: AgentName,
+        name: Annotated[str, Field(description="Display name for the new hire.")],
+        role: Annotated[str, Field(description="Role title.")] = "",
+        room: Annotated[str, Field(description="Room id, e.g. engineering.")] = "engineering",
+        color: Annotated[str, Field(description="Hex color.")] = "#ffd54f",
+    ) -> str:
+        a = _agent(hub, agent)
+        from agent_harness import is_chief_of_staff
+        if not is_chief_of_staff(a):
+            return "only the Chief of Staff may hire"
+        import re
+        import time as _t
+        aid = re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_") or f"hire_{int(_t.time())}"
+        if aid in hub.agents:
+            aid = f"{aid}_{int(_t.time()) % 10000}"
+        desk = f"Desk_{aid}"
+        if hasattr(hub, "hire"):
+            try:
+                hub.hire(aid, name, desk, color, role=role, room=room)
+            except TypeError:
+                hub.hire(aid, name, desk, color, role=role)
+            hub.emit({"type": "AGENT_HIRE", "agent_id": aid, "name": name, "role": role,
+                      "desk": desk, "color": color, "room": room})
+            return f"hired {name} ({aid}) in {room}"
+        return "hire unavailable on this hub"
+
+    @server.tool(
+        name="message_agent",
+        title="Message an agent",
+        description="Chief of Staff: send a prompt/message to another agent (queued like a dashboard dispatch).",
+    )
+    def message_agent(
+        agent: AgentName,
+        to: Annotated[str, Field(description="Target agent name or id.")],
+        message: Annotated[str, Field(description="Message / prompt text.")],
+    ) -> str:
+        a = _agent(hub, agent)
+        from agent_harness import is_chief_of_staff
+        if not is_chief_of_staff(a):
+            return "only the Chief of Staff may message agents this way"
+        target = hub.find_agent(to)
+        if target is None:
+            return f"unknown agent {to!r}"
+        text = clean_text(message, 4000)
+        if not text:
+            return "empty message"
+        hub.emit({"type": "AGENT_DM", "from": a.agent_id, "to": target.agent_id, "text": text[:200]})
+        try:
+            target.queue.put_nowait(f"[CoS {a.name}] {text}")
+        except Exception:
+            return "queue full"
+        return f"queued message to {target.name}"
+
+    @server.tool(
+        name="send_home",
+        title="Send an agent home",
+        description=(
+            "Chief of Staff: archive (not delete) an agent and play a kill animation "
+            "(ambulance or UFO). Unpushed worktrees are never removed."
+        ),
+    )
+    def send_home(
+        agent: AgentName,
+        target: Annotated[str, Field(description="Agent name or id to send home.")],
+        how: Annotated[str, Field(description="ambulance or UFO.")] = "ambulance",
+    ) -> str:
+        a = _agent(hub, agent)
+        from agent_harness import is_chief_of_staff
+        if not is_chief_of_staff(a):
+            return "only the Chief of Staff may send agents home"
+        other = hub.find_agent(target)
+        if other is None:
+            return f"unknown agent {target!r}"
+        if other.agent_id == a.agent_id:
+            return "Chief of Staff cannot send themselves home"
+        how_s = "ufo" if str(how).lower() in ("ufo", "UFO") else "ambulance"
+        wt = getattr(hub, "worktrees", None)
+        note = wt.safe_cleanup(other.agent_id) if wt is not None else "no worktree mgr"
+        agent_id = other.agent_id
+        name = other.name
+        if hub.office:
+            archived_member = None
+            for r in hub.office.get("rooms", []):
+                members = r.get("members") or []
+                keep = []
+                for m in members:
+                    if m.get("agent_id") == agent_id:
+                        archived_member = dict(m)
+                        archived_member["archived_at"] = __import__("time").time()
+                        archived_member["archived_from_room"] = r.get("id")
+                    else:
+                        keep.append(m)
+                r["members"] = keep
+            if archived_member is not None:
+                hub.office.setdefault("archived", []).append(archived_member)
+            if hasattr(hub, "save_office"):
+                hub.save_office()
+        hub.unregister(agent_id, variant=how_s)
+        if hub.on_fired:
+            try:
+                hub.on_fired(agent_id)
+            except Exception:
+                pass
+        return f"sent {name} home via {how_s} (archive-not-delete); worktree: {note}"
+
+
     return server
 
 

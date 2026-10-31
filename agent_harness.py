@@ -675,6 +675,8 @@ class Agent:
     # this time.monotonic() value; live_reports counts them.
     live_until: float = 0.0
     live_reports: int = 0
+    awaiting_input: bool = False
+    needs_you: bool = False
 
     def is_live(self) -> bool:
         return time.monotonic() < self.live_until
@@ -694,6 +696,8 @@ class Agent:
             "busy": self.lock.locked(),
             "queued": self.queue.qsize(),
             "live": self.is_live(),
+            "awaiting_input": self.awaiting_input,
+            "needs_you": self.needs_you or self.awaiting_input,
             "unread": 0,  # filled in by Hub.snapshot()
         }
         if include_logs:
@@ -736,6 +740,8 @@ class Hub:
         self.on_ensure_cli: Callable[[Agent], bool] | None = None
         self.on_fired: Callable[[str], None] | None = None
         self.vault: OfficeVault | None = None
+        self.lite: Any = None
+        self.worktrees: Any = None
 
     # -- registry ----------------------------------------------------------
     def unregister(self, agent_id: str, *, variant: str = "") -> Agent | None:
@@ -1290,9 +1296,21 @@ class Hub:
             if item is None:
                 await self.reply(ws, {"type": "ERROR", "action": "HUMAN_REPLY", "message": "inbox full"})
                 return
+            agent.awaiting_input = False
+            agent.needs_you = False
+            lite = getattr(self, "lite", None)
+            if lite is not None:
+                lite.mark_needs(agent_id, False)
+            self.emit({"type": "NEEDS_YOU_CLEAR", "agent_id": agent_id})
             await self.reply(ws, {"type": "ACK", "action": "HUMAN_REPLY", "agent_id": agent_id,
                                   "message_id": item["id"], "inbox": True})
             return
+        agent.awaiting_input = False
+        agent.needs_you = False
+        lite = getattr(self, "lite", None)
+        if lite is not None:
+            lite.mark_needs(agent_id, False)
+        self.emit({"type": "NEEDS_YOU_CLEAR", "agent_id": agent_id})
         await agent.queue.put(prompt)
         await self.reply(ws, {"type": "ACK", "action": "HUMAN_REPLY", "agent_id": agent_id,
                               "queued": agent.queue.qsize()})
@@ -1313,7 +1331,19 @@ class Hub:
             "request_id": request_id,
             "choices": msg.get("choices") or [],
         }
+        agent.awaiting_input = True
+        agent.needs_you = True
         self.emit(payload)
+        self.emit({
+            "type": "NEEDS_YOU",
+            "agent_id": agent_id,
+            "agent_name": agent.name,
+            "prompt": payload["prompt"],
+            "request_id": request_id,
+        })
+        lite = getattr(self, "lite", None)
+        if lite is not None:
+            lite.mark_needs(agent_id, True)
         await self.reply(ws, {"type": "ACK", "action": "ASK_HUMAN", "agent_id": agent_id, "request_id": request_id})
 
 
@@ -1946,6 +1976,42 @@ class MockRunner:
 
     async def sleep(self, seconds: float) -> None:
         await asyncio.sleep(seconds / self.speed)
+
+
+    def _consume_stream_json_line(self, aid: str, agent: Agent, line: str) -> None:
+        """Map Claude stream-json events → THINKING / WORKING / IDLE poses."""
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(ev, dict):
+            return
+        et = str(ev.get("type") or ev.get("event") or "")
+        hub = self.hub
+        if et in ("assistant", "message_start", "content_block_start"):
+            hub.state(aid, "THINKING", target=agent.desk, text="thinking…")
+        elif et == "tool_use" or (
+            et == "content_block_start"
+            and str(ev.get("content_block", {}).get("type", "")) == "tool_use"
+        ):
+            name = str(ev.get("name") or ev.get("content_block", {}).get("name") or "tool")
+            hub.state(aid, "WORKING", target=agent.desk, text=name[:40])
+        elif et == "content_block_delta":
+            delta = ev.get("delta") or {}
+            blob = json.dumps(delta).lower()
+            if "tool" in blob:
+                hub.state(aid, "WORKING", target=agent.desk, text="tool")
+        # Detect ask-user / needs-input patterns
+        text_s = str(ev.get("content") or ev.get("text") or "")
+        low = text_s.lower()
+        if any(k in low for k in ("needs your", "waiting for you", "please confirm", "ask the user")):
+            agent.awaiting_input = True
+            agent.needs_you = True
+            hub.emit({"type": "NEEDS_YOU", "agent_id": aid, "agent_name": agent.name,
+                      "prompt": text_s[:300], "request_id": f"stream_{aid}_{int(time.time())}"})
+            lite = getattr(hub, "lite", None)
+            if lite is not None:
+                lite.mark_needs(aid, True)
 
     async def run_prompt(self, agent: Agent, prompt: str) -> None:
         hub, aid = self.hub, agent.agent_id
@@ -2924,6 +2990,12 @@ class CliRunner:
         return base in ("claude", "claude.exe", "claude.cmd", "claude.bat") or base.startswith("claude")
 
     def project_cwd(self, agent_id: str) -> str:
+        wt = getattr(self.hub, "worktrees", None)
+        if wt is not None:
+            try:
+                return str(wt.ensure(agent_id))
+            except Exception as exc:
+                log.warning("worktree ensure failed for %s: %s", agent_id, exc)
         run_cwd = self.cwds.get(agent_id) or self.cwd
         if run_cwd in (None, "", "."):
             run_cwd = os.getcwd()
@@ -2953,9 +3025,13 @@ class CliRunner:
         if "-p" not in tokens and "--print" not in tokens:
             tokens.insert(1, "-p")
         if "--output-format" not in tokens:
-            # insert before the prompt arg (last) when present
+            # Prefer stream-json for live pose updates; text remains the safe fallback.
+            fmt = "stream-json" if getattr(self, "prefer_stream_json", True) else "text"
             insert_at = len(tokens) - 1 if prompt and tokens and tokens[-1] == prompt else len(tokens)
-            tokens[insert_at:insert_at] = ["--output-format", "text"]
+            tokens[insert_at:insert_at] = ["--output-format", fmt]
+            if fmt == "stream-json" and "--verbose" not in tokens:
+                # Claude Code requires --verbose with stream-json in -p mode on some builds.
+                tokens[insert_at:insert_at] = ["--verbose"]
 
         has_sys = any(t in ("--append-system-prompt", "--system-prompt",
                             "--append-system-prompt-file", "--system-prompt-file") for t in tokens)
@@ -3083,6 +3159,9 @@ class CliRunner:
                     except Exception:
                         pass
                 (log.debug if name == "stdout" else log.info)("CLI %s %s: %s", aid, name, strip_ansi(safe_line)[:200])
+                # Live poses from stream-json / hooks (text mode ignores non-JSON).
+                if name == "stdout" and safe_line.startswith("{"):
+                    self._consume_stream_json_line(aid, agent, safe_line)
 
         try:
             pumps = asyncio.gather(pump(proc.stdout, stdout_buf, "stdout"),
@@ -3429,6 +3508,8 @@ class Harness:
         self.tasks: list[asyncio.Task[Any]] = []
         self.stop_event: asyncio.Event | None = None
         self.mcp_server: Any = None  # office_mcp.OfficeMCP when enabled
+        self.lite: Any = None
+        self.worktrees: Any = None
         self.tempo = TEMPOS[args.tempo]
         if args.mode == "live":
             for agent in self.hub.agents.values():  # seated, screens off, until a real report
@@ -3615,10 +3696,19 @@ class Harness:
                 log.info("legacy office, agents: %s", ", ".join(self.hub.agents))
             if self.args.mcp_port:
                 await self.start_mcp()
+            if getattr(self.args, "lite_port", 0):
+                await self.start_lite()
+            if getattr(self.args, "worktrees", False):
+                self._init_worktrees()
+            # Prefer stream-json when CLI runner exists
+            if self.cli is not None:
+                self.cli.prefer_stream_json = bool(getattr(self.args, "stream_json", True))
             await stop.wait()
             server.close()
             if self.mcp_server is not None:
                 await self.mcp_server.stop()
+            if self.lite is not None:
+                await self.lite.stop()
         # Cleanup
         pending = list(self.tasks)
         for t in pending:
@@ -3643,6 +3733,42 @@ class Harness:
             # Shown once, when the token is first generated.
             print(f"\n  New MCP token saved to {source} (chmod 600):\n\n    {token}\n\n"
                   "  Use it as the connector's header:  Authorization: Bearer <token>\n", flush=True)
+
+    async def start_lite(self) -> None:
+        try:
+            import office_lite
+        except ImportError as exc:
+            log.warning("lite view disabled (%s)", exc)
+            return
+        host = getattr(self.args, "lite_host", "127.0.0.1")
+        port = int(self.args.lite_port)
+        try:
+            self.lite = office_lite.LiteServer(self.hub)
+            self.hub.lite = self.lite
+            await self.lite.start(host, port)
+        except Exception as exc:
+            log.warning("lite view failed to start on %s:%d (%s)", host, port, exc)
+            self.lite = None
+            return
+        log.info("lite ops: http://%s:%d/lite  (Tailscale: serve/funnel this port)", host, port)
+
+    def _init_worktrees(self) -> None:
+        try:
+            import agent_worktrees
+        except ImportError as exc:
+            log.warning("worktrees disabled (%s)", exc)
+            return
+        project = getattr(self.args, "cwd", None) or os.getcwd()
+        self.worktrees = agent_worktrees.WorktreeManager(project)
+        self.hub.worktrees = self.worktrees
+        if self.cli is not None:
+            # Pre-create worktrees for bound agents so first prompt is fast.
+            for aid in list(self.cli.commands):
+                try:
+                    self.worktrees.ensure(aid)
+                except Exception as exc:
+                    log.warning("worktree pre-create %s: %s", aid, exc)
+        log.info("git worktrees under %s", self.worktrees.root)
 
     def request_stop(self) -> None:
         """Stops run() (used by tests and embedders)."""
@@ -3746,6 +3872,16 @@ def build_parser() -> argparse.ArgumentParser:
                         "to this script; 'none' = memory only)")
     p.add_argument("--live-hold", type=float, default=600.0, metavar="SECONDS",
                    help="after a real status report the simulation leaves that agent alone this long (default 600)")
+    p.add_argument("--lite-port", type=int, default=8787,
+                   help="HTTP port for /lite ops view (default 8787; 0 = off)")
+    p.add_argument("--lite-host", default="127.0.0.1",
+                   help="lite bind address (use 0.0.0.0 or Tailscale IP for phone access)")
+    p.add_argument("--stream-json", action=argparse.BooleanOptionalAction, default=True,
+                   help="prefer claude --output-format stream-json for live thinking/tool poses (default on)")
+    p.add_argument("--text-output", dest="stream_json", action="store_const", const=False,
+                   help="force claude --output-format text (disable stream-json)")
+    p.add_argument("--worktrees", action="store_true",
+                   help="give each CLI agent a git worktree under .agent_worktrees/")
     p.add_argument("-v", "--verbose", action="store_true")
     return p
 

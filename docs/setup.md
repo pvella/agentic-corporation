@@ -101,3 +101,17 @@ The Executive bank safe sends `VAULT_UNLOCK` to the harness. On macOS the harnes
 
 On Linux/Windows the harness touches a keyring sentinel instead (desktop keyring prompt). The vault re-locks after 2 minutes idle or when the Safe UI is closed. Metadata HMAC uses a Keychain-held key named `__VAULT_HMAC_KEY__`.
 
+
+## /lite ops view and NEEDS_YOU
+
+The harness serves a phone-friendly ops list at **http://127.0.0.1:8787/lite**
+(override with `--lite-port` / `--lite-host`). Over Tailscale:
+`tailscale serve --bg 8787` or Funnel, then open `http://<magicdns>:8787/lite`.
+
+When an agent awaits input, the 2D client shows a red desk beacon and a top
+banner. Press **N** to cycle waiting agents. Live launches also enable
+`--worktrees` (per-agent git checkouts under `.agent_worktrees/`) and
+`--stream-json` (live thinking/tool poses; text remains the fallback).
+
+Feature ideas (needs-you, worktrees, agents-manage-agents, /lite) inspired by
+AgentSystemLabs/agent-office (MIT) — see `CREDITS.md`.

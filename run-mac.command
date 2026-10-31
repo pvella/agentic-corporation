@@ -49,14 +49,31 @@ if [ -f agent_cmds.json ] && [ "$has_mode" -eq 0 ]; then
   MODE_ARGS=(--mode live)
   echo "Mode: live (agent_cmds.json present; pass --mode to override)"
 fi
-.venv/bin/python agent_harness.py --mcp-port 8766 "${MODE_ARGS[@]}" "${CMDS_FILE_ARGS[@]}" "$@" &
+# Live builds get worktrees + stream-json poses; text remains the fallback if stream-json fails.
+EXTRA_LIVE=()
+# Detect live mode from MODE_ARGS or explicit --mode live in "$@"
+# (zsh-safe: no ${!arr[@]} index expansion — run-mac.command is #!/bin/zsh)
+IS_LIVE=0
+prev=""
+for a in "${MODE_ARGS[@]}" "$@"; do
+  if [ "$a" = "live" ] || [ "$a" = "--mode=live" ]; then IS_LIVE=1; fi
+  if [ "$prev" = "--mode" ] && [ "$a" = "live" ]; then IS_LIVE=1; fi
+  prev="$a"
+done
+if [ "$IS_LIVE" = "1" ]; then
+  EXTRA_LIVE=(--worktrees --stream-json)
+  echo "Harness extras: --worktrees --stream-json"
+fi
+.venv/bin/python agent_harness.py --mcp-port 8766 --lite-port 8787 "${MODE_ARGS[@]}" "${CMDS_FILE_ARGS[@]}" "${EXTRA_LIVE[@]}" "$@" &
 BRIDGE=$!
 sleep 2
 if [ -n "$OFFICE_MCP_TOKEN" ]; then
-  echo "MCP connector: http://127.0.0.1:8766/mcp  (token from \$OFFICE_MCP_TOKEN)"
+  echo "MCP connector: http://127.0.0.1:8766/mcp  (token from $OFFICE_MCP_TOKEN)"
 else
   echo "MCP connector: http://127.0.0.1:8766/mcp  (token in $PWD/.office_token)"
 fi
+echo "Lite ops view: http://127.0.0.1:8787/lite  (Tailscale: serve/funnel this port)"
 echo "Public URL (if Tailscale Funnel is on): see ./tools/funnel-mac.sh status"
+echo "View: 2D office  — press N to cycle NEEDS YOU agents"
 godot --path .
 kill $BRIDGE 2>/dev/null

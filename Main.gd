@@ -123,6 +123,10 @@ var _meeting_active: Dictionary = {}  ## target -> {agents: PackedStringArray, t
 var _agent_prev_state: Dictionary = {}  ## agent_id -> last notable state
 var _server_clickables: Array = []
 var _human_queue: Array = []
+var _needs_banner: PanelContainer
+var _needs_banner_lbl: Label
+var _needs_chime_flash: float = 0.0
+var _needs_chime_player: AudioStreamPlayer
 var _meeting_panel: Control = null
 var _human_dialog: Window = null
 var _view_arg := ""
@@ -302,6 +306,10 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_N:
+		_cycle_needs_you()
+		get_viewport().set_input_as_handled()
+		return
 	if not _kill_mode:
 		return
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT:
@@ -1184,6 +1192,8 @@ func _on_ask_human(msg: Dictionary) -> void:
 		var meet := _meeting_target_for(agent)
 		_route(agent, meet)
 	_set_status("Agent needs you (%d waiting)" % _human_queue.size(), Color("#ffb74d"))
+	_update_needs_banner()
+	_play_needs_chime()
 	_show_next_human_prompt()
 
 
@@ -1739,6 +1749,10 @@ func handle_message(msg: Dictionary) -> void:
 			_on_agent_dm(msg)
 		"ASK_HUMAN":
 			_on_ask_human(msg)
+		"NEEDS_YOU":
+			_on_needs_you_event(msg)
+		"NEEDS_YOU_CLEAR":
+			_on_needs_you_clear(msg)
 		"VAULT_SECRET_REQUEST":
 			_on_vault_secret_request(msg)
 		"VAULT_REMOVE_CONFIRM":
@@ -2906,3 +2920,115 @@ func _on_vault_locked(msg: Dictionary) -> void:
 		_vault_panel = null
 	_set_status("Vault locked", Color("#ffd54f"))
 
+
+func _ensure_needs_banner() -> void:
+	if _needs_banner and is_instance_valid(_needs_banner):
+		return
+	_needs_banner = PanelContainer.new()
+	_needs_banner.visible = false
+	_needs_banner.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_needs_banner.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_needs_banner.offset_left = -240
+	_needs_banner.offset_right = 240
+	_needs_banner.offset_top = 52
+	_needs_banner.offset_bottom = 92
+	var st := StyleBoxFlat.new()
+	st.bg_color = Color("#c62828")
+	st.set_corner_radius_all(8)
+	_needs_banner.add_theme_stylebox_override("panel", st)
+	_needs_banner_lbl = Label.new()
+	_needs_banner_lbl.text = "NEEDS YOU — press N"
+	_needs_banner_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_needs_banner_lbl.add_theme_color_override("font_color", Color.WHITE)
+	_needs_banner.add_child(_needs_banner_lbl)
+	var host: Node = self
+	for c in get_children():
+		if c is CanvasLayer:
+			host = c
+			break
+	host.add_child(_needs_banner)
+
+
+func _update_needs_banner() -> void:
+	_ensure_needs_banner()
+	var n := _human_queue.size()
+	_needs_banner.visible = n > 0
+	if n > 0 and _needs_banner_lbl:
+		_needs_banner_lbl.text = "NEEDS YOU · %d waiting · press N to cycle" % n
+
+
+func _play_needs_chime() -> void:
+	# Short procedural beep — no external audio assets.
+	if _needs_chime_player == null or not is_instance_valid(_needs_chime_player):
+		_needs_chime_player = AudioStreamPlayer.new()
+		add_child(_needs_chime_player)
+	var gen := AudioStreamGenerator.new()
+	gen.mix_rate = 22050.0
+	gen.buffer_length = 0.15
+	_needs_chime_player.stream = gen
+	_needs_chime_player.volume_db = -8.0
+	_needs_chime_player.play()
+	var playback := _needs_chime_player.get_stream_playback() as AudioStreamGeneratorPlayback
+	if playback == null:
+		return
+	var frames := int(22050 * 0.12)
+	var phase := 0.0
+	for i in frames:
+		var t := float(i) / 22050.0
+		var env := 1.0 - (t / 0.12)
+		var sample := sin(phase) * 0.35 * env
+		phase += TAU * 880.0 / 22050.0
+		playback.push_frame(Vector2(sample, sample))
+	_needs_chime_flash = 0.35
+
+
+func _on_needs_you_event(msg: Dictionary) -> void:
+	# Harness-first-class NEEDS_YOU (also raised from ASK_HUMAN).
+	var aid := str(msg.get("agent_id", ""))
+	if aid != "" and agents.has(aid):
+		var agent: Agent = agents[aid]
+		agent.awaiting_input = true
+		if agent.view:
+			agent.view.queue_redraw()
+	# Avoid double-queue when ASK_HUMAN already pushed.
+	var rid := str(msg.get("request_id", ""))
+	for m in _human_queue:
+		if str(m.get("request_id", "")) == rid and rid != "":
+			_update_needs_banner()
+			return
+	_human_queue.append(msg)
+	_update_needs_banner()
+	_play_needs_chime()
+	_set_status("Agent needs you (%d waiting)" % _human_queue.size(), Color("#ff1744"))
+
+
+func _on_needs_you_clear(msg: Dictionary) -> void:
+	var aid := str(msg.get("agent_id", ""))
+	var kept: Array = []
+	for m in _human_queue:
+		if str(m.get("agent_id", "")) != aid:
+			kept.append(m)
+	_human_queue = kept
+	if agents.has(aid):
+		var agent: Agent = agents[aid]
+		agent.awaiting_input = false
+		if agent.view:
+			agent.view.queue_redraw()
+	_update_needs_banner()
+
+
+func _cycle_needs_you() -> void:
+	if _human_queue.is_empty():
+		_set_status("No agents waiting", Color("#90a4ae"))
+		return
+	# Rotate queue and focus camera on next waiting agent
+	var msg: Dictionary = _human_queue.pop_front()
+	_human_queue.append(msg)
+	var aid := str(msg.get("agent_id", ""))
+	if agents.has(aid):
+		var agent: Agent = agents[aid]
+		_on_agent_clicked(agent)
+		if camera and camera.has_method("focus_on"):
+			camera.focus_on(Iso.to_screen(agent.global_position), clampf(camera.zoom.x * 1.15, 0.45, 2.2))
+	_update_needs_banner()
+	_show_next_human_prompt()

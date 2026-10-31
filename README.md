@@ -55,6 +55,13 @@ The office opens in a Habbo-style **isometric view**: a 2:1 dimetric projection,
 
 Only the drawing changes between the views. The layout, the navigation mesh and the agents' paths always live in flat top-down "world" coordinates. `Iso.gd` projects a world point `(x, y)` to the screen as `SCALE * ((x - y) * K, (x + y) * K / 2 - height)` (the top-down view is just `SCALE * (x, y)`). Each agent's physics body walks in a hidden world layer. An `AgentView` node in the y-sorted render layer sits at the projected feet: it draws the character and carries the name pill, the bubble and the click area, so clicks land where the person is drawn. Long furniture and walls are split into short slices so each slice sorts correctly against people.
 
+
+## Ops view and NEEDS_YOU
+
+While the harness runs: open http://127.0.0.1:8787/lite for a phone-friendly
+agent / task list. Press **N** in the 2D office to cycle agents that need you.
+See `CREDITS.md` (AgentSystemLabs/agent-office MIT inspiration) and `docs/setup.md`.
+
 ## Quick start
 
 > **macOS shortcut:** double-click `run-mac.command` to create the venv on first run (Python 3.10+; it picks the newest `python3.x` it finds), start the bridge with the MCP connector on **port 8766** (Godot WebSocket **8765**), print where the token is, and open the Godot client (**Godot 4.3+**; `godot` on your PATH, e.g. `brew install --cask godot`). Copy `agent_cmds.example.json` to `agent_cmds.json` (gitignored) so live agents bind to `claude -p`; run `claude` once and complete `/login` so Keychain auth works. The bridge stops when you close the game. It reinstalls the requirements whenever `requirements.txt` changes. Full checklist: [docs/setup.md](docs/setup.md).

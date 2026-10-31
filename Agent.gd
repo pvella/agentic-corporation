@@ -761,6 +761,10 @@ func _draw_front() -> void:
 		_arm(L, Vector2(-12, sh + 9), Vector2(-8, sh + 14))
 		_arm(R, Vector2(12, sh), Vector2(10, H.y - 8))
 		_c.draw_circle(Vector2(10, H.y - 10), 4.0, _look.skin)
+		# Red desk beacon (NEEDS_YOU) — hard to miss.
+		var pulse := 0.55 + 0.45 * absf(sin(t * 6.0))
+		_c.draw_circle(Vector2(0, H.y - 28), 7.0 * pulse, Color(1.0, 0.15, 0.2, 0.35))
+		_c.draw_circle(Vector2(0, H.y - 28), 3.5, Color(1.0, 0.1, 0.15, 0.95))
 	elif state == "THINKING":
 		_arm(L, Vector2(-12, sh + 9), Vector2(1, sh + 9))
 		_arm(R, Vector2(13, sh + 8), Vector2(6, H.y + 10))

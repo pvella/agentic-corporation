@@ -1,4 +1,14 @@
-# Credits and asset licences
+# Credits
+
+## AgentSystemLabs / agent-office
+
+Ideas for NEEDS_YOU beacons, live status hooks, per-agent git worktrees,
+agents-manage-agents MCP tools, and the `/lite` ops view were inspired by
+[AgentSystemLabs/agent-office](https://github.com/AgentSystemLabs/agent-office)
+(MIT License, Copyright (c) 2026 AgentSystemLabs).
+
+Those features are **reimplemented** in Godot 4.x and Python for Agentic
+Corporation — not copied from the TypeScript/Three.js codebase.
 
 ## Art
 

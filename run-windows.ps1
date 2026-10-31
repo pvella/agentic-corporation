@@ -102,7 +102,21 @@ if (Test-Path -LiteralPath $cmdsFile) {
     Write-Host "CLI bindings: agent_cmds.json"
 }
 
-$harnessArgs = @("agent_harness.py", "--mcp-port", "8766") + $cmdsArgs + $args
+$harnessArgs = @("agent_harness.py", "--mcp-port", "8766", "--lite-port", "8787") + $cmdsArgs
+# Live mode: worktrees + stream-json poses (text fallback remains in harness)
+$isLive = $false
+foreach ($a in $args) {
+  if ($a -eq "live" -or $a -eq "--mode=live") { $isLive = $true }
+}
+for ($i = 0; $i -lt $args.Count; $i++) {
+  if ($args[$i] -eq "--mode" -and ($i + 1) -lt $args.Count -and $args[$i + 1] -eq "live") { $isLive = $true }
+}
+if ($cmdsArgs -contains "live") { $isLive = $true }
+if ($isLive) {
+  $harnessArgs += @("--worktrees", "--stream-json")
+  Write-Host "Harness extras: --worktrees --stream-json"
+}
+$harnessArgs += @($args)
 $bridge = Start-Process -FilePath $venvPython -ArgumentList $harnessArgs -WorkingDirectory $PSScriptRoot -PassThru -WindowStyle Hidden
 Start-Sleep -Seconds 2
 
@@ -110,6 +124,7 @@ if ($env:OFFICE_MCP_TOKEN) {
     Write-Host "MCP connector: http://127.0.0.1:8766/mcp  (token from `$env:OFFICE_MCP_TOKEN)"
 } else {
     Write-Host "MCP connector: http://127.0.0.1:8766/mcp  (token in $PSScriptRoot\.office_token)"
+Write-Host "Lite ops view: http://127.0.0.1:8787/lite"
 }
 
 try {

@@ -1,3 +1,4 @@
 websockets>=13.0
 # MCP connector for live status (office_mcp.py); optional, the office runs without it
 mcp>=2.3,<3
+aiohttp>=3.9
