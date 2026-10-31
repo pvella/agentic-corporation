@@ -26,9 +26,6 @@ extends Node2D
 const Iso := preload("res://Iso.gd")
 const WALL := 12.0
 const EXT_WALL := 14.0
-## Drop door-corner nibble segments shorter than this — they draw as
-## grey wall-posts / pillar dots after ring widening left near-corner gaps.
-const MIN_WALL_SEG := 56.0
 const CORRIDOR := 96.0
 const CELL := Vector2(176, 162)   ## one desk + chair + aisle
 const PAD_X := 26.0
@@ -1178,16 +1175,6 @@ func _hub_perimeter(hub: Rect2, doors: Array[Vector2], door_w: float) -> void:
 	_wall_edge_with_gaps(x1 - WALL, y0, x1 - WALL, y1, WALL, false, east, hw)
 
 
-func _append_wall(r: Rect2) -> void:
-	# Skip door-corner nibble posts: after near-corner spoke gaps, a 12×33
-	# remnant draws as a free-standing grey pillar / dot on the grass.
-	if maxf(r.size.x, r.size.y) < MIN_WALL_SEG:
-		return
-	if r.size.x < 0.05 or r.size.y < 0.05:
-		return
-	walls.append(r)
-
-
 func _wall_edge_with_gaps(ax: float, ay: float, bx: float, by: float, thickness: float, horizontal: bool, gaps: Array, hw: float) -> void:
 	var pts: Array = gaps.duplicate()
 	pts.sort()
@@ -1198,10 +1185,10 @@ func _wall_edge_with_gaps(ax: float, ay: float, bx: float, by: float, thickness:
 		for g in pts:
 			var gx := float(g)
 			if gx - hw > x:
-				_append_wall(Rect2(x, y, gx - hw - x, thickness))
+				walls.append(Rect2(x, y, gx - hw - x, thickness))
 			x = maxf(x, gx + hw)
 		if end_x > x:
-			_append_wall(Rect2(x, y, end_x - x, thickness))
+			walls.append(Rect2(x, y, end_x - x, thickness))
 	else:
 		var x2 := ax
 		var y2 := ay
@@ -1209,10 +1196,10 @@ func _wall_edge_with_gaps(ax: float, ay: float, bx: float, by: float, thickness:
 		for g in pts:
 			var gy := float(g)
 			if gy - hw > y2:
-				_append_wall(Rect2(x2, y2, thickness, gy - hw - y2))
+				walls.append(Rect2(x2, y2, thickness, gy - hw - y2))
 			y2 = maxf(y2, gy + hw)
 		if end_y > y2:
-			_append_wall(Rect2(x2, y2, thickness, end_y - y2))
+			walls.append(Rect2(x2, y2, thickness, end_y - y2))
 
 
 ## Sign rect that contains `world_pos` (for hover), or {}.
@@ -1494,8 +1481,6 @@ static func rounded_rect_points(r: Rect2, radius: float, steps: int = 4) -> Pack
 func iso_walls() -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
 	for w in walls:
-		if maxf(w.size.x, w.size.y) < MIN_WALL_SEG:
-			continue
 		out.append({"rect": w, "h": WALL_H_INNER, "color": Color("#8a909c")})
 	for f: Dictionary in outer_frames:
 		if bool(f.get("hub", false)):
@@ -1513,9 +1498,6 @@ func iso_walls() -> Array[Dictionary]:
 		var door: Rect2 = f.door
 		for sd: Dictionary in sides:
 			for piece: Rect2 in _cut(sd.rect, door):
-				# Same nibble filter: exterior door-cut stubs are tall grey posts.
-				if maxf(piece.size.x, piece.size.y) < MIN_WALL_SEG:
-					continue
 				out.append({"rect": piece, "h": sd.h, "color": c.lightened(0.18), "windows": sd.windows})
 	return out
 

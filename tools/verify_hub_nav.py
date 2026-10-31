@@ -26,8 +26,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WALL = 12.0
-# Door-corner nibble posts (read as grey pillar dots). Must match Office.MIN_WALL_SEG.
-MIN_WALL_SEG = 56.0
 CELL = (176.0, 162.0)
 PAD_X = 26.0
 ROOM_TOP = 68.0
@@ -141,8 +139,7 @@ def wall_edge_with_gaps(ax, ay, bx, by, thickness, horizontal, gaps, hw) -> list
             y2 = max(y2, g + hw)
         if end_y > y2:
             out.append(Rect(x2, y2, thickness, end_y - y2))
-    # Drop door-corner nibble posts (matches Office._append_wall / MIN_WALL_SEG).
-    return [w for w in out if w.w > 0.05 and w.h > 0.05 and max(w.w, w.h) >= MIN_WALL_SEG]
+    return [w for w in out if w.w > 0.05 and w.h > 0.05]
 
 
 def frame_walls(r: Rect, door_pt: tuple[float, float], door_w: float) -> list[Rect]:
@@ -894,40 +891,6 @@ def verify_floor_prop_sort() -> int:
     return 0
 
 
-
-def verify_no_orphan_wall_stubs(walls: list[Rect]) -> int:
-    """Fail on short wall posts/caps not part of a real wall run.
-
-    Near-corner spoke doors leave 12x33 nibble segments on the adjacent /
-    primary edge. In iso those draw as free-standing grey pillars (leftover
-    wall-post dots). Every emitted wall segment must be at least MIN_WALL_SEG
-    along its long axis — i.e. attached to a continuous current wall.
-    """
-    bad = 0
-    for i, w in enumerate(walls):
-        if max(w.w, w.h) < MIN_WALL_SEG:
-            bad += 1
-            print(f"  orphan_wall_stub #{i} size=({w.w:.1f}x{w.h:.1f}) at=({w.x:.1f},{w.y:.1f})")
-    src = (ROOT / "Office.gd").read_text()
-    if "MIN_WALL_SEG" not in src or "_append_wall" not in src:
-        bad += 1
-        print("  Office.gd missing MIN_WALL_SEG / _append_wall nibble filter")
-    iso_body = ""
-    if "func iso_walls" in src:
-        rest = src.split("func iso_walls", 1)[1]
-        idx = rest.find(chr(10) + "func ")
-        iso_body = rest if idx < 0 else rest[:idx]
-    if "MIN_WALL_SEG" not in iso_body:
-        bad += 1
-        print("  Office.iso_walls missing MIN_WALL_SEG filter on door-cut pieces")
-    print(f"orphan_wall_stub_bad={bad}")
-    if bad:
-        print("FAIL: wall decorations/posts not attached to a current wall run")
-        return 1
-    print("OK: no orphan wall-post / nibble stubs (all segments on current walls)")
-    return 0
-
-
 def verify_no_grass_speckles() -> int:
     """Decorative grass draw_circle speckles read as leftover grey dots."""
     office = (ROOT / "Office.gd").read_text()
@@ -1223,9 +1186,6 @@ def main() -> int:
         print("FAIL: wall polygons overlap")
         return 1
     print("OK: no wall polygon overlaps")
-
-    if verify_no_orphan_wall_stubs(walls):
-        return 1
 
     # --- 2) Every door on its corridor / edge ---------------------------------
     door_bad = 0
