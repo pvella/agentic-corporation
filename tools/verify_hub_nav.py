@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Verify hub-and-spoke door alignment and that room-pair paths never cross walls.
+"""Verify hub-and-spoke layout after satellite-ring fit.
 
-Mirrors Office.gd hub geometry. Asserts:
-  1) each satellite door sits on the spoke/wall junction
-  2) every simulated room↔room path has no segment intersecting a wall rect
-Reports the count of verified pairs (non-zero exit on any hit).
+Mirrors Office.gd hub geometry (including `_fit_satellite_ring`). Asserts:
+  1) no room AABB / wall-footprint overlaps (corridor gap preserved)
+  2) each satellite door sits on its spoke and on the room edge
+  3) every simulated room↔room path has no segment intersecting a wall rect
+  4) amenity spots + room signs/labels sit inside their rooms
+  5) headless idle grid reach: hub → canteen seat and hub → rec mat
+Non-zero exit on any failure.
 """
 from __future__ import annotations
 
@@ -21,6 +24,7 @@ PAD_X = 26.0
 ROOM_TOP = 68.0
 ROOM_BOTTOM = 84.0
 ORIGIN = (40.0, 40.0)
+EXT_WALL = 14.0
 
 
 @dataclass
@@ -229,6 +233,133 @@ def seg_intersects_rect(a: tuple[float, float], b: tuple[float, float], r: Rect)
     return (t1 - t0) > 1e-4 and t0 < 1.0 - 1e-6 and t1 > 1e-6
 
 
+def sat_size_for_spec(spec: dict, seats: int) -> tuple[float, float]:
+    if spec["kind"] == "team":
+        sat_size = team_size(spec.get("room") or {})
+        if spec.get("prominent"):
+            sat_size = (sat_size[0] * 1.28, sat_size[1] * 1.18)
+        return sat_size
+    if spec["kind"] == "meeting":
+        per_side = math.ceil(seats / 2.0)
+        return (max(360.0, per_side * 84.0 + 190.0), 400.0)
+    return (380.0, 390.0)
+
+
+def rects_overlap(a: Rect, b: Rect, pad: float = 0.0) -> bool:
+    return not (
+        a.end_x + pad <= b.x - pad
+        or b.end_x + pad <= a.x - pad
+        or a.end_y + pad <= b.y - pad
+        or b.end_y + pad <= a.y - pad
+    )
+
+
+def ring_footprints_clear(hub: Rect, placements: list[Rect], clear: float) -> bool:
+    grown = Rect(hub.x - clear, hub.y - clear, hub.w + 2 * clear, hub.h + 2 * clear)
+    for i, r in enumerate(placements):
+        if rects_overlap(grown, r, 0.0):
+            return False
+        for j in range(i):
+            if rects_overlap(placements[j], r, EXT_WALL):
+                return False
+    return True
+
+
+def fit_satellite_ring(hub, sat_specs, seats, base_rx, base_ry, clear):
+    hub_c = hub.center()
+    metas = [(float(s["theta"]), sat_size_for_spec(s, seats)) for s in sat_specs]
+    lo, hi = 1.0, 1.85
+    for _ in range(8):
+        placements = []
+        for th, sz in metas:
+            sc = (hub_c[0] + math.cos(th) * base_rx * hi, hub_c[1] + math.sin(th) * base_ry * hi)
+            placements.append(Rect(sc[0] - sz[0] * 0.5, sc[1] - sz[1] * 0.5, sz[0], sz[1]))
+        if ring_footprints_clear(hub, placements, clear):
+            break
+        hi *= 1.12
+    for _ in range(28):
+        mid = (lo + hi) * 0.5
+        placements = []
+        for th, sz in metas:
+            sc = (hub_c[0] + math.cos(th) * base_rx * mid, hub_c[1] + math.sin(th) * base_ry * mid)
+            placements.append(Rect(sc[0] - sz[0] * 0.5, sc[1] - sz[1] * 0.5, sz[0], sz[1]))
+        if ring_footprints_clear(hub, placements, clear):
+            hi = mid
+        else:
+            lo = mid
+    return base_rx * hi, base_ry * hi
+
+
+def point_on_segment(p, a, b, tol=6.0) -> bool:
+    ax, ay = a; bx, by = b; px, py = p
+    abx, aby = bx - ax, by - ay
+    apx, apy = px - ax, py - ay
+    ab2 = abx * abx + aby * aby
+    if ab2 < 1e-6:
+        return math.hypot(apx, apy) <= tol
+    t = max(0.0, min(1.0, (apx * abx + apy * aby) / ab2))
+    qx, qy = ax + t * abx, ay + t * aby
+    return math.hypot(px - qx, py - qy) <= tol
+
+
+def wall_rects_overlap_area(walls: list[Rect]) -> list[tuple[int, int, float]]:
+    """Pairs of wall AABBs whose overlap area is more than a corner nibble."""
+    hits = []
+    for i, a in enumerate(walls):
+        for j in range(i + 1, len(walls)):
+            b = walls[j]
+            ox = max(0.0, min(a.end_x, b.end_x) - max(a.x, b.x))
+            oy = max(0.0, min(a.end_y, b.end_y) - max(a.y, b.y))
+            area = ox * oy
+            # Same-room walls meet at corners (~WALL×WALL). Flag larger crossings.
+            if area > WALL * WALL * 2.5:
+                hits.append((i, j, area))
+    return hits
+
+
+def grid_reachable(start, goal, walls: list[Rect], bounds: Rect, cell: float = 24.0) -> bool:
+    """Coarse BFS: idle agent from start reaches goal without entering wall cells."""
+    def blocked(x, y):
+        for w in walls:
+            if w.x - 2 <= x <= w.end_x + 2 and w.y - 2 <= y <= w.end_y + 2:
+                return True
+        return False
+
+    sx = int((start[0] - bounds.x) / cell)
+    sy = int((start[1] - bounds.y) / cell)
+    gx = int((goal[0] - bounds.x) / cell)
+    gy = int((goal[1] - bounds.y) / cell)
+    cols = max(1, int(math.ceil(bounds.w / cell)))
+    rows = max(1, int(math.ceil(bounds.h / cell)))
+    if not (0 <= sx < cols and 0 <= sy < rows and 0 <= gx < cols and 0 <= gy < rows):
+        return False
+    blocked_cells = set()
+    for iy in range(rows):
+        for ix in range(cols):
+            cx = bounds.x + (ix + 0.5) * cell
+            cy = bounds.y + (iy + 0.5) * cell
+            if blocked(cx, cy):
+                blocked_cells.add((ix, iy))
+    if (sx, sy) in blocked_cells:
+        blocked_cells.discard((sx, sy))
+    if (gx, gy) in blocked_cells:
+        blocked_cells.discard((gx, gy))
+    from collections import deque
+    q = deque([(sx, sy)])
+    seen = {(sx, sy)}
+    while q:
+        x, y = q.popleft()
+        if abs(x - gx) + abs(y - gy) <= 1:
+            return True
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < cols and 0 <= ny < rows and (nx, ny) not in seen and (nx, ny) not in blocked_cells:
+                seen.add((nx, ny))
+                q.append((nx, ny))
+    return False
+
+
+
 def build(cfg: dict):
     shared = cfg.get("shared", {})
     seats = max(2, min(8, int(shared.get("meeting_room", {}).get("seats", 6))))
@@ -236,9 +367,10 @@ def build(cfg: dict):
     hub_size = (1320.0, 700.0)
     hub = Rect(ORIGIN[0] + 760.0, ORIGIN[1] + 420.0, hub_size[0], hub_size[1])
     hub_c = hub.center()
-    ring_rx, ring_ry = 1080.0, 600.0
+    base_rx, base_ry = 1080.0, 600.0
     corridor_w = 78.0
     door_w = corridor_w + 10.0
+    clear = corridor_w + EXT_WALL * 2.0
 
     sat_specs = [
         {"kind": "meeting", "theta": -math.pi * 0.5, "id": "meeting"},
@@ -264,10 +396,15 @@ def build(cfg: dict):
     if exec_room is None:
         sat_specs = [s for s in sat_specs if not (s.get("prominent") and s["kind"] == "team" and not s.get("room"))]
 
+    # Mirror Office.gd `_fit_satellite_ring`: grow from compact base until clear.
+    ring_rx, ring_ry = fit_satellite_ring(hub, sat_specs, seats, base_rx, base_ry, clear)
+    print(f"ring_fit=({ring_rx:.1f},{ring_ry:.1f}) base=({base_rx:.1f},{base_ry:.1f}) clear={clear:.1f}")
+
     walls: list[Rect] = []
     rooms = [{"id": "hub", "name": "Hub", "center": hub_c, "rect": hub}]
     hub_doors: list[tuple[float, float]] = []
     spokes = []
+    signs: list[dict] = []
 
     for spec in sat_specs:
         theta = float(spec["theta"])
@@ -306,10 +443,12 @@ def build(cfg: dict):
             "hub_in": inset_inside(hub, hub_exit),
             "sat_in": inset_inside(sat, sat_exit),
         })
+        # Placard at NW corner (Office._sign_rect) — must sit inside the room.
+        signs.append({"name": rname, "room_id": rid, "rect": Rect(sat.x + 10, sat.y + 8, 80, 26)})
         spokes.append({"from": hub_exit, "to": sat_exit, "width": corridor_w, "id": rid})
 
     walls += hub_perimeter(hub, hub_doors, door_w)
-    return rooms, walls, spokes, door_w, corridor_w
+    return rooms, walls, spokes, door_w, corridor_w, signs, (ring_rx, ring_ry)
 
 
 def path_for(a: dict, b: dict, hub_center) -> list[tuple[float, float]]:
@@ -513,11 +652,65 @@ def verify_bank_safe(rooms: list[dict], cfg: dict) -> int:
 
 def main() -> int:
     cfg = json.loads((ROOT / "office.json").read_text())
-    rooms, walls, spokes, door_w, corridor_w = build(cfg)
+    rooms, walls, spokes, door_w, corridor_w, signs, ring = build(cfg)
     hub = next(r for r in rooms if r["id"] == "hub")
     print(f"rooms={len(rooms)} walls={len(walls)} spokes={len(spokes)} door_w={door_w} corridor_w={corridor_w}")
-    print(f"spoke_door_alignments_ok={len(spokes)}")
 
+    # --- 1) No room footprint overlaps (incl. exterior wall thickness) --------
+    overlaps = []
+    for i, a in enumerate(rooms):
+        for b in rooms[i + 1:]:
+            if rects_overlap(a["rect"], b["rect"], EXT_WALL):
+                overlaps.append(f"{a['id']} vs {b['id']}")
+    print(f"room_footprint_overlaps={len(overlaps)}")
+    if overlaps:
+        for line in overlaps:
+            print(f"  OVERLAP {line}")
+        print("FAIL: room walls / footprints overlap")
+        return 1
+    print("OK: no room footprint overlaps")
+
+    wall_hits = wall_rects_overlap_area(walls)
+    # Filter hub-divider vs sat false positives lightly: still report count.
+    print(f"wall_polygon_large_overlaps={len(wall_hits)}")
+    if wall_hits:
+        for i, j, area in wall_hits[:12]:
+            print(f"  walls #{i}/#{j} overlap_area={area:.1f}")
+        print("FAIL: wall polygons overlap")
+        return 1
+    print("OK: no wall polygon overlaps")
+
+    # --- 2) Every door on its corridor / edge ---------------------------------
+    door_bad = 0
+    for sp in spokes:
+        he, se = sp["from"], sp["to"]
+        rid = sp["id"]
+        room = next(r for r in rooms if r["id"] == rid)
+        if not point_on_segment(he, he, se, tol=1.0) or not point_on_segment(se, he, se, tol=1.0):
+            door_bad += 1
+            print(f"  door_off_spoke {rid}")
+            continue
+        # Corridor must have positive length (hub and sat not glued).
+        if math.hypot(se[0] - he[0], se[1] - he[1]) < corridor_w * 0.5:
+            door_bad += 1
+            print(f"  corridor_too_short {rid} len={math.hypot(se[0]-he[0], se[1]-he[1]):.1f}")
+            continue
+        # sat_exit on sat edge
+        edge = nearest_edge(room["rect"], se)
+        if edge in ("n", "s"):
+            ok = abs(se[1] - (room["rect"].y if edge == "n" else room["rect"].end_y)) < 0.6
+        else:
+            ok = abs(se[0] - (room["rect"].x if edge == "w" else room["rect"].end_x)) < 0.6
+        if not ok:
+            door_bad += 1
+            print(f"  sat_door_not_on_edge {rid}")
+    print(f"spoke_door_alignments_ok={len(spokes) - door_bad}/{len(spokes)}")
+    if door_bad:
+        print("FAIL: doors not on corridors / edges")
+        return 1
+    print("OK: every door on its corridor and room edge")
+
+    # --- 3) Room-pair reachability without wall crossings --------------------
     pairs = 0
     hits = 0
     hit_details = []
@@ -553,11 +746,60 @@ def main() -> int:
         return 1
     print("OK: all room-pair paths clear of wall segments")
 
+    # --- 4) Amenity spots + signs/labels inside rooms ------------------------
     amenity_bad = verify_hub_amenities(hub["rect"])
     if amenity_bad:
         print(f"FAIL: {amenity_bad} amenity waypoints outside their zone or in obstacles")
         return 1
     print("OK: amenity waypoints inside Break/Canteen/Rec zones")
+
+    sign_bad = 0
+    for s in signs:
+        rr = next(r for r in rooms if r["id"] == s["room_id"])
+        sr: Rect = s["rect"]
+        inside = (
+            rr["rect"].x <= sr.x
+            and sr.end_x <= rr["rect"].end_x
+            and rr["rect"].y <= sr.y
+            and sr.end_y <= rr["rect"].end_y
+        )
+        if not inside:
+            sign_bad += 1
+            print(f"  sign_out {s['name']} room={s['room_id']}")
+    print(f"signs_in_room_checked={len(signs)} bad={sign_bad}")
+    if sign_bad:
+        print("FAIL: signs/labels outside their rooms")
+        return 1
+    print("OK: signs and labels sit inside their rooms")
+
+    # --- 5) Headless idle reach: hub → canteen + hub → rec -------------------
+    # Amenity positions from the same formulas as verify_hub_amenities.
+    pad = 56.0
+    zone_w = (hub["rect"].w - pad * 4.0) / 3.0
+    zone_h = hub["rect"].h * 0.70
+    zone_y = hub["rect"].y + (hub["rect"].h - zone_h) * 0.5
+    break_r = Rect(hub["rect"].x + pad, zone_y, zone_w, zone_h)
+    canteen_r = Rect(break_r.end_x + pad, zone_y, zone_w, zone_h)
+    rec_r = Rect(canteen_r.end_x + pad, zone_y, zone_w, zone_h)
+    canteen_goal = (canteen_r.center()[0], canteen_r.y + canteen_r.h * 0.55)
+    rec_goal = (rec_r.x + rec_r.w * 0.35, rec_r.y + rec_r.h * 0.45)
+    # Campus bounds from all rooms
+    min_x = min(r["rect"].x for r in rooms) - 40
+    min_y = min(r["rect"].y for r in rooms) - 40
+    max_x = max(r["rect"].end_x for r in rooms) + 40
+    max_y = max(r["rect"].end_y for r in rooms) + 40
+    bounds = Rect(min_x, min_y, max_x - min_x, max_y - min_y)
+    start = hub["center"]
+    # For hub-internal reach, only hub divider walls matter — use all walls but
+    # start/goal are inside hub walk poly.
+    can_ok = grid_reachable(start, canteen_goal, walls, bounds)
+    rec_ok = grid_reachable(start, rec_goal, walls, bounds)
+    print(f"idle_reach_canteen={'OK' if can_ok else 'FAIL'} goal={canteen_goal}")
+    print(f"idle_reach_rec={'OK' if rec_ok else 'FAIL'} goal={rec_goal}")
+    if not (can_ok and rec_ok):
+        print("FAIL: idle agent cannot reach canteen and/or rec room in headless sim")
+        return 1
+    print("OK: headless idle sim reaches canteen and rec room")
 
     if verify_bank_safe(rooms, cfg):
         return 1

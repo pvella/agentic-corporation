@@ -20,7 +20,7 @@ const K := 1.0
 ## Drawn size of one world unit (both views). People get their own, slightly
 ## larger factor (PEOPLE_SCALE) so they read well next to the furniture.
 const SCALE := 1.4
-const PEOPLE_SCALE := 2.4
+const PEOPLE_SCALE := 2.08  ## ~+30% over original 1.6 (was 2.4 / +50%)
 ## The linear part of the projection as a Transform2D (x axis, y axis).
 const AXIS_X := Vector2(K, K * 0.5) * SCALE
 const AXIS_Y := Vector2(-K, K * 0.5) * SCALE

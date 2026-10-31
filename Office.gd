@@ -150,7 +150,9 @@ func build(cfg: Dictionary) -> void:
 	var hub := Rect2(ORIGIN + Vector2(760, 420), hub_size)
 	var hub_c := hub.get_center()
 
-	# Elliptical ring radii (Rx > Ry → ~16:9 campus).
+	# Elliptical ring radii (Rx > Ry → ~16:9 campus). Start compact then
+	# grow just enough so satellite walls never overlap the hub or each other
+	# and a corridor gap remains between hub edge and each sat door.
 	var ring_rx := 1080.0
 	var ring_ry := 600.0
 	var corridor_w := 78.0
@@ -189,6 +191,11 @@ func build(cfg: Dictionary) -> void:
 		for i in range(sat_specs.size() - 1, -1, -1):
 			if bool(sat_specs[i].get("prominent", false)) and sat_specs[i].kind == "team" and (sat_specs[i].room as Dictionary).is_empty():
 				sat_specs.remove_at(i)
+
+	# Grow ring just enough for clear corridors / no wall overlaps.
+	var fitted: Vector2 = _fit_satellite_ring(hub, sat_specs, seats, ring_rx, ring_ry, corridor_w + EXT_WALL * 2.0)
+	ring_rx = fitted.x
+	ring_ry = fitted.y
 
 	# --- Build hub zones (Break | Canteen | Rec), open to each other ----------
 	# Inset so zone rects stay inside the inscribed hex (avoid corner spill).
@@ -908,6 +915,72 @@ func get_obstacle_outlines() -> Array[PackedVector2Array]:
 
 func _outline(r: Rect2) -> PackedVector2Array:
 	return PackedVector2Array([r.position, Vector2(r.end.x, r.position.y), r.end, Vector2(r.position.x, r.end.y)])
+
+
+
+## Satellite footprint for a sat_specs entry (mirrors the placement loop).
+func _sat_size_for_spec(spec: Dictionary, seats: int) -> Vector2:
+	var sat_size := Vector2(360, 360)
+	match str(spec.kind):
+		"team":
+			var room: Dictionary = spec.room
+			sat_size = _team_size(room)
+			if bool(spec.get("prominent", false)):
+				sat_size *= Vector2(1.28, 1.18)
+		"meeting":
+			var per_side := ceili(float(seats) / 2.0)
+			sat_size = Vector2(maxf(360.0, float(per_side) * 84.0 + 190.0), 400)
+		"server":
+			sat_size = Vector2(380, 390)
+	return sat_size
+
+
+## True when every satellite AABB clears the hub and every other sat by `clear`.
+func _ring_footprints_clear(hub: Rect2, placements: Array, clear: float) -> bool:
+	var grown_hub := hub.grow(clear)
+	var rects: Array[Rect2] = []
+	for p: Dictionary in placements:
+		var r: Rect2 = p.rect
+		if grown_hub.intersects(r):
+			return false
+		for other: Rect2 in rects:
+			if r.grow(EXT_WALL).intersects(other.grow(EXT_WALL)):
+				return false
+		rects.append(r)
+	return true
+
+
+## Binary-search the smallest ring (keeping aspect) where satellites clear.
+## Prefer a slightly bigger gap over overlapping walls / misaligned doors.
+func _fit_satellite_ring(hub: Rect2, sat_specs: Array, seats: int, base_rx: float, base_ry: float, clear: float) -> Vector2:
+	var hub_c := hub.get_center()
+	var metas: Array = []
+	for spec: Dictionary in sat_specs:
+		metas.append({"theta": float(spec.theta), "size": _sat_size_for_spec(spec, seats)})
+	var lo := 1.0
+	var hi := 1.85
+	# Ensure hi is large enough.
+	for _try in 8:
+		var placements: Array = []
+		for m: Dictionary in metas:
+			var sc := Vector2(hub_c.x + cos(float(m.theta)) * base_rx * hi, hub_c.y + sin(float(m.theta)) * base_ry * hi)
+			var sz: Vector2 = m.size
+			placements.append({"rect": Rect2(sc - sz * 0.5, sz)})
+		if _ring_footprints_clear(hub, placements, clear):
+			break
+		hi *= 1.12
+	for _i in 28:
+		var mid := (lo + hi) * 0.5
+		var placements2: Array = []
+		for m2: Dictionary in metas:
+			var sc2 := Vector2(hub_c.x + cos(float(m2.theta)) * base_rx * mid, hub_c.y + sin(float(m2.theta)) * base_ry * mid)
+			var sz2: Vector2 = m2.size
+			placements2.append({"rect": Rect2(sc2 - sz2 * 0.5, sz2)})
+		if _ring_footprints_clear(hub, placements2, clear):
+			hi = mid
+		else:
+			lo = mid
+	return Vector2(base_rx * hi, base_ry * hi)
 
 
 ## Flat-top hexagon inscribed in rect (visual hub cue; nav still uses the rect).

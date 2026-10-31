@@ -44,7 +44,7 @@ const STUCK_NEAR_SEC := 3.0    ## give up quickly when already at the spot
 const STUCK_FAR_SEC := 14.0    ## wait longer while still crossing the campus
 const STUCK_FAR_DIST := 64.0   ## "still far" threshold for the patience above
 const OUTLINE := Color(0.15, 0.13, 0.19)
-const HEAD_R := 18.0
+const HEAD_R := 14.0  ## local; screen size via Iso.PEOPLE_SCALE (~+30%)
 ## How far the drawing drops when sitting, per seat type.
 const SIT_DROP := {"desk": 3.0, "chair": 6.0, "sofa": 9.0, "foosball": 0.0, "yoga": 0.0, "meditate": 10.0, "": 0.0}
 
@@ -525,7 +525,7 @@ func _play_anim() -> void:
 
 
 func _head_top() -> float:
-	return -50.0 - HEAD_R + SIT_DROP.get(_seat, 0.0) * _sit
+	return -47.0 - HEAD_R + SIT_DROP.get(_seat, 0.0) * _sit
 
 
 func _position_bubble() -> void:
@@ -552,14 +552,14 @@ func _paint() -> void:
 	_c.draw_set_transform(Vector2.ZERO, 0.0, Vector2(1.0, 0.42))
 	_c.draw_circle(Vector2.ZERO, 16.0, Color(0, 0, 0, 0.22))
 	_c.draw_circle(Vector2.ZERO, 11.0, Color(0, 0, 0, 0.12))
-	_c.draw_arc(Vector2.ZERO, 22.0, 0.0, TAU, 48, Color(state_col, 0.95), 3.0, true)
+	_c.draw_arc(Vector2.ZERO, 21.0, 0.0, TAU, 48, Color(state_col, 0.95), 2.8, true)
 	if _selected:
-		# Clear selection: bright outline + filled floor ring.
-		_c.draw_circle(Vector2.ZERO, 28.0, Color(1, 1, 1, 0.18))
-		_c.draw_arc(Vector2.ZERO, 28.0, 0.0, TAU, 48, Color(1, 1, 1, 0.98), 3.2, true)
-		_c.draw_arc(Vector2.ZERO, 32.0, 0.0, TAU, 48, Color(body_color, 0.85), 2.0, true)
+		# Selection outline + floor ring (scaled with ~+30% people).
+		_c.draw_circle(Vector2.ZERO, 26.0, Color(1, 1, 1, 0.18))
+		_c.draw_arc(Vector2.ZERO, 26.0, 0.0, TAU, 48, Color(1, 1, 1, 0.98), 3.0, true)
+		_c.draw_arc(Vector2.ZERO, 29.0, 0.0, TAU, 48, Color(body_color, 0.85), 2.0, true)
 	elif _hovered:
-		_c.draw_arc(Vector2.ZERO, 26.0, 0.0, TAU, 40, Color(1, 1, 1, 0.55), 2.0, true)
+		_c.draw_arc(Vector2.ZERO, 25.0, 0.0, TAU, 40, Color(1, 1, 1, 0.55), 2.0, true)
 	_c.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 	var drop: float = SIT_DROP.get(_seat, 0.0) * _sit
@@ -634,7 +634,7 @@ func _draw_front() -> void:
 	var seated := _sit > 0.5 and _seat in ["chair", "sofa", "desk", "meditate"]
 	var phone := is_phone_out()
 	var skin: Color = _look.skin
-	var H := Vector2(side * 1.5, -50.0 + bob)
+	var H := Vector2(side * 1.5, -47.0 + bob)
 	if phone:
 		H.y += 1.0  # looking down at the phone
 
@@ -874,7 +874,7 @@ func _draw_back() -> void:
 	var at_desk := _seat in ["desk", "foosball"] and _sit > 0.5
 	var seated := _sit > 0.5 and _seat not in ["foosball", "yoga"]
 	var skin: Color = _look.skin
-	var H := Vector2(0, -50.0 + bob)
+	var H := Vector2(0, -47.0 + bob)
 	var sh := -28.0 + bob
 
 	if not seated:

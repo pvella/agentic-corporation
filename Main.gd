@@ -948,7 +948,7 @@ func _on_knowledge_added(msg: Dictionary) -> void:
 		{"icon": "📄", "color": "#29b6f6", "meta": {"filename": fname}})
 	# Visual: flash a knowledge slate onto the Server Room rack (screen space).
 	var rack_name := str(msg.get("rack", "Server_Rack_1"))
-	var world := Vector2(720, 520)
+	var world := _server_room_anchor()
 	if waypoints.has(rack_name) and waypoints[rack_name] is Node2D:
 		world = (waypoints[rack_name] as Node2D).global_position
 	elif waypoints.has("Server_Room") and waypoints["Server_Room"] is Node2D:
@@ -1107,7 +1107,7 @@ func _add_server_rack_hotspots() -> void:
 
 
 func _play_server_spark() -> void:
-	var world := Vector2(720, 520)
+	var world := _server_room_anchor()
 	if waypoints.has("Server_Rack_1") and waypoints["Server_Rack_1"] is Node2D:
 		world = (waypoints["Server_Rack_1"] as Node2D).global_position
 	elif waypoints.has("Server_Room") and waypoints["Server_Room"] is Node2D:
@@ -2730,6 +2730,19 @@ func _bank_safe_world_rect(exec_rect: Rect2) -> Rect2:
 	var x := exec_rect.position.x + 22.0
 	var y := clampf(desk_y - SAFE_D * 0.5, exec_rect.position.y + 88.0, exec_rect.end.y - SAFE_D - 72.0)
 	return Rect2(x, y, SAFE_W, SAFE_D)
+
+
+
+## Live Server Room world anchor (never a hard-coded pre-ring-fit coordinate).
+func _server_room_anchor() -> Vector2:
+	if waypoints.has("Server_Rack_1") and waypoints["Server_Rack_1"] is Node2D:
+		return (waypoints["Server_Rack_1"] as Node2D).global_position
+	if waypoints.has("Server_Room") and waypoints["Server_Room"] is Node2D:
+		return (waypoints["Server_Room"] as Node2D).global_position
+	for a: Dictionary in office.areas:
+		if str(a.get("kind", "")) == "server" or str(a.get("name", "")).to_lower().find("server") >= 0:
+			return (a.rect as Rect2).get_center()
+	return office.bounds.get_center()
 
 
 func _place_bank_safe() -> void:
