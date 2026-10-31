@@ -2172,8 +2172,16 @@ func _flush_debug_activity() -> void:
 	for e in wrong:
 		print("[AgentOffice] WRONG_ROOM %s" % e)
 	_debug_dump_activity_bounds()
-	var out := OS.get_environment("HOME") + "/Documents/GitHub/_agent_extracts/godot_activity_60s.json"
+	# Prefer user:// so this works on Windows/macOS/Linux without a hardcoded home path.
+	var out := ProjectSettings.globalize_path("user://godot_activity_60s.json")
 	var f := FileAccess.open(out, FileAccess.WRITE)
+	if f == null:
+		var home := OS.get_environment("HOME")
+		if home.is_empty():
+			home = OS.get_environment("USERPROFILE")
+		if not home.is_empty():
+			out = home.path_join("godot_activity_60s.json")
+			f = FileAccess.open(out, FileAccess.WRITE)
 	if f:
 		f.store_string(JSON.stringify({
 			"entries": _debug_activity_log,

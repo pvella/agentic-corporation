@@ -59,6 +59,7 @@ import os
 import random
 import re
 import shlex
+import shutil
 import signal
 import sys
 import time
@@ -115,6 +116,94 @@ DEFAULT_CLAUDE_ALLOWED_TOOLS: tuple[str, ...] = (
     "Bash(gh pr view*)",
     "Bash(gh issue list*)",
 )
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _home_dir(env: dict[str, str] | None = None) -> str:
+    """User home that works on macOS/Linux (HOME) and Windows (USERPROFILE)."""
+    e = env if env is not None else os.environ
+    return (
+        e.get("HOME")
+        or e.get("USERPROFILE")
+        or os.path.expanduser("~")
+    )
+
+
+def _username(env: dict[str, str], home: str) -> str:
+    try:
+        import getpass as _getpass
+        return (
+            env.get("USER")
+            or env.get("USERNAME")
+            or env.get("LOGNAME")
+            or _getpass.getuser()
+        )
+    except Exception:
+        return env.get("USER") or env.get("USERNAME") or env.get("LOGNAME") or Path(home).name
+
+
+def _prepare_cli_env() -> dict[str, str]:
+    """Full user env for Claude Code: auth files, Keychain / Credential Manager, PATH.
+
+    Never stores tokens. Fills HOME/USERPROFILE/USER/USERNAME/PATH so a thin
+    launcher (double-click .command / .bat) still reaches a logged-in Claude.
+    """
+    env = {**os.environ, "FORCE_COLOR": "0", "PYTHONUNBUFFERED": "1"}
+    home = _home_dir(env)
+    env["HOME"] = home
+    if _is_windows():
+        env.setdefault("USERPROFILE", home)
+        # Claude and many CLIs still honour HOME even on Windows once set.
+    user = _username(env, home)
+    env.setdefault("USER", user)
+    env.setdefault("USERNAME", user)
+    env.setdefault("LOGNAME", user)
+    if not _is_windows():
+        env.setdefault("SHELL", env.get("SHELL") or "/bin/zsh")
+    local_bin = str(Path(home) / ".local" / "bin")
+    parts = [p for p in env.get("PATH", "").split(os.pathsep) if p]
+    extras: list[str] = [local_bin]
+    if _is_windows():
+        extras.extend([
+            str(Path(home) / "AppData" / "Local" / "Programs" / "claude"),
+            str(Path(home) / "AppData" / "Roaming" / "npm"),
+            str(Path(home) / "AppData" / "Local" / "Yarn" / "bin"),
+        ])
+    else:
+        extras.extend(["/opt/homebrew/bin", "/usr/local/bin"])
+    for extra in extras:
+        if extra and extra not in parts:
+            parts.insert(0, extra)
+    env["PATH"] = os.pathsep.join(parts)
+    # Do not set CLAUDE_CONFIG_DIR: default auth file is ~/.claude.json under HOME.
+    # Setting CLAUDE_CONFIG_DIR=~/.claude looks for ~/.claude/.claude.json and fails.
+    return env
+
+
+def _resolve_cli_argv(tokens: list[str]) -> list[str]:
+    """Resolve the executable so Windows can run claude.cmd / .bat via cmd.exe."""
+    if not tokens:
+        return tokens
+    cmd = tokens[0]
+    # Absolute path already provided.
+    if os.path.isabs(cmd) and os.path.isfile(cmd):
+        resolved = cmd
+    else:
+        resolved = shutil.which(cmd)
+        if resolved is None and _is_windows():
+            for candidate in (cmd + ".exe", cmd + ".cmd", cmd + ".bat"):
+                resolved = shutil.which(candidate)
+                if resolved:
+                    break
+    if not resolved:
+        return tokens
+    if _is_windows() and resolved.lower().endswith((".cmd", ".bat")):
+        return ["cmd.exe", "/c", resolved, *tokens[1:]]
+    return [resolved, *tokens[1:]]
+
 
 INBOX_CAP = 20          # pending messages per agent
 INBOX_HISTORY = 30      # delivered messages remembered per agent (for replies)
@@ -2086,8 +2175,13 @@ class CliRunner:
     def _is_claude(tokens: list[str]) -> bool:
         if not tokens:
             return False
-        base = os.path.basename(tokens[0]).lower()
-        return base in ("claude", "claude.exe") or base.startswith("claude")
+        # Skip Windows cmd.exe /c wrapper inserted by _resolve_cli_argv.
+        idx = 0
+        if os.path.basename(tokens[0]).lower() in ("cmd.exe", "cmd") and len(tokens) >= 3 and tokens[1].lower() == "/c":
+            idx = 2
+        # Normalise Windows separators so basename works when this runs on POSIX too.
+        base = os.path.basename(tokens[idx].replace("\\", "/")).lower()
+        return base in ("claude", "claude.exe", "claude.cmd", "claude.bat") or base.startswith("claude")
 
     def project_cwd(self, agent_id: str) -> str:
         run_cwd = self.cwds.get(agent_id) or self.cwd
@@ -2179,43 +2273,27 @@ class CliRunner:
         hub.log_line(aid, "\x1b[2m…\x1b[0m", important=True)
         hub.state(aid, "THINKING", target=agent.desk, text="…")
 
-        # Inherit full user env so Claude can reach Keychain / ~/.claude.json.
-        # A thin harness launch (env -i / .command) often omits USER — without it
-        # `claude -p` prints "Not logged in · Please run /login" and exits 1.
-        # Never store tokens; only fill HOME/USER/PATH/CLAUDE_CONFIG_DIR.
-        env = {**os.environ, "FORCE_COLOR": "0", "PYTHONUNBUFFERED": "1"}
-        home = env.get("HOME") or os.path.expanduser("~")
-        env["HOME"] = home
-        try:
-            import getpass as _getpass
-            _user = env.get("USER") or env.get("LOGNAME") or _getpass.getuser()
-        except Exception:
-            _user = env.get("USER") or env.get("LOGNAME") or Path(home).name
-        env.setdefault("USER", _user)
-        env.setdefault("LOGNAME", _user)
-        env.setdefault("SHELL", env.get("SHELL") or "/bin/zsh")
-        local_bin = str(Path(home) / ".local" / "bin")
-        parts = [p for p in env.get("PATH", "").split(os.pathsep) if p]
-        for extra in (local_bin, "/opt/homebrew/bin", "/usr/local/bin"):
-            if extra not in parts:
-                parts.insert(0, extra)
-        env["PATH"] = os.pathsep.join(parts)
-        # Do not set CLAUDE_CONFIG_DIR: default auth file is ~/.claude.json under HOME.
-        # Setting CLAUDE_CONFIG_DIR=~/.claude looks for ~/.claude/.claude.json and fails.
+        # Inherit full user env so Claude can reach Keychain / Credential Manager
+        # / ~/.claude.json. A thin harness launch (.command / .bat) often omits
+        # USER/USERNAME — without it `claude -p` prints "Not logged in" and exits 1.
+        env = _prepare_cli_env()
         env["OFFICE_AGENT"] = agent.name
         env.setdefault("CLAUDE_PROJECT_DIR", project)
         use_stdin = self.prompt_mode == "stdin"
+        argv = _resolve_cli_argv(argv)
+        popen_kwargs: dict[str, Any] = dict(
+            stdin=asyncio.subprocess.PIPE if use_stdin else asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=run_cwd,
+            env=env,
+            limit=1 << 20,
+        )
+        # New process group so terminate() can kill the whole tree on POSIX.
+        # On Windows this creates CREATE_NEW_PROCESS_GROUP (supported since 3.7).
+        popen_kwargs["start_new_session"] = True
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                stdin=asyncio.subprocess.PIPE if use_stdin else asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=run_cwd,
-                env=env,
-                limit=1 << 20,
-                start_new_session=True,
-            )
+            proc = await asyncio.create_subprocess_exec(*argv, **popen_kwargs)
         except (OSError, ValueError) as exc:
             log.error("CLI %s failed to start: %s", aid, exc)
             hub.log_line(aid, f"\x1b[31mFailed to start: {exc}\x1b[0m", stream="stderr", important=True)
@@ -2288,16 +2366,25 @@ class CliRunner:
         if proc.returncode is not None:
             return
         try:
-            os.killpg(proc.pid, signal.SIGTERM)
+            if _is_windows() or not hasattr(os, "killpg"):
+                proc.terminate()
+            else:
+                os.killpg(proc.pid, signal.SIGTERM)
             await asyncio.wait_for(proc.wait(), 3.0)
-        except (ProcessLookupError, PermissionError):
+        except (ProcessLookupError, PermissionError, OSError):
             pass
         except asyncio.TimeoutError:
             try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
+                if _is_windows() or not hasattr(os, "killpg"):
+                    proc.kill()
+                else:
+                    os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
                 pass
-            await proc.wait()
+            try:
+                await proc.wait()
+            except Exception:
+                pass
 
     async def shutdown(self) -> None:
         await asyncio.gather(*(self.terminate(p) for p in list(self.procs)), return_exceptions=True)
