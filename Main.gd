@@ -1406,7 +1406,7 @@ func _handle_raw(raw: String) -> void:
 
 
 func _place_notice_board() -> void:
-	## Fixed top-right HUD panel (below TopBar). No walkmesh / door / hex changes.
+	## Compact draggable HUD panel (defaults bottom-left). No walkmesh / door / hex changes.
 	if _notice_board and is_instance_valid(_notice_board):
 		_notice_board.queue_free()
 		_notice_board = null
