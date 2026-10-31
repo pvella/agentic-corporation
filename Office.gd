@@ -122,8 +122,8 @@ func build(cfg: Dictionary) -> void:
 		else:
 			team_rooms.append(r)
 			if spots.is_empty():
-				spots = ["Coffee_Machine", "Water_Cooler", "Vending_Machine", "Sofa_1", "Sofa_2",
-					"Yoga_Mat_1", "Yoga_Mat_2", "Meditation_Cushion_1", "Meditation_Cushion_2"]
+				# Break Room only; Rec yoga/meditation are separate ambient destinations.
+				spots = ["Coffee_Machine", "Water_Cooler", "Vending_Machine", "Sofa_1", "Sofa_2"]
 		room_break_spots[str(r.id)] = spots
 		for m: Dictionary in r.get("members", []):
 			var aid := str(m.agent_id)

@@ -72,6 +72,55 @@ class IdleOnlyTests(AmbientCase):
         self.assertTrue(all(kinds.values()), f"missing ambient activities: {kinds}")
         self.assertTrue(any(e.get("type") == "AMBIENT" and e.get("action") == "phone" for e in self.events))
 
+    def test_canteen_and_rec_visited_over_idle_cycles(self) -> None:
+        """Over N idle cycles, Canteen and Rec Room must each get real visits."""
+        self.run_for(7200)  # ~2h simulated
+        targets = set().union(*(self.targets_of(a) for a in self.hub.agents))
+        canteen = {t for t in targets if t.startswith("Canteen_")}
+        rec = {t for t in targets if t.startswith("Yoga_") or t.startswith("Meditation_")}
+        self.assertTrue(canteen, f"Canteen never visited over idle cycles; targets={sorted(targets)[:40]}")
+        self.assertTrue(rec, f"Rec Room never visited over idle cycles; targets={sorted(targets)[:40]}")
+        # Counter→seat phase must complete (not bounce desk after counter-only).
+        seats = {t for t in canteen if t.startswith("Canteen_Seat")}
+        self.assertTrue(seats, f"Canteen counter visited but nobody sat to eat; canteen={canteen}")
+
+    def test_amenity_chatter_matches_destination_room(self) -> None:
+        """Amenity activity text in the same event as a target must match that room."""
+        self.run_for(7200)
+        bad: list[str] = []
+        for e in self.events:
+            if e.get("type") != "STATE_CHANGE":
+                continue
+            text = e.get("text") or ""
+            target = e.get("target") or ""
+            if not text or not target:
+                continue
+            if not h.activity_text_matches_target(text, target):
+                bad.append(f"{text!r} @ {target}")
+        self.assertEqual(bad, [], "activity text outside its room:\n" + "\n".join(bad[:20]))
+
+    def test_activity_text_room_map_covers_scripted_lines(self) -> None:
+        """Every scripted amenity one-liner maps to the intended campus room."""
+        cases = [
+            ("I'll have pizza", "canteen"),
+            ("Eating a salad", "canteen"),
+            ("Yoga break.", "rec"),
+            ("Meditating.", "rec"),
+            ("Namaste.", "rec"),
+            ("Coffee time.", "break"),
+            ("Mmm, coffee.", "break"),
+            ("Snack run.", "break"),
+            ("Grabbing some water.", "break"),
+            ("Foosball, Ada?", "break"),
+            ("You're on!", "break"),
+            ("Goal!", "break"),
+        ]
+        for text, expect in cases:
+            got = h.required_room_for_activity_text(text)
+            self.assertEqual(got, expect, f"{text!r} → {got!r}, want {expect!r}")
+        self.assertIsNone(h.required_room_for_activity_text("Anyone seen the CI logs?"))
+        self.assertIsNone(h.required_room_for_activity_text("Back to it."))
+
     def test_idle_never_looks_like_work(self) -> None:
         self.run_for(3600)
         states = {e["state"] for e in self.events if e.get("type") == "STATE_CHANGE"}

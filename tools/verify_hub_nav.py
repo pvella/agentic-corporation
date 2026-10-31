@@ -919,9 +919,10 @@ def verify_no_grass_speckles() -> int:
 
 
 def verify_amenity_pose_room_gate() -> int:
-    """Agent.gd must refuse amenity poses outside the expected room kinds."""
+    """Amenity poses + activity bubbles must be room-correct (near-arrive trusts WP)."""
     agent = (ROOT / "Agent.gd").read_text()
     main = (ROOT / "Main.gd").read_text()
+    harness = (ROOT / "agent_harness.py").read_text()
     bad = 0
     if "SEAT_EXPECTED_KINDS" not in agent:
         bad += 1
@@ -940,6 +941,9 @@ def verify_amenity_pose_room_gate() -> int:
     if "func _seat_room_ok" not in agent:
         bad += 1
         print("  missing _seat_room_ok")
+    if "SEAT_ARRIVE_MAX" not in agent:
+        bad += 1
+        print("  missing SEAT_ARRIVE_MAX near-arrive trust")
     if "area_kind_at" not in agent:
         bad += 1
         print("  missing area_kind_at Callable")
@@ -949,11 +953,24 @@ def verify_amenity_pose_room_gate() -> int:
     if "_seat_room_ok(_pending_seat)" not in agent and "not _seat_room_ok" not in agent:
         bad += 1
         print("  arrive/process does not call _seat_room_ok")
+    # Activity speech deferred until arrival + room match.
+    for needle in ("_show_or_defer_activity_bubble", "_on_agent_arrived", "_activity_text_expected_kind"):
+        if needle not in main:
+            bad += 1
+            print(f"  Main missing {needle}")
+    for needle in ("required_room_for_activity_text", "BREAK_ONLY_SPOTS", "_idle_wander", "CANTEEN_COUNTER"):
+        if needle not in harness:
+            bad += 1
+            print(f"  harness missing {needle}")
+    # Regression: overwriting canteen target with seat before counter phase.
+    if "agent.target = seat  # director will re-emit" in harness:
+        bad += 1
+        print("  canteen still overwrites target with seat (counter phase broken)")
     print(f"amenity_pose_gate_bad={bad}")
     if bad:
         print("FAIL: amenity pose room gating incomplete")
         return bad
-    print("OK: amenity poses gated to Rec/Break/Canteen room kinds")
+    print("OK: amenity poses + activity bubbles gated; canteen/rec wander intact")
     return 0
 
 

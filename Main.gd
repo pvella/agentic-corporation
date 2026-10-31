@@ -1878,11 +1878,12 @@ func _apply_state(agent: Agent, state: String, target: String, text: String) -> 
 	var st := state.to_upper()
 	agent.set_state(state)
 	if not target.is_empty():
+		_clear_pending_activity(agent)
 		_route(agent, target)
 	elif st in ["THINKING", "WORKING", "ERROR"] and agent.is_away_from_desk():
 		agent.glance_phone(4.0)  # an update while away from the desk: check the phone
 	if not text.is_empty():
-		agent.show_bubble(Ansi.strip(text), st == "THINKING")
+		_show_or_defer_activity_bubble(agent, text, st == "THINKING")
 	# Notice board: task outcomes (skip idle chatter / ambient moves).
 	if st == "ERROR":
 		var fail_txt := text if text else "task failed"
@@ -2073,6 +2074,8 @@ func _spawn_agent(data: Dictionary) -> Agent:
 		agent.global_position = entrance.global_position
 	agent.sync_view()
 	agent.clicked.connect(_on_agent_clicked)
+	if not agent.arrived.is_connected(_on_agent_arrived):
+		agent.arrived.connect(_on_agent_arrived)
 	agent.set_ui_scale(_ui_scale_for(camera.zoom.x) / Iso.PEOPLE_SCALE)
 	agents[id] = agent
 	if _desk_props.has(id):
@@ -2340,6 +2343,68 @@ func _start_debug_activity() -> void:
 	await get_tree().create_timer(58.0).timeout
 	_flush_debug_activity()
 
+
+
+func _activity_text_expected_kind(text: String) -> String:
+	## Amenity chatter → required area kind. Empty = not amenity-specific.
+	var low := text.strip_edges().to_lower()
+	if low.is_empty():
+		return ""
+	if low.begins_with("eating") or low.begins_with("i'll have") or low.begins_with("ill have"):
+		return "canteen"
+	if "yoga" in low or "namaste" in low or "tree pose" in low or "downward dog" in low \
+			or "stretch it out" in low:
+		return "rec"
+	if low.begins_with("meditat") or low == "om." or low == "om" or low == "peace." or low == "peace" \
+			or "clearing the mind" in low or "just breathing" in low:
+		return "rec"
+	if "foosball" in low or low.begins_with("goal") or "spin it" in low or "rematch" in low \
+			or "nice save" in low or "best of five" in low or low == "you're on!" or low == "i'm in!":
+		return "break"
+	if "coffee" in low or "snack run" in low or "grabbing some water" in low or "quick breather" in low \
+			or "short break" in low or low.begins_with("ah, that's better") or low.begins_with("just a quick stretch") \
+			or low.begins_with("back in five") or "mmm, coffee" in low:
+		return "break"
+	return ""
+
+
+func _clear_pending_activity(agent: Agent) -> void:
+	if agent.has_meta("pending_activity_text"):
+		agent.remove_meta("pending_activity_text")
+	if agent.has_meta("pending_activity_kind"):
+		agent.remove_meta("pending_activity_kind")
+
+
+func _show_or_defer_activity_bubble(agent: Agent, text: String, is_thought: bool) -> void:
+	## Gate amenity activity speech on real arrival + room; work/thoughts show immediately.
+	var expect := _activity_text_expected_kind(text)
+	if expect == "":
+		_clear_pending_activity(agent)
+		agent.show_bubble(Ansi.strip(text), is_thought)
+		return
+	agent.set_meta("pending_activity_text", text)
+	agent.set_meta("pending_activity_kind", expect)
+	if agent.is_at_destination():
+		var got := _area_kind_at(agent.global_position)
+		var wp_kind := _activity_expected_kind(agent.current_waypoint)
+		if _room_kind_match(expect, got) or (wp_kind != "" and _room_kind_match(expect, wp_kind)):
+			agent.show_bubble(Ansi.strip(text), is_thought)
+			_clear_pending_activity(agent)
+	# else: wait for arrived — do not show coffee/yoga/eat while still walking
+
+
+func _on_agent_arrived(agent: Agent, waypoint: String) -> void:
+	if not agent.has_meta("pending_activity_text"):
+		return
+	var text := str(agent.get_meta("pending_activity_text"))
+	var expect := str(agent.get_meta("pending_activity_kind"))
+	var got := _area_kind_at(agent.global_position)
+	var wp_kind := _activity_expected_kind(waypoint)
+	# Prefer waypoint kind when area rects disagree at edges.
+	var place_ok := _room_kind_match(expect, got) or (wp_kind != "" and _room_kind_match(expect, wp_kind))
+	if expect != "" and place_ok:
+		agent.show_bubble(Ansi.strip(text), false)
+	_clear_pending_activity(agent)
 
 
 func _room_kind_match(expect: String, got: String) -> bool:

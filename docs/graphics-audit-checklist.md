@@ -38,7 +38,9 @@ Branch: `feature/graphics-polish`. Keep hub-spoke campus; minimal fixes, no rede
 |-------|--------|-------|
 | Paths door-to-door (no wall crossings) | ✅ | Room-pair segment clear |
 | No dead ends in grass | ✅ | Path-on-grass checks |
-| Amenity poses only in correct rooms | ✅ | Agent `_seat_room_ok` + `SEAT_EXPECTED_KINDS` |
+| Amenity poses only in correct rooms | ✅ | Near-arrive trusts WP; `_seat_room_ok` + `SEAT_EXPECTED_KINDS` |
+| Activity bubbles only on arrival in-room | ✅ | Main `_show_or_defer_activity_bubble` |
+| Idle visits Canteen + Rec | ✅ | `_idle_wander` + canteen counter→seat; `test_canteen_and_rec_visited_over_idle_cycles` |
 | Yoga/meditate → Rec | ✅ | |
 | Foosball/sofa/coffee → Break | ✅ | |
 | Canteen eat → Canteen | ✅ | Seat meta + zone WPs |

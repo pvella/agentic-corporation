@@ -273,6 +273,14 @@ func go_to_position(world_pos: Vector2) -> void:
 	_stuck_retries = 0
 
 
+## Hide any visible speech/thought bubble immediately.
+func hide_bubble() -> void:
+	if _bubble_tween and _bubble_tween.is_valid():
+		_bubble_tween.kill()
+	bubble.visible = false
+	bubble.modulate.a = 0.0
+
+
 ## Pops a speech (or thought) bubble above the head; auto-hides after 3s.
 func show_bubble(text: String, is_thought: bool = false) -> void:
 	text = text.strip_edges()
@@ -440,7 +448,15 @@ func _on_velocity_computed(safe_velocity: Vector2) -> void:
 
 
 func _seat_room_ok(seat: String) -> bool:
-	if seat == "" or not area_kind_at.is_valid():
+	if seat == "":
+		return true
+	# Caller already cleared amenity seats when gap > SEAT_ARRIVE_MAX. Within
+	# seating range of the amenity marker, trust the waypoint — area_kind_at
+	# can disagree with markers at room edges and was rejecting Canteen/Rec
+	# sits (5c92eaf regression). Far arrivals never reach here with a seat.
+	if global_position.distance_to(_target_pos) <= SEAT_ARRIVE_MAX:
+		return true
+	if not area_kind_at.is_valid():
 		return true
 	var expect: Variant = SEAT_EXPECTED_KINDS.get(seat, [])
 	if expect == null or (expect is Array and expect.is_empty()):

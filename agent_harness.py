@@ -92,9 +92,12 @@ log = logging.getLogger("agent_harness")
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(\x07|\x1b\\)")
 REC_SPOTS = ("Yoga_Mat_1", "Yoga_Mat_2", "Meditation_Cushion_1", "Meditation_Cushion_2")
-SHARED_BREAK_SPOTS = ("Coffee_Machine", "Water_Cooler", "Vending_Machine", "Sofa_1", "Sofa_2") + REC_SPOTS
+# Break Room amenities only — Rec yoga/meditation are routed via _maybe_rec / REC_SPOTS.
+# Mixing them into SHARED_BREAK_SPOTS made "coffee" chatter fire on yoga mats.
+BREAK_ONLY_SPOTS = ("Coffee_Machine", "Water_Cooler", "Vending_Machine", "Sofa_1", "Sofa_2")
+SHARED_BREAK_SPOTS = BREAK_ONLY_SPOTS
 SHARED_CHAT_SPOTS = ("Chat_Break", "Chat_Corridor")  # + Chat_<room id> per team room
-IDLE_SPOTS = SHARED_BREAK_SPOTS  # backwards-compatible name
+IDLE_SPOTS = BREAK_ONLY_SPOTS + REC_SPOTS  # break + rec (legacy name for "any amenity wander")
 MEETING_TARGET = "Meeting_Room"
 FOOSBALL_SPOTS = ("Foosball_1", "Foosball_2", "Foosball_3", "Foosball_4")
 CANTEEN_COUNTER = "Canteen_Counter"
@@ -103,6 +106,58 @@ CANTEEN_SEATS = ("Canteen_Seat_1", "Canteen_Seat_2", "Canteen_Seat_3", "Canteen_
 CANTEEN_FOOD = ("pizza", "a salad", "a burger", "a fruit bowl", "sushi", "noodles",
                 "a sandwich", "fish and chips", "a burrito", "soup and bread")
 SHARED_GROUP = "shared"
+
+# Amenity speech → required campus room kind. Used by tests + optional LLM filter.
+# Foosball lives in the Break Room (table is there); yoga/meditate in Rec; meals in Canteen.
+_ACTIVITY_TEXT_RULES: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"^(i.?ll have |eating )", re.I), "canteen"),
+    (re.compile(r"\b(yoga|namaste|tree pose|downward dog|stretch it out)\b", re.I), "rec"),
+    (re.compile(r"^(meditating\.?|om\.?|peace\.?)$|\b(clearing the mind|just breathing)\b", re.I), "rec"),
+    (re.compile(r"\b(foosball|spin it|rematch|nice save|best of five)\b|^goal!?$|^you.?re on!?$|^i.?m in!?$", re.I), "break"),
+    (re.compile(r"\b(coffee|snack run|grabbing some water|quick breather|short break|mmm,? coffee)\b|"
+                r"^(ah, that.?s better\.?|just a quick stretch\.?|back in five\.?)$", re.I), "break"),
+]
+
+
+def room_kind_for_target(target: str) -> str:
+    """Map a waypoint / meeting target to a campus area kind."""
+    t = target or ""
+    if t.startswith(("Yoga_", "Meditation_")) or t.startswith("Chat_Rec"):
+        return "rec"
+    if t.startswith("Canteen_") or t.startswith("Chat_Canteen"):
+        return "canteen"
+    if (t.startswith("Foosball") or t in ("Coffee_Machine", "Water_Cooler", "Vending_Machine")
+            or t.startswith("Sofa_") or t.startswith("Chat_Break")):
+        return "break"
+    if t.startswith("Meeting_") or t == MEETING_TARGET:
+        return "meeting"
+    if t.startswith("Desk_"):
+        return "room"
+    return ""
+
+
+def required_room_for_activity_text(text: str) -> str | None:
+    """If `text` is amenity activity chatter, return the room kind it belongs in."""
+    s = (text or "").strip()
+    if not s:
+        return None
+    for pat, kind in _ACTIVITY_TEXT_RULES:
+        if pat.search(s):
+            return kind
+    return None
+
+
+def activity_text_matches_target(text: str, target: str) -> bool:
+    """False when amenity chatter names a room that `target` is not in."""
+    need = required_room_for_activity_text(text)
+    if need is None:
+        return True
+    got = room_kind_for_target(target)
+    if not got:
+        # No target yet (bubble while still walking): reject until we know.
+        return False
+    return got == need
+
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
 DEFAULT_INBOX_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".office_inbox.json")
 DEFAULT_CLAUDE_SESSIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".office_claude")
@@ -422,6 +477,11 @@ def format_job_system_prompt(job: dict | None, name: str = "", role: str = "", a
     lines.append(
         "Reply in character, briefly (2–6 sentences unless asked for more). "
         "No tool-use narration, no markdown fences unless needed for code."
+    )
+    lines.append(
+        "You are a sprite in a 2D office campus. Only claim coffee/snacks/foosball in the "
+        "Break Room, meals in the Canteen, yoga/meditation in the Rec Room, and work at "
+        "your own desk. Do not invent being at an amenity when your location is unknown."
     )
     kb = format_knowledge_system_addon()
     if kb:
@@ -876,7 +936,14 @@ class Hub:
         for line in lines[1:]:
             self.log_line(agent.agent_id, pad + line, important=True)
         if bubble:
-            self.state(agent.agent_id, agent.state, text=clean_line(" ".join(lines), 60))
+            bubble_txt = clean_line(" ".join(lines), 60)
+            # Drop amenity claims that don't match where the sprite actually is headed.
+            if not activity_text_matches_target(bubble_txt, agent.target or ""):
+                # Soften: still show reply unless it is pure amenity roleplay.
+                if required_room_for_activity_text(bubble_txt) is not None:
+                    bubble_txt = ""
+            if bubble_txt:
+                self.state(agent.agent_id, agent.state, text=bubble_txt)
         self.touch_live(agent, hold=False)
 
     def touch_live(self, agent: Agent, hold: bool = True) -> None:
@@ -2224,7 +2291,8 @@ class AmbientDirector:
             if agent.activity == "desk":
                 (self._idle_desk if self.idle_only else self._desk)(agent, now)
             elif agent.activity == "break":
-                self._away(agent, now, SOLO_BREAK if self.idle_only else BREAK_CHATTER,
+                chatter = self._break_chatter(agent) if self.idle_only else BREAK_CHATTER
+                self._away(agent, now, chatter,
                            chat_chance=0.12 if self.idle_only else 0.3, state="IDLE")
             elif agent.activity == "meeting":
                 self._away(agent, now, MEETING_CHATTER, chat_chance=0.7, state="COLLAB")
@@ -2272,11 +2340,52 @@ class AmbientDirector:
         self.hub.emit({"type": "AMBIENT", "agent_id": agent.agent_id, "action": "phone",
                        "seconds": round(random.uniform(3.0, 6.0), 1)})
 
+    def _break_chatter(self, agent: Agent) -> list[str]:
+        """Solo break lines matched to the amenity the agent actually went to."""
+        spot = agent.target or ""
+        if "Coffee" in spot:
+            return ["Mmm, coffee.", "Ah, that's better.", "This coffee is compiling..."]
+        if "Water" in spot:
+            return ["Grabbing some water.", "Ah, that's better.", "Back in five."]
+        if "Vending" in spot:
+            return ["Snack run.", "Ah, that's better.", "Back in five."]
+        if "Sofa" in spot:
+            return ["Quick breather.", "Just a quick stretch.", "Back in five."]
+        return list(SOLO_BREAK)
+
+    def _send_one_canteen(self, agent: Agent, now: float) -> None:
+        """One agent: counter → seat → desk (same stash fields as _maybe_canteen)."""
+        food = random.choice(CANTEEN_FOOD)
+        seat = random.choice(CANTEEN_SEATS)
+        eat_for = self.rand((18, 35)) * (1.3 if self.idle_only else 1.0)
+        agent.activity = "canteen"
+        agent.next_event_at = now + 8.0
+        self.hub.state(agent.agent_id, "IDLE", target=CANTEEN_COUNTER,
+                     text=f"I'll have {food}")
+        agent.activity_until = now + 8.0
+        agent._canteen_seat = seat  # type: ignore[attr-defined]
+        agent._canteen_food = food  # type: ignore[attr-defined]
+        agent._canteen_eat_until = now + 8.0 + eat_for  # type: ignore[attr-defined]
+
+    def _idle_wander(self, agent: Agent, now: float) -> None:
+        """Pick break / canteen / rec so all three amenity rooms stay visited."""
+        roll = random.random()
+        shared = agent.group == SHARED_GROUP
+        if shared and roll < 0.22:
+            self._send_one_canteen(agent, now)
+        elif shared and roll < 0.42:
+            self._start_rec_or_break(agent, now, random.choice(REC_SPOTS))
+        else:
+            spots = [s for s in agent.break_spots if s in BREAK_ONLY_SPOTS] or list(BREAK_ONLY_SPOTS)
+            if agent.group != SHARED_GROUP:
+                spots = list(agent.break_spots) or spots
+            self._start_rec_or_break(agent, now, random.choice(spots))
 
     def _start_rec_or_break(self, agent: Agent, now: float, spot: str | None = None) -> None:
         """Walk to a break/rec spot. Rec Room spots get yoga/meditation for 20–40s."""
         if spot is None:
-            spot = random.choice(agent.break_spots)
+            spots = [s for s in agent.break_spots if not s.startswith(("Yoga_", "Meditation_"))]
+            spot = random.choice(spots or list(BREAK_ONLY_SPOTS))
         hub, aid = self.hub, agent.agent_id
         if spot.startswith("Yoga_"):
             agent.activity = "yoga"
@@ -2305,12 +2414,12 @@ class AmbientDirector:
 
     def _idle_desk(self, agent: Agent, now: float) -> None:
         """Idle-only desk time: seated, screen dark, the odd phone glance, then
-        maybe a wander to a break spot."""
+        maybe a wander to break / canteen / rec."""
         t = self.tempo
         if now >= agent.activity_until:
             if random.random() < 0.72 and self.can_walk():
                 self.reserve_walk()
-                self._start_rec_or_break(agent, now)
+                self._idle_wander(agent, now)
                 return
             agent.activity_until = now + self.rand(self.desk_span()) * 0.5
         if now >= agent.next_event_at:
@@ -2354,10 +2463,15 @@ class AmbientDirector:
             roll = random.random()
             if roll < chat_chance:
                 line = random.choice(chatter)
-                hub.state(aid, state, text=line)
-                if state == "COLLAB":
-                    hub.emit({"type": "MEETING_TURN", "agent_id": aid, "text": line,
-                              "target": getattr(agent, "meeting_target", None) or "Meeting_Room"})
+                # Never emit coffee/yoga/eat lines for the wrong amenity target.
+                if not activity_text_matches_target(line, agent.target or ""):
+                    choices = [c for c in chatter if activity_text_matches_target(c, agent.target or "")]
+                    line = random.choice(choices) if choices else ""
+                if line:
+                    hub.state(aid, state, text=line)
+                    if state == "COLLAB":
+                        hub.emit({"type": "MEETING_TURN", "agent_id": aid, "text": line,
+                                  "target": getattr(agent, "meeting_target", None) or "Meeting_Room"})
             elif roll < chat_chance + (0.2 if self.idle_only else 0.3):
                 if self.idle_only:
                     self._phone(agent)
@@ -2424,22 +2538,18 @@ class AmbientDirector:
         n = 1 if not lunch else min(3, len(pool))
         diners = random.sample(pool, min(n, len(pool)))
         seats = [s for s in CANTEEN_SEATS if s]  # client may not have all; harness still emits
+        self.reserve_walk(1.2 if len(diners) > 1 else 1.0)
         for i, agent in enumerate(diners):
             food = random.choice(CANTEEN_FOOD)
             seat = seats[i % len(seats)]
             eat_for = self.rand((25, 50) if lunch else (18, 35)) * (1.3 if self.idle_only else 1.0)
             agent.activity = "canteen"
-            agent.activity_until = now + eat_for + 12.0
             agent.next_event_at = now + 8.0
-            # Walk to counter first with an order bubble, then the client/route sits them.
+            # Counter first — keep agent.target == CANTEEN_COUNTER so the seat
+            # phase in tick() can fire (do NOT overwrite target with the seat).
             self.hub.state(agent.agent_id, "IDLE", target=CANTEEN_COUNTER,
                          text=f"I'll have {food}")
-            # Follow-up sit is handled when activity timer advances in _tick_break-like path;
-            # stash the seat on the agent via text+activity for the next tick.
-            agent.text = f"Eating {food}"
-            agent.target = seat  # director will re-emit when leaving counter phase
-            # Schedule a soft "now eating" by shortening first leg:
-            agent.activity_until = now + 8.0  # at counter
+            agent.activity_until = now + 8.0  # counter linger
             agent._canteen_seat = seat  # type: ignore[attr-defined]
             agent._canteen_food = food  # type: ignore[attr-defined]
             agent._canteen_eat_until = now + 8.0 + eat_for  # type: ignore[attr-defined]
@@ -2457,8 +2567,7 @@ class AmbientDirector:
         if not pool:
             return
         agent = random.choice(pool)
-        spots = [s for s in REC_SPOTS if s in agent.break_spots] or list(REC_SPOTS)
-        spot = random.choice(spots)
+        spot = random.choice(REC_SPOTS)
         self.reserve_walk()
         self._start_rec_or_break(agent, now, spot)
 
