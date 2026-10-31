@@ -1,54 +1,153 @@
-## Cork notice board on the canteen / hub wall. Pins short event cards;
-## click opens a scrollable full list. Does not touch walkmesh or doors.
-extends Node2D
+## Screen-space Notice Board HUD: compact, draggable panel (HUD child).
+## Defaults to bottom-left so it stays clear of the right-side terminal drawer.
+## Position is remembered in user://agent_office.cfg. Click / /notices open the full list.
+extends Control
 
 signal open_requested
 
-const Iso := preload("res://Iso.gd")
 const NoticesScript := preload("res://Notices.gd")
+const SETTINGS_PATH := "user://agent_office.cfg"
+const SETTINGS_SECTION := "notice_board"
+
+const PANEL_W := 260.0
+const PIN_COUNT := 5
+const MARGIN := 12.0
+const BOTTOM_UI := 30.0  ## leave room for BottomBar counts/hint
+const TOP_UI := 48.0  ## leave room for TopBar
+const HEADER_H := 24.0
+const CARD_H := 22.0
+const CARD_GAP := 2.0
+const FOOTER_H := 18.0
+const PAD := 8.0
+const FONT_SIZE := 11
+const TITLE_FONT := 12
 
 var store: RefCounted = null  ## Notices
 var _font: Font
-var _box := Rect2(-70, -118, 140, 110)  ## local placard (billboarded)
-var _area: Area2D
 var _panel: Window = null
 var _list: RichTextLabel = null
+var _dragging := false
+var _drag_grab := Vector2.ZERO
+var _pos_loaded := false
 
 
-func setup(anchor_world: Vector2, notices: RefCounted) -> void:
+func setup(notices: RefCounted) -> void:
 	store = notices
-	position = Iso.to_screen(anchor_world) if Iso.enabled else anchor_world
-	z_index = 28
 	_font = ThemeDB.fallback_font
+	mouse_filter = Control.MOUSE_FILTER_STOP
+	focus_mode = Control.FOCUS_NONE
+	_apply_default_size()
+	if not _pos_loaded:
+		_load_or_default_position()
+		_pos_loaded = true
 	if store and store.has_signal("changed") and not store.changed.is_connected(_on_store_changed):
 		store.changed.connect(_on_store_changed)
-	_ensure_area()
+	if not get_viewport().size_changed.is_connected(_on_viewport_resized):
+		get_viewport().size_changed.connect(_on_viewport_resized)
 	queue_redraw()
+	tooltip_text = "Notice Board — drag title to move · click body for all · /notices"
 
 
-func _ensure_area() -> void:
-	if _area and is_instance_valid(_area):
+func _apply_default_size() -> void:
+	var body_h := float(PIN_COUNT) * (CARD_H + CARD_GAP) - CARD_GAP
+	var total_h := PAD + HEADER_H + 4.0 + body_h + FOOTER_H + PAD
+	custom_minimum_size = Vector2(PANEL_W, total_h)
+	size = Vector2(PANEL_W, total_h)
+	# Free-floating; anchors at top-left so position = absolute screen coords.
+	set_anchors_preset(Control.PRESET_TOP_LEFT)
+	grow_horizontal = Control.GROW_DIRECTION_END
+	grow_vertical = Control.GROW_DIRECTION_END
+
+
+func _default_bottom_left() -> Vector2:
+	var vp := get_viewport().get_visible_rect().size
+	var x := MARGIN
+	var y := vp.y - size.y - BOTTOM_UI - MARGIN
+	return _clamp_pos(Vector2(x, y))
+
+
+func _load_or_default_position() -> void:
+	var cfg := ConfigFile.new()
+	var loaded := false
+	if cfg.load(SETTINGS_PATH) == OK and cfg.has_section_key(SETTINGS_SECTION, "x"):
+		var x := float(cfg.get_value(SETTINGS_SECTION, "x", -1))
+		var y := float(cfg.get_value(SETTINGS_SECTION, "y", -1))
+		if x >= 0.0 and y >= 0.0:
+			position = _clamp_pos(Vector2(x, y))
+			loaded = true
+	if not loaded:
+		# Bottom-left: clear of the right-side terminal drawer (470px) and above BottomBar.
+		position = _default_bottom_left()
+
+
+func _save_position() -> void:
+	var cfg := ConfigFile.new()
+	cfg.load(SETTINGS_PATH)
+	cfg.set_value(SETTINGS_SECTION, "x", position.x)
+	cfg.set_value(SETTINGS_SECTION, "y", position.y)
+	cfg.save(SETTINGS_PATH)
+
+
+func _clamp_pos(p: Vector2) -> Vector2:
+	var vp := get_viewport().get_visible_rect().size
+	var max_x := maxf(MARGIN, vp.x - size.x - MARGIN)
+	var max_y := maxf(TOP_UI, vp.y - size.y - BOTTOM_UI - MARGIN)
+	return Vector2(clampf(p.x, MARGIN, max_x), clampf(p.y, TOP_UI, max_y))
+
+
+func _on_viewport_resized() -> void:
+	position = _clamp_pos(position)
+
+
+func _title_rect() -> Rect2:
+	return Rect2(PAD, PAD, size.x - PAD * 2.0, HEADER_H)
+
+
+func _gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		var local := (event as InputEventMouseButton).position
+		if event.pressed:
+			if _title_rect().has_point(local):
+				_dragging = true
+				_drag_grab = get_global_mouse_position() - global_position
+				modulate = Color(1.08, 1.08, 1.05, 1.0)
+				accept_event()
+				return
+			# Body click → expand
+			open_full_list()
+			accept_event()
+		else:
+			if _dragging:
+				_end_drag()
+				accept_event()
+
+
+func _input(event: InputEvent) -> void:
+	# Keep dragging even when the cursor leaves the panel.
+	if not _dragging:
 		return
-	_area = Area2D.new()
-	_area.collision_layer = 8
-	_area.collision_mask = 0
-	_area.input_pickable = true
-	var shape := CollisionShape2D.new()
-	var rect := RectangleShape2D.new()
-	rect.size = _box.size
-	shape.shape = rect
-	shape.position = _box.get_center()
-	_area.add_child(shape)
-	add_child(_area)
-	_area.input_event.connect(_on_area_input)
-	_area.mouse_entered.connect(func() -> void: modulate = Color(1.08, 1.08, 1.05, 1.0))
-	_area.mouse_exited.connect(func() -> void: modulate = Color.WHITE)
-
-
-func _on_area_input(_viewport: Node, event: InputEvent, _shape_idx: int) -> void:
-	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-		open_full_list()
+	if event is InputEventMouseMotion:
+		position = _clamp_pos(get_global_mouse_position() - _drag_grab)
 		get_viewport().set_input_as_handled()
+	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
+		_end_drag()
+		get_viewport().set_input_as_handled()
+
+
+func _end_drag() -> void:
+	if not _dragging:
+		return
+	_dragging = false
+	modulate = Color.WHITE
+	position = _clamp_pos(position)
+	_save_position()
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_MOUSE_ENTER and not _dragging:
+		modulate = Color(1.05, 1.05, 1.03, 1.0)
+	elif what == NOTIFICATION_MOUSE_EXIT and not _dragging:
+		modulate = Color.WHITE
 
 
 func _on_store_changed() -> void:
@@ -58,57 +157,55 @@ func _on_store_changed() -> void:
 
 
 func _draw() -> void:
-	# Cork board frame
-	var shadow := _box.grow(3)
-	draw_rect(shadow, Color(0, 0, 0, 0.25))
-	draw_rect(_box, Color("#6d4c41"))
-	draw_rect(_box.grow(-3), Color("#a1887f"))
-	# Header strip
-	var header := Rect2(_box.position.x + 4, _box.position.y + 4, _box.size.x - 8, 16)
-	draw_rect(header, Color("#5d4037"))
+	var box := Rect2(Vector2.ZERO, size)
+	draw_rect(Rect2(box.position + Vector2(2, 3), box.size), Color(0, 0, 0, 0.28))
+	draw_rect(box, Color("#5d4037"))
+	draw_rect(box.grow(-2), Color("#a1887f"))
+	draw_rect(box.grow(-4), Color("#bcaaa4"))
+	var header := _title_rect()
+	draw_rect(header, Color("#4e342e"))
+	# Drag affordance dots on the title bar
 	if _font:
-		draw_string(_font, header.position + Vector2(6, 12), "NOTICE BOARD", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color("#fff8e1"))
-	# Pins
-	var pins: Array = store.latest(NoticesScript.BOARD_PIN_COUNT) if store else []
+		draw_string(_font, header.position + Vector2(8, 16), "NOTICE BOARD", HORIZONTAL_ALIGNMENT_LEFT, -1, TITLE_FONT, Color("#fff8e1"))
+		draw_string(_font, Vector2(header.end.x - 36, header.position.y + 15), "⋮⋮", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color("#d7ccc8"))
+	var pins: Array = store.latest(PIN_COUNT) if store else []
 	var y := header.end.y + 4.0
-	var card_h := 12.0
-	var gap := 1.5
 	for i in pins.size():
 		var e: Dictionary = pins[i]
-		var card := Rect2(_box.position.x + 5, y, _box.size.x - 10, card_h)
+		var card := Rect2(PAD, y, size.x - PAD * 2.0, CARD_H)
 		var col := Color(str(e.get("color", "#b0bec5")))
 		var pending := bool(e.get("pending", false))
 		var bg := Color("#efebe9") if not pending else Color("#fff3e0")
 		draw_rect(card, bg)
 		draw_rect(Rect2(card.position.x, card.position.y, 3, card.size.y), col)
-		# pin dot
-		draw_circle(Vector2(card.position.x + 8, card.position.y + 3), 1.6, col)
+		draw_circle(Vector2(card.position.x + 9, card.position.y + 6), 1.8, col)
 		var tstr: String = ""
 		if store and store.has_method("format_time"):
 			tstr = str(store.format_time(float(e.get("ts", 0))))
 		var icon := str(e.get("icon", "•"))
-		var title := str(e.get("title", "")).left(22)
+		var title := str(e.get("title", ""))
+		if title.length() > 22:
+			title = title.left(21) + "…"
 		var line := "%s %s %s" % [tstr, icon, title]
 		if _font:
 			var ink := Color("#3e2723") if not pending else Color("#e65100")
-			draw_string(_font, card.position + Vector2(12, 10), line, HORIZONTAL_ALIGNMENT_LEFT, -1, 8, ink)
-		y += card_h + gap
+			draw_string(_font, card.position + Vector2(15, 15), line, HORIZONTAL_ALIGNMENT_LEFT, -1, FONT_SIZE, ink)
+		y += CARD_H + CARD_GAP
 	if pins.is_empty() and _font:
-		draw_string(_font, Vector2(_box.position.x + 10, y + 14), "(no notices yet)", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color("#5d4037"))
-	# Footer hint
+		draw_string(_font, Vector2(PAD + 6, y + 14), "(no notices yet)", HORIZONTAL_ALIGNMENT_LEFT, -1, FONT_SIZE, Color("#5d4037"))
 	if _font:
-		draw_string(_font, Vector2(_box.position.x + 8, _box.end.y - 6), "click for all · /notices", HORIZONTAL_ALIGNMENT_LEFT, -1, 7, Color("#4e342e"))
+		draw_string(_font, Vector2(PAD + 2, size.y - 8), "drag title · click · /notices", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color("#4e342e"))
 
 
 func open_full_list() -> void:
 	open_requested.emit()
 	if _panel and is_instance_valid(_panel):
 		_refresh_panel()
-		_panel.popup_centered()
+		_popup_away_from_terminal()
 		return
 	var win := Window.new()
 	win.title = "Notice Board — important events"
-	win.size = Vector2i(520, 480)
+	win.size = Vector2i(480, 420)
 	win.unresizable = false
 	var margin := MarginContainer.new()
 	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -124,13 +221,13 @@ func open_full_list() -> void:
 	vbox.add_child(hint)
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.custom_minimum_size = Vector2(480, 360)
+	scroll.custom_minimum_size = Vector2(440, 300)
 	var rtl := RichTextLabel.new()
 	rtl.bbcode_enabled = true
 	rtl.fit_content = true
 	rtl.scroll_active = false
 	rtl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	rtl.custom_minimum_size = Vector2(460, 20)
+	rtl.custom_minimum_size = Vector2(420, 20)
 	scroll.add_child(rtl)
 	vbox.add_child(scroll)
 	var close_btn := Button.new()
@@ -144,7 +241,20 @@ func open_full_list() -> void:
 	_list = rtl
 	win.close_requested.connect(func() -> void: win.hide())
 	_refresh_panel()
-	win.popup_centered()
+	_popup_away_from_terminal()
+
+
+## Prefer left / centre-left so the right-side terminal drawer stays readable.
+func _popup_away_from_terminal() -> void:
+	if _panel == null or not is_instance_valid(_panel):
+		return
+	var vp := get_viewport().get_visible_rect().size
+	var win_size := Vector2(_panel.size)
+	# Sit on the left half, vertically centred — clear of the 470px right drawer.
+	var x := clampf(MARGIN * 2.0, MARGIN, maxf(MARGIN, vp.x * 0.5 - win_size.x * 0.5))
+	var y := clampf((vp.y - win_size.y) * 0.5, TOP_UI, maxf(TOP_UI, vp.y - win_size.y - MARGIN))
+	_panel.position = Vector2i(int(x), int(y))
+	_panel.popup()
 
 
 func _refresh_panel() -> void:
