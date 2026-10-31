@@ -36,7 +36,20 @@ if [ -f agent_cmds.json ]; then
   CMDS_FILE_ARGS=(--agent-cmds-file agent_cmds.json)
   echo "CLI bindings: agent_cmds.json"
 fi
-.venv/bin/python agent_harness.py --mcp-port 8766 "${CMDS_FILE_ARGS[@]}" "$@" &
+# agent_cmds.json means real Claude agents — default to live unless --mode was passed.
+MODE_ARGS=()
+has_mode=0
+for a in "$@"; do
+  if [ "$a" = "--mode" ] || [[ "$a" == --mode=* ]]; then
+    has_mode=1
+    break
+  fi
+done
+if [ -f agent_cmds.json ] && [ "$has_mode" -eq 0 ]; then
+  MODE_ARGS=(--mode live)
+  echo "Mode: live (agent_cmds.json present; pass --mode to override)"
+fi
+.venv/bin/python agent_harness.py --mcp-port 8766 "${MODE_ARGS[@]}" "${CMDS_FILE_ARGS[@]}" "$@" &
 BRIDGE=$!
 sleep 2
 if [ -n "$OFFICE_MCP_TOKEN" ]; then

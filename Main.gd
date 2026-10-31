@@ -83,6 +83,15 @@ var _reconnect_in: float = 0.0
 var _backoff: float = 1.0
 var _server_info: Dictionary = {}
 var _offline_reason: String = ""
+## Banner Claude / harness connectivity (green / amber / red).
+var _claude_state: String = "checking"  # ok | checking | down
+var _claude_reason: String = "Checking Claude…"
+var _harness_up: bool = false
+var _claude_dot: Panel = null
+var _claude_btn: Button = null
+var _claude_tip: String = ""
+var _harness_restart_pending: bool = false
+var _connectivity_user_action: bool = false
 var _occupancy: Dictionary = {}  # waypoint name -> Array[String] (agent ids, "" = free slot)
 var _selected: Agent = null
 var _desk_props: Dictionary = {}  # agent_id -> Prop
@@ -167,6 +176,7 @@ func _ready() -> void:
 	_setup_files_dropped()
 	drawer.prompt_submitted.connect(_on_prompt_submitted)
 	drawer.closed.connect(_on_drawer_closed)
+	_setup_connectivity_chip()
 	drawer.agent_requested.connect(func(id: String) -> void:
 		if agents.has(id):
 			_on_agent_clicked(agents[id]))
@@ -1350,6 +1360,10 @@ func _schedule_reconnect(reason: String) -> void:
 	_reconnect_in = _backoff
 	_backoff = minf(_backoff * 2.0, reconnect_max)
 	_offline_reason = reason
+	_harness_up = false
+	_claude_state = "down"
+	_claude_reason = "Harness disconnected: %s" % reason
+	_refresh_connectivity_chip()
 	print("[AgentOffice] disconnected: %s; retrying in %.0fs" % [reason, _reconnect_in])
 	_set_status("Offline: %s. Retrying in %ds" % [reason, ceili(_reconnect_in)], Color("#e53935"))
 
@@ -1367,6 +1381,8 @@ func _poll_socket(delta: float) -> void:
 		_socket_state = st
 		if st == WebSocketPeer.STATE_OPEN:
 			_backoff = reconnect_min
+			_harness_up = true
+			_refresh_connectivity_chip()
 			_set_status("Connected to %s" % server_url, Color("#43a047"))
 			print("[AgentOffice] connected to ", server_url)
 	match st:
@@ -1391,6 +1407,168 @@ func _set_status(text: String, colour: Color) -> void:
 	sb.bg_color = colour
 	sb.set_corner_radius_all(6)
 	status_dot.add_theme_stylebox_override("panel", sb)
+
+
+func _setup_connectivity_chip() -> void:
+	## Clickable Claude / harness indicator in the top banner (after StatusLabel).
+	var hbox := $HUD/TopBar/Margin/HBox as HBoxContainer
+	if hbox == null or _claude_btn != null:
+		return
+	var sep := VSeparator.new()
+	hbox.add_child(sep)
+	hbox.move_child(sep, status_label.get_index() + 1)
+	_claude_btn = Button.new()
+	_claude_btn.name = "ConnectivityChip"
+	_claude_btn.flat = true
+	_claude_btn.focus_mode = Control.FOCUS_NONE
+	_claude_btn.custom_minimum_size = Vector2(92, 22)
+	_claude_btn.add_theme_font_size_override("font_size", 11)
+	_claude_btn.tooltip_text = "Claude / harness connectivity — click to reconnect"
+	_claude_btn.pressed.connect(_on_connectivity_clicked)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_claude_dot = Panel.new()
+	_claude_dot.custom_minimum_size = Vector2(10, 10)
+	_claude_dot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(_claude_dot)
+	var lbl := Label.new()
+	lbl.name = "ChipLabel"
+	lbl.text = "Claude"
+	lbl.add_theme_font_size_override("font_size", 11)
+	lbl.add_theme_color_override("font_color", Color(0.85, 0.88, 0.92))
+	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(lbl)
+	_claude_btn.add_child(row)
+	# Center the row inside the button.
+	row.set_anchors_and_offsets_preset(Control.PRESET_CENTER_LEFT)
+	row.position = Vector2(6, 4)
+	hbox.add_child(_claude_btn)
+	hbox.move_child(_claude_btn, sep.get_index() + 1)
+	_refresh_connectivity_chip()
+
+
+func _connectivity_colour() -> Color:
+	if not _harness_up or _claude_state == "down":
+		return Color("#e53935")
+	if _claude_state == "checking":
+		return Color("#fdd835")
+	return Color("#43a047")
+
+
+func _refresh_connectivity_chip() -> void:
+	var colour := _connectivity_colour()
+	if _claude_dot:
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = colour
+		sb.set_corner_radius_all(5)
+		_claude_dot.add_theme_stylebox_override("panel", sb)
+	var harness_bit := "harness up" if _harness_up else "harness down"
+	var claude_bit := _claude_reason if _claude_reason else _claude_state
+	_claude_tip = "%s · %s" % [harness_bit, claude_bit]
+	if _claude_btn:
+		_claude_btn.tooltip_text = _claude_tip + "\nClick to reconnect / re-check (opens Terminal for claude /login if needed)"
+		var lbl := _claude_btn.find_child("ChipLabel", true, false) as Label
+		if lbl:
+			if not _harness_up:
+				lbl.text = "Offline"
+			elif _claude_state == "ok":
+				lbl.text = "Claude"
+			elif _claude_state == "checking":
+				lbl.text = "Checking…"
+			else:
+				lbl.text = "No Claude"
+
+
+func _apply_connectivity(msg: Dictionary) -> void:
+	_harness_up = bool(msg.get("harness", true))
+	_claude_state = str(msg.get("claude", "checking"))
+	_claude_reason = str(msg.get("reason", ""))
+	_refresh_connectivity_chip()
+
+
+func _on_connectivity_clicked() -> void:
+	_claude_state = "checking"
+	_claude_reason = "Reactivating…"
+	_refresh_connectivity_chip()
+	_set_status("Reactivating Claude / harness…", Color("#fdd835"))
+	# 1) If websocket is down, reconnect (and maybe restart harness).
+	if _socket == null or _socket.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		_harness_up = false
+		_refresh_connectivity_chip()
+		_backoff = reconnect_min
+		_reconnect_in = 0.0
+		_connect_socket()
+		_maybe_restart_harness()
+		# Recheck after a short delay once/if we reconnect.
+		get_tree().create_timer(2.5).timeout.connect(func() -> void:
+			if _socket and _socket.get_ready_state() == WebSocketPeer.STATE_OPEN:
+				send_json({"action": "REACTIVATE_CLAUDE"})
+		)
+		return
+	# 2) Ask harness to re-run the health check; open Terminal if still not logged in.
+	_connectivity_user_action = true
+	send_json({"action": "REACTIVATE_CLAUDE"})
+
+
+func looks_like_need_login(reason: String) -> bool:
+	var low := reason.to_lower()
+	return ("not logged in" in low) or ("/login" in low) or ("login required" in low)
+
+
+func _open_claude_login_terminal() -> void:
+	## macOS: open Terminal and run `claude /login`, then recheck.
+	if OS.get_name() != "macOS":
+		_set_status("Run `claude /login` in a terminal, then click the indicator again", Color("#ffb74d"))
+		return
+	var script := 'tell application "Terminal" to do script "claude /login"'
+	var err := OS.create_process("/usr/bin/osascript", PackedStringArray(["-e", script]))
+	if err == -1:
+		# Fallback per brief: open -a Terminal (user runs login themselves).
+		OS.create_process("/usr/bin/open", PackedStringArray(["-a", "Terminal"]))
+		_set_status("Opened Terminal — run: claude /login", Color("#ffb74d"))
+	else:
+		_set_status("Opened Terminal for claude /login — click indicator when done", Color("#ffb74d"))
+	get_tree().create_timer(8.0).timeout.connect(func() -> void:
+		send_json({"action": "CHECK_CONNECTIVITY"})
+	)
+
+
+func _project_dir() -> String:
+	return ProjectSettings.globalize_path("res://").rstrip("/")
+
+
+func _maybe_restart_harness() -> void:
+	## If the harness process is dead, start it alone (do not relaunch Godot).
+	if _harness_restart_pending:
+		return
+	_harness_restart_pending = true
+	get_tree().create_timer(1.2).timeout.connect(func() -> void:
+		_harness_restart_pending = false
+		if _socket and _socket.get_ready_state() == WebSocketPeer.STATE_OPEN:
+			return
+		var dir := _project_dir()
+		var cmds := dir.path_join("agent_cmds.json")
+		var mode_bit := " --mode live" if FileAccess.file_exists(cmds) else ""
+		var cmds_bit := " --agent-cmds-file agent_cmds.json" if FileAccess.file_exists(cmds) else ""
+		var py := dir.path_join(".venv/bin/python")
+		if not FileAccess.file_exists(py):
+			py = "python3"
+		var harness := dir.path_join("agent_harness.py")
+		var shell := "cd %s && (%s %s --mcp-port 8766%s%s >> harness.out 2>&1 &)" % [
+			_shell_quote(dir), _shell_quote(py), _shell_quote(harness), mode_bit, cmds_bit]
+		if OS.get_name() == "macOS" or OS.get_name() == "Linux":
+			OS.create_process("/bin/zsh", PackedStringArray(["-lc", shell]))
+			_set_status("Restarted harness — reconnecting…", Color("#fdd835"))
+			_backoff = reconnect_min
+			_reconnect_in = 1.5
+		else:
+			_set_status("Harness down — restart run-windows.bat / the launcher", Color("#e53935"))
+	)
+
+
+func _shell_quote(s: String) -> String:
+	return "'" + s.replace("'", "'\''") + "'"
 
 
 # ---------------------------------------------------------------------------
@@ -1536,6 +1714,22 @@ func handle_message(msg: Dictionary) -> void:
 			_on_add_agent_pressed()
 		"PONG":
 			pass
+		"CONNECTIVITY":
+			var prev := _claude_state
+			_apply_connectivity(msg)
+			if _claude_state == "down" and prev != "down":
+				if drawer and drawer.has_method("append_system"):
+					drawer.append_system("Claude not connected — click the indicator", "#e06c75")
+			if _connectivity_user_action:
+				_connectivity_user_action = false
+				if _claude_state == "down" and looks_like_need_login(_claude_reason):
+					_open_claude_login_terminal()
+				elif _claude_state == "ok":
+					_set_status("Claude connected", Color("#43a047"))
+		"OFFICE_NOTICE":
+			_notice(str(msg.get("kind", "info")), str(msg.get("title", "Notice")),
+				str(msg.get("detail", "")),
+				{"icon": str(msg.get("icon", "•")), "color": str(msg.get("color", "#7f848e"))})
 		var other:
 			push_warning("Unknown message type '%s'" % other)
 
@@ -1572,6 +1766,12 @@ func _apply_snapshot(msg: Dictionary) -> void:
 		if not seen.has(id):
 			_remove_agent(id)
 	drawer.refresh()
+	_harness_up = true
+	var conn: Variant = _server_info.get("connectivity", null)
+	if typeof(conn) == TYPE_DICTIONARY:
+		_apply_connectivity(conn)
+	else:
+		_refresh_connectivity_chip()
 	_set_status("Connected · %s · %s mode, %s tempo" % [office.layout_name, _server_info.get("mode", "?"), _server_info.get("tempo", "?")], Color("#43a047"))
 	_update_counts()
 	if _open_drawer_for != "" and agents.has(_open_drawer_for):
