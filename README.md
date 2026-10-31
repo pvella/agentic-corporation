@@ -286,6 +286,7 @@ curl -s https://<mac>.<tailnet>.ts.net/mcp \
 | **V**, or the view button in the top bar | Switch between the 3D (isometric) view and the top-down view. The choice is remembered. |
 | Type in the prompt bar, then **Enter** or **Send** | Send a `DISPATCH_PROMPT` to the selected agent. If you're offline, the drawer says the prompt wasn't sent. |
 | **Esc** or **X** | Close the drawer. |
+| Click the **Notice Board** (top-right HUD), or type `/notices` in a terminal | Open the full list of important events (hires, fires, knowledge, meetings, ask-human, tasks). |
 
 ![Team summary for the Dev Team room](docs/images/agent-office-team-summary.png)
 
@@ -316,6 +317,7 @@ There is no packaged build or store listing yet. Agentic Corporation is a **loca
 | `Iso.gd` | The isometric projection (world to screen and back, plus plane transforms for drawing on tops and side faces) and the current view mode. |
 | `AgentView.gd` | The render node for one agent in the y-sorted layer, at the agent's projected feet. It draws the character and holds the name pill, the bubble and the click area. |
 | `SignTag.gd` | The iso-view room signs on posts, building names and the "Separate entrance" note. Clickable signs carry their own click area. |
+| `NoticeBoard.gd` / `Notices.gd` | Fixed top-right HUD notice board (latest 7 pins) plus the persistent event store (`.office_notices.json`). Click or `/notices` opens the full list. |
 | `CameraController.gd` | Pan / zoom / fit camera with world bounds. |
 | `Agent.tscn` / `Agent.gd` | One agent: a `CharacterBody2D` that strolls with `NavigationAgent2D` (gentle acceleration, settles exactly into its seat, avoids other agents). Draws the chibi character procedurally (front and back views, poses, blinking, phone), a name pill, a speech or thought bubble (fades after 3 s), its own log (up to 1000 lines), and an `AnimatedSprite2D` hook for sprite sheets. |
 | `TerminalDrawer.tscn` / `TerminalDrawer.gd` | The slide-out drawer on a `CanvasLayer`: an agent's terminal (header, `RichTextLabel` log, prompt bar) or a room's team summary. It updates live while open. |

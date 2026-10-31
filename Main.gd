@@ -102,7 +102,7 @@ var _fire_preview_variant := ""
 var _knowledge_racks: Array = []
 var _knowledge_library: Node = null
 var _notices_store = null  ## Notices
-var _notice_board: Node2D = null
+var _notice_board: Control = null
 var _meeting_active: Dictionary = {}  ## target -> {agents: PackedStringArray, text: String}
 var _agent_prev_state: Dictionary = {}  ## agent_id -> last notable state
 var _server_clickables: Array = []
@@ -1406,39 +1406,22 @@ func _handle_raw(raw: String) -> void:
 
 
 func _place_notice_board() -> void:
-	## Cork board on the canteen north wall (left of the menu). No walkmesh / door / hex changes.
+	## Fixed top-right HUD panel (below TopBar). No walkmesh / door / hex changes.
 	if _notice_board and is_instance_valid(_notice_board):
 		_notice_board.queue_free()
 		_notice_board = null
 	if _notices_store == null:
 		_notices_store = NoticesScript.new()
 		_notices_store.load_from_disk()
-	var canteen: Dictionary = {}
-	for a in office.areas:
-		if str(a.get("kind", "")) == "canteen":
-			canteen = a
-			break
-	if canteen.is_empty():
-		for a in office.areas:
-			if str(a.get("kind", "")) == "hub":
-				canteen = a
-				break
-	if canteen.is_empty():
+	var hud := $HUD as CanvasLayer
+	if hud == null:
 		return
-	var r: Rect2 = canteen.rect
-	# North wall, just right of the canteen menu board (menu sits at x≈p+m+12).
-	var anchor := Vector2(r.position.x + 110.0, r.position.y + 16.0)
-	var board: Node2D = NoticeBoardScript.new()
-	signs_root.add_child(board)
-	board.setup(anchor, _notices_store)
+	var board: Control = NoticeBoardScript.new()
+	hud.add_child(board)
+	board.setup(_notices_store)
 	if board.has_signal("open_requested"):
 		board.open_requested.connect(func() -> void: pass)
 	_notice_board = board
-	# Scale with other hub placards when the camera zooms.
-	if _notice_board not in _sign_tags:
-		_sign_tags.append(_notice_board)
-	var z := camera.zoom.x if camera else 1.0
-	_notice_board.scale = Vector2.ONE * _ui_scale_for(z)
 
 
 func _notice(kind: String, title: String, detail: String = "", opts: Dictionary = {}) -> void:
