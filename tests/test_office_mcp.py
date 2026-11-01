@@ -29,6 +29,10 @@ from websockets.asyncio.client import connect  # noqa: E402
 
 TOKEN = "test-token-0123456789abcdef"
 
+# ProactorEventLoop + websockets teardown can hang on Windows (IOCP).
+if os.name == "nt":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 
 ROSTER_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "office_roster.json")
 
@@ -64,8 +68,21 @@ class HarnessCase(unittest.IsolatedAsyncioTestCase):
         self._id = 0
 
     async def asyncTearDown(self) -> None:
+        # Close lingering WS clients before stopping so Windows IOCP can unwind.
+        for ws in list(getattr(self.harness.hub, "clients", ())):
+            try:
+                await ws.close()
+            except Exception:
+                pass
         self.harness.request_stop()
-        await asyncio.wait_for(self.task, 10)
+        try:
+            await asyncio.wait_for(self.task, 10)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            self.task.cancel()
+            try:
+                await self.task
+            except (asyncio.CancelledError, Exception):
+                pass
         os.environ.pop(office_mcp.TOKEN_ENV, None)
         self.tmp.cleanup()
 
@@ -291,7 +308,8 @@ class InboxTests(HarnessCase):
             item = saved["pending"]["android_dev"][0]
             self.assertEqual((item["id"], item["text"]), (mid, "Can you bump the targetSdk to 35?"))
             self.assertAlmostEqual(item["created"], time.time(), delta=10)
-            self.assertEqual(stat.S_IMODE(os.stat(self.inbox_path).st_mode), 0o600)
+            if os.name != "nt":
+                self.assertEqual(stat.S_IMODE(os.stat(self.inbox_path).st_mode), 0o600)
 
             # A re-snapshot carries the unread count (badge after reconnect).
             await ws.send(json.dumps({"action": "REQUEST_SNAPSHOT"}))
@@ -428,7 +446,8 @@ class TokenFileTests(unittest.TestCase):
                 self.assertTrue(created)
                 self.assertEqual(source, path)
                 self.assertGreaterEqual(len(token), 40)
-                self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+                if os.name != "nt":
+                    self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
                 again, _, created2 = office_mcp.load_token(path)
                 self.assertEqual(again, token)
                 self.assertFalse(created2)

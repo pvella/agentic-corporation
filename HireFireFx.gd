@@ -223,6 +223,13 @@ func _stars(at: Vector2, n: int, col: Color = Color("#fff176")) -> void:
 # ---------------------------------------------------------------------------
 func _process(delta: float) -> void:
 	_t += delta
+	if _done:
+		return
+	# If Main freed the agent mid-FX (e.g. SNAPSHOT), finish cleanly instead of
+	# posing a dangling node every frame.
+	if kind == "fire" and not _valid():
+		_finish()
+		return
 	if kind == "hire":
 		_process_hire()
 	elif kind == "fire":
@@ -233,19 +240,22 @@ func _process(delta: float) -> void:
 			"trapdoor": _process_trapdoor()
 			"ufo": _process_ufo()
 			"escort": _process_escort(delta)
+	if _done:
+		return
 	for p in _parts:
 		p.p += p.v * delta
 		p.v *= 0.92
 		p.life -= delta
 	_parts.assign(_parts.filter(func(p: Dictionary) -> bool: return p.life > 0.0))
-	if _cam:
+	if _cam and is_instance_valid(_cam):
 		if _shake > 0.0:
 			_cam.offset = Vector2(randf_range(-1, 1), randf_range(-1, 1)) * _shake
 			_shake = maxf(0.0, _shake - delta * 50.0)
 		else:
 			_cam.offset = Vector2.ZERO
 	queue_redraw()
-	_floor.queue_redraw()
+	if _floor != null and is_instance_valid(_floor):
+		_floor.queue_redraw()
 
 
 func _process_hire() -> void:

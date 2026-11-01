@@ -8,7 +8,7 @@ First-run checklist for Agentic Corporation (Agent Office). Keep this repo free 
 2. `claude`, then `/login` with **your** claude.ai account.
 3. Optional: connect **Microsoft 365** or **Google Calendar** at claude.ai → Settings → Connectors so the EA and Chief of Staff can read your calendar.
 4. Optional: put your name in `office.json` as `"owner": {"name": "Jane"}` (otherwise `git config user.name` is used).
-5. `cp agent_cmds.example.json agent_cmds.json` to run the agents live with Claude Code.
+5. `cp agent_cmds.example.json agent_cmds.json` to run the agents live with Claude Code (required before live; `run-mac.command --mode live` also auto-copies the example when missing, and the harness Setup check warns if 0 agents are Claude-bound).
 6. Double-click `run-mac.command` and read the **Setup check** it prints.
 7. In the office, ask the Chief of Staff something ("What's the weather today?"), and tell it where you are; it saves that to the office memory.
 
