@@ -1,4 +1,4 @@
-"""Office Vault — secret metadata + Keychain (macOS) / file (Linux) values.
+"""Office Vault — secret metadata + Keychain (macOS) / Credential Manager (Windows) / keyring or file (Linux) values.
 
 Values NEVER go in vault.json, logs, UI, git or prompts. Metadata only:
   name, description, agents (list or "all"), created_at, last_used_at.
@@ -145,29 +145,142 @@ class FileStore(SecretStore):
             pass
 
 
-def default_store() -> SecretStore:
-    if platform.system() == "Darwin":
-        return KeychainStore()
-    # Prefer keyring if installed
+KEYRING_SERVICE = SERVICE_PREFIX.rstrip(".")
+# Windows Credential Manager caps a credential blob at 2560 bytes and keyring
+# stores UTF-16, so 600 chars fits even if every char is a surrogate pair.
+KEYRING_CHUNK_CHARS = 600
+_CHUNK_MARKER = "agentic-corp-chunked/v1/"
+
+
+class KeyringStore(SecretStore):
+    """Python `keyring` backend (Windows Credential Manager, Secret Service, ...).
+
+    Values longer than KEYRING_CHUNK_CHARS are split across `<name>.partN`
+    entries; the main entry then holds `agentic-corp-chunked/v1/<n>/<sha256>`
+    so a read can reassemble and verify them. Short values are stored as-is,
+    and values written before chunking existed still read back unchanged.
+    """
+
+    def __init__(self, backend: Any = None) -> None:
+        if backend is None:
+            import keyring as backend  # type: ignore
+        self.kr = backend
+
+    @staticmethod
+    def _part(name: str, i: int) -> str:
+        return f"{name}.part{i}"
+
+    @staticmethod
+    def _parse_header(raw: str | None) -> tuple[int, str] | None:
+        if not raw or not raw.startswith(_CHUNK_MARKER):
+            return None
+        try:
+            count, digest = raw[len(_CHUNK_MARKER):].split("/", 1)
+            n = int(count)
+        except ValueError:
+            return None
+        if n < 1 or len(digest) != 64:
+            return None
+        return n, digest
+
+    def _delete_parts(self, name: str) -> None:
+        hdr = self._parse_header(self.kr.get_password(KEYRING_SERVICE, name))
+        if hdr is None:
+            return
+        for i in range(hdr[0]):
+            try:
+                self.kr.delete_password(KEYRING_SERVICE, self._part(name, i))
+            except Exception:
+                pass
+
+    def set(self, name: str, value: str) -> None:
+        self._delete_parts(name)
+        if len(value) <= KEYRING_CHUNK_CHARS and not value.startswith(_CHUNK_MARKER):
+            self.kr.set_password(KEYRING_SERVICE, name, value)
+            return
+        chunks = [value[i:i + KEYRING_CHUNK_CHARS] for i in range(0, len(value), KEYRING_CHUNK_CHARS)]
+        for i, chunk in enumerate(chunks):
+            self.kr.set_password(KEYRING_SERVICE, self._part(name, i), chunk)
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+        # Header last: a crash mid-write leaves the old value or orphan parts, never a bad header.
+        self.kr.set_password(KEYRING_SERVICE, name, f"{_CHUNK_MARKER}{len(chunks)}/{digest}")
+
+    def get(self, name: str) -> str | None:
+        raw = self.kr.get_password(KEYRING_SERVICE, name)
+        hdr = self._parse_header(raw)
+        if hdr is None:
+            return raw
+        n, digest = hdr
+        parts: list[str] = []
+        for i in range(n):
+            part = self.kr.get_password(KEYRING_SERVICE, self._part(name, i))
+            if part is None:
+                log.warning("vault: chunk %d/%d missing for %s", i + 1, n, name)
+                return None
+            parts.append(part)
+        value = "".join(parts)
+        if hashlib.sha256(value.encode("utf-8")).hexdigest() != digest:
+            log.warning("vault: chunk checksum mismatch for %s", name)
+            return None
+        return value
+
+    def delete(self, name: str) -> None:
+        try:
+            self._delete_parts(name)
+        except Exception:
+            pass
+        try:
+            self.kr.delete_password(KEYRING_SERVICE, name)
+        except Exception:
+            pass
+
+
+class UnavailableStore(SecretStore):
+    """Used on Windows when `keyring` is missing: refuse rather than write plaintext."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+    def set(self, name: str, value: str) -> None:
+        raise RuntimeError(self.reason)
+
+    def get(self, name: str) -> str | None:
+        return None
+
+    def delete(self, name: str) -> None:
+        pass
+
+
+def _usable_keyring() -> Any | None:
+    """Return the keyring module when it has a real backend, else None."""
     try:
         import keyring  # type: ignore
-
-        class KeyringStore(SecretStore):
-            def set(self, name: str, value: str) -> None:
-                keyring.set_password(SERVICE_PREFIX.rstrip("."), name, value)
-
-            def get(self, name: str) -> str | None:
-                return keyring.get_password(SERVICE_PREFIX.rstrip("."), name)
-
-            def delete(self, name: str) -> None:
-                try:
-                    keyring.delete_password(SERVICE_PREFIX.rstrip("."), name)
-                except Exception:
-                    pass
-
-        return KeyringStore()
     except Exception:
-        return FileStore()
+        return None
+    try:
+        backend = keyring.get_keyring()
+    except Exception:
+        return None
+    # keyring.backends.fail.Keyring means "no backend found"; using it raises on every call.
+    if type(backend).__module__.endswith(".fail") or getattr(backend, "priority", 1) <= 0:
+        return None
+    return keyring
+
+
+def default_store() -> SecretStore:
+    system = platform.system()
+    if system == "Darwin":
+        return KeychainStore()
+    kr = _usable_keyring()
+    if kr is not None:
+        return KeyringStore(kr)
+    if system == "Windows":
+        # FileStore relies on chmod 0600, which Windows ignores: values would be plaintext.
+        reason = ("vault needs Windows Credential Manager: run `pip install keyring` "
+                  "(run-windows.bat installs it from requirements.txt)")
+        log.warning("vault: %s", reason)
+        return UnavailableStore(reason)
+    return FileStore()
 
 
 class OfficeVault:

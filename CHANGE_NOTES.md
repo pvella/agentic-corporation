@@ -49,3 +49,10 @@ In `--mode live` without `--agent-cmd` / `agent_cmds.json`, typing a task in a s
 - `export_presets.cfg` Windows Desktop preset → `build/AgentOffice.windows.x86_64.exe`
 - Docs: [docs/windows-setup.md](docs/windows-setup.md); README quick start / components / limitations
 - Vault secret storage on Windows (Credential Manager via `keyring`) is out of scope here — lands with the vault PR
+
+## Windows vault (`feature/windows-vault`)
+
+- `keyring` added to `requirements.txt` for Windows; values go to Credential Manager. Without it the vault refuses to store values (`UnavailableStore`) instead of falling back to plaintext files, since `chmod 0600` does nothing on Windows
+- `KeyringStore` splits values over 600 chars across `<NAME>.partN` entries with a SHA-256 checked header (Credential Manager's 2560-byte blob limit); existing short/unchunked values read unchanged
+- Unlock: `tools/vault_unlock_windows.ps1`: Windows Hello via `IUserConsentVerifierInterop` (prompt owned by the Godot window), falling back to a CredUI password prompt checked with `LogonUser` against the current user's SID. Previously Windows "unlock" always succeeded with no check
+- `tools/vault_auth.py --password` exercises the fallback; tests in `tests/test_windows_vault.py`

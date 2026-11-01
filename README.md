@@ -546,7 +546,7 @@ godot --headless --path . --script res://tests/smoke_test.gd    # layouts, spawn
 - Without `--stream-json`, CLI output is plain lines, so tool calls don't drive the animation beyond WORKING and the latest line in the bubble. `run-mac.command` turns it on for live mode.
 - The HR interview table has 2–8 seats (`shared.meeting_room.seats`) and isolated wings have 4. Extra collaborators share a seat, slightly offset.
 - The harness keeps the last 200 log lines per agent and nothing is saved to disk. Restarting the harness clears its history.
-- Testing has been on Linux (headless, plus Xvfb with software OpenGL) and macOS. Windows launchers and harness process teardown are implemented but need verification on a real Windows machine (Claude `.cmd` resolution, Credential Manager once the vault lands, and the exported `.exe` + harness pair).
+- Testing has been on Linux (headless, plus Xvfb with software OpenGL) and macOS. Windows launchers and harness process teardown are implemented but need verification on a real Windows machine (Claude `.cmd` resolution, the Credential Manager vault store and Windows Hello / password unlock, and the exported `.exe` + harness pair).
 - The WebSocket has no authentication (see Security). The MCP connector does.
 - Real bots only report what they choose to report; between reports the character holds its last state (in mock mode, until `--live-hold` runs out).
 
@@ -558,9 +558,9 @@ MIT — see [LICENSE](LICENSE).
 
 Encrypted secrets for agents, managed from a **bank safe in the Executive room**.
 
-- **Values** live in the OS keychain (macOS Keychain / Linux keyring / 0600 files). They are never written to git, logs, the UI, or prompts.
+- **Values** live in the OS keychain (macOS Keychain / Windows Credential Manager / Linux keyring or 0600 files). They are never written to git, logs, the UI, or prompts.
 - **Metadata** (name, description, ACL, timestamps) is in gitignored `.office_vault.json`, optionally HMAC-signed with a Keychain-held key. Tampering is flagged on the notice board.
-- **Unlock**: click the Executive safe → harness runs macOS LocalAuthentication (Touch ID or login password via `tools/vault_unlock`). Linux/Windows fall back to a keyring prompt. Session lasts **2 minutes** of idle time or until you close/lock. (The old Server Room safe has been removed.)
+- **Unlock**: click the Executive safe → harness runs macOS LocalAuthentication (Touch ID or login password via `tools/vault_unlock`). Windows uses Windows Hello, or the Windows account password when Hello isn't set up (`tools/vault_unlock_windows.ps1`). Linux falls back to a keyring prompt. Session lasts **2 minutes** of idle time or until you close/lock. (The old Server Room safe has been removed.)
 - **While locked**: `/vault` lists **names only**; grant/remove/add need an unlock.
 - **Safe UI**: table of names, descriptions, allowed-agents checkboxes, created/last-used. Values are never shown or copyable. Add uses a masked field; remove asks for confirm.
 - **Audit**: unlock, failed unlock, grant, revoke, add, remove post to the notice board (names only). Chief of Staff MCP grant/revoke are audited the same way.

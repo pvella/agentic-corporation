@@ -87,9 +87,19 @@ The exported game still needs the Python harness running on the same machine (`r
 
 Cross-compiling the Windows binary from Linux/macOS works the same way once the Windows export templates for that Godot version are installed under the editor’s export-templates folder.
 
-## Secrets / vault (when present)
+## Secrets / vault
 
-A shared vault feature (separate PR) stores secret *values* outside the repo. On Windows that uses the **Windows Credential Manager** through Python’s `keyring` package. Until that lands, do not put API keys in `agent_cmds.json` or the repo; keep Claude logged in via its own config (`~/.claude.json` / `%USERPROFILE%\.claude.json`).
+The Office Vault keeps secret *values* in **Windows Credential Manager** (Control Panel → Credential Manager → Windows Credentials, entries for `agentic-corp`) through Python's `keyring` package. `keyring` is in `requirements.txt` for Windows, so `run-windows.bat` installs it. If it is missing, the vault refuses to store values instead of writing them to plain files. Values longer than 600 characters (service-account JSON, PEM keys) are split across several `<NAME>.partN` entries because Credential Manager limits each entry to 2560 bytes.
+
+**Unlock**: clicking the Executive safe runs `tools/vault_unlock_windows.ps1`:
+
+- **Windows Hello** (PIN, fingerprint or face) when it is set up, with the prompt attached to the Godot window
+- otherwise the **Windows account password** in the standard Windows credential dialog. The password is checked with `LogonUser` and must belong to the account running the office. Each wrong password counts toward the account lockout policy, and you get three tries per unlock.
+- cancelling Hello does not fall back to the password; the vault stays locked
+
+To test without the game, run `python tools\vault_auth.py` (Hello) or `python tools\vault_auth.py --password` (password fallback). Exit code 0 means unlocked.
+
+Keep API keys out of `agent_cmds.json` and the repo; keep Claude logged in via its own config (`~/.claude.json` / `%USERPROFILE%\.claude.json`).
 
 ## Tailscale Funnel
 
