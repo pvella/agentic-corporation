@@ -1,0 +1,27 @@
+# Normalise line endings: LF in the repo and in every checkout (Windows,
+# macOS, Linux, WSL), whatever core.autocrlf is set to. Godot, Python and
+# Git for Windows all read LF fine; shell scripts break with CRLF.
+* text=auto eol=lf
+
+# Windows-native scripts need CRLF (cmd.exe mis-parses labels/goto with LF).
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binaries: never touch.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.ogg binary
+*.wav binary
+*.mp3 binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.exe binary
+*.pck binary
+*.tpz binary
+*.zip binary
