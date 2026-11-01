@@ -31,10 +31,28 @@ fi
 if [ ! -f .venv/.requirements.stamp ] || [ requirements.txt -nt .venv/.requirements.stamp ]; then
   .venv/bin/pip install -q -r requirements.txt && touch .venv/.requirements.stamp
 fi
+# Detect explicit --mode live so we can auto-copy agent_cmds when missing.
+IS_LIVE_ARG=0
+prev=""
+for a in "$@"; do
+  if [ "$a" = "live" ] || [ "$a" = "--mode=live" ]; then IS_LIVE_ARG=1; fi
+  if [ "$prev" = "--mode" ] && [ "$a" = "live" ]; then IS_LIVE_ARG=1; fi
+  prev="$a"
+done
+if [ "$IS_LIVE_ARG" = "1" ] && [ ! -f agent_cmds.json ]; then
+  if [ -f agent_cmds.example.json ]; then
+    cp agent_cmds.example.json agent_cmds.json
+    echo "Copied agent_cmds.example.json -> agent_cmds.json (required for live Claude bindings)"
+  else
+    echo "WARNING: Live mode but agent_cmds.json is missing and agent_cmds.example.json was not found." >&2
+  fi
+fi
 CMDS_FILE_ARGS=()
 if [ -f agent_cmds.json ]; then
   CMDS_FILE_ARGS=(--agent-cmds-file agent_cmds.json)
   echo "CLI bindings: agent_cmds.json"
+elif [ "$IS_LIVE_ARG" = "1" ]; then
+  echo "WARNING: Live mode with 0 Claude bindings: create agent_cmds.json (copy from agent_cmds.example.json)." >&2
 fi
 # agent_cmds.json means real Claude agents — default to live unless --mode was passed.
 MODE_ARGS=()

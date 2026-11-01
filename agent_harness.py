@@ -203,7 +203,16 @@ CALENDAR_TOOLS: tuple[str, ...] = (
 # Agents that get read-only calendar tools (whichever connector is connected).
 CALENDAR_AGENTS: frozenset[str] = frozenset({"ea", "chief_of_staff"})
 # Office MCP tools every bridge-run agent may call (server key "office").
-OFFICE_MCP_TOOLS: tuple[str, ...] = ("mcp__office__message_colleague",)
+# Keep this tight: no hire/fire/vault-admin, no bypassPermissions. Server-side
+# still enforces CoS-only for list_agents / hire / vault_* grant-revoke.
+OFFICE_MCP_TOOLS: tuple[str, ...] = (
+    "mcp__office__report_office_status",
+    "mcp__office__check_office_inbox",
+    "mcp__office__reply_office_message",
+    "mcp__office__message_colleague",
+    "mcp__office__list_agents",
+    "mcp__office__request_secret",
+)
 COLLEAGUE_WINDOW_S = 600.0
 COLLEAGUE_MAX_PER_PAIR = 8
 
@@ -211,6 +220,10 @@ COLLEAGUE_MAX_PER_PAIR = 8
 TOOLS_PROMPT = (
     "\n\n[Tools right now] You may use Read/Grep/Glob, read-only git/gh commands, "
     "WebSearch and WebFetch (e.g. weather, news, docs), and Edit on the office memory file. "
+    "Office MCP (already allowed — do not ask for approval): report_office_status, "
+    "check_office_inbox, reply_office_message, message_colleague, list_agents (CoS), "
+    "and request_secret. Call check_office_inbox and list_agents when asked for live "
+    "office / roster / inbox status. "
     "To hand work to a colleague, call message_colleague (agent = your own agent id, to = theirs); "
     "their answer arrives later as a new message, so tell the owner you've asked and stop. "
     "Tool permissions can change between turns: if an earlier turn said a tool was blocked, "
@@ -352,6 +365,16 @@ def _resolve_cli_argv(tokens: list[str]) -> list[str]:
     if _is_windows() and resolved.lower().endswith((".cmd", ".bat")):
         return ["cmd.exe", "/c", resolved, *tokens[1:]]
     return [resolved, *tokens[1:]]
+
+
+
+def _split_cli_cmd(cmd: str) -> list[str]:
+    """Split a CLI template for argv.
+
+    On Windows use posix=False so drive paths like C:\\Users\\... keep their
+    backslashes (posix shlex treats \\ as escapes and mangles them).
+    """
+    return shlex.split(cmd, posix=not _is_windows())
 
 
 INBOX_CAP = 20          # pending messages per agent
@@ -882,8 +905,17 @@ class Hub:
 
     # -- outbound ----------------------------------------------------------
     def emit(self, event: dict[str, Any]) -> None:
-        """Apply an event to the registry, then broadcast it to all clients."""
+        """Apply an event to the registry, then broadcast it to all clients.
+
+        After FIRE/archive an agent leaves self.agents; in-flight CLI/mock/meeting
+        code may still call state()/log_line(). Drop those updates so Godot does
+        not _get_or_spawn a fired agent back onto the floor (unkillable sprite).
+        """
         etype = event.get("type")
+        if etype in ("STATE_CHANGE", "LOG_ENTRY", "AMBIENT"):
+            aid = event.get("agent_id")
+            if not aid or aid not in self.agents:
+                return
         if etype == "STATE_CHANGE":
             agent = self.agents.get(event["agent_id"])
             if agent:
@@ -896,7 +928,13 @@ class Hub:
             if agent:
                 agent.logs.append(event["log"])
         elif etype == "COLLABORATE":
-            for agent_id in event.get("agents", []):
+            # Only keep still-rostered participants; drop the event if none remain.
+            kept = [aid for aid in event.get("agents", []) if aid in self.agents]
+            if not kept:
+                return
+            event = dict(event)
+            event["agents"] = kept
+            for agent_id in kept:
                 agent = self.agents.get(agent_id)
                 if agent:
                     agent.state = "COLLAB"
@@ -3131,7 +3169,20 @@ class ConnectivityMonitor:
                 out_b, err_b = await asyncio.wait_for(proc.communicate(), self.CHECK_TIMEOUT)
             except asyncio.TimeoutError:
                 try:
-                    os.killpg(proc.pid, signal.SIGTERM)
+                    if _is_windows():
+                        killer = await asyncio.create_subprocess_exec(
+                            "taskkill", "/PID", str(proc.pid), "/T", "/F",
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        try:
+                            await asyncio.wait_for(killer.wait(), 5.0)
+                        except asyncio.TimeoutError:
+                            pass
+                    elif hasattr(os, "killpg"):
+                        os.killpg(proc.pid, signal.SIGTERM)
+                    else:
+                        proc.kill()
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
                 if argv[1:2] == ["auth"]:
@@ -3263,7 +3314,7 @@ class CliRunner:
     def build_argv(self, agent_id: str, prompt: str, *, continue_session: bool,
                    project: str) -> list[str]:
         template = self.commands[agent_id]
-        tokens = shlex.split(template)
+        tokens = _split_cli_cmd(template)
         if "{prompt}" in template:
             tokens = [t.replace("{prompt}", prompt) for t in tokens]
         elif self.prompt_mode == "arg" and prompt:
@@ -3487,20 +3538,44 @@ class CliRunner:
     async def terminate(self, proc: asyncio.subprocess.Process) -> None:
         if proc.returncode is not None:
             return
+        # Windows: proc.terminate()/kill() only signals the direct child. Claude
+        # launched via claude.cmd / cmd.exe /c leaves the real node process as a
+        # grandchild, so use taskkill /T to kill the whole tree. POSIX: killpg.
+        if _is_windows():
+            try:
+                killer = await asyncio.create_subprocess_exec(
+                    "taskkill", "/PID", str(proc.pid), "/T", "/F",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                try:
+                    await asyncio.wait_for(killer.wait(), 5.0)
+                except asyncio.TimeoutError:
+                    pass
+            except (OSError, ValueError):
+                try:
+                    proc.kill()
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+            try:
+                await asyncio.wait_for(proc.wait(), 3.0)
+            except (asyncio.TimeoutError, ProcessLookupError, PermissionError, OSError):
+                pass
+            return
         try:
-            if _is_windows() or not hasattr(os, "killpg"):
-                proc.terminate()
-            else:
+            if hasattr(os, "killpg"):
                 os.killpg(proc.pid, signal.SIGTERM)
+            else:
+                proc.terminate()
             await asyncio.wait_for(proc.wait(), 3.0)
         except (ProcessLookupError, PermissionError, OSError):
             pass
         except asyncio.TimeoutError:
             try:
-                if _is_windows() or not hasattr(os, "killpg"):
-                    proc.kill()
-                else:
+                if hasattr(os, "killpg"):
                     os.killpg(proc.pid, signal.SIGKILL)
+                else:
+                    proc.kill()
             except (ProcessLookupError, PermissionError, OSError):
                 pass
             try:
@@ -3779,9 +3854,19 @@ class Harness:
         self._ensure_roster_cli_bindings()
         if self.cli is not None and self.cli.commands:
             log.info("CLI bindings: %s", ", ".join(sorted(self.cli.commands)))
+            if args.mode == "live":
+                claude_bound = sum(1 for c in self.cli.commands.values()
+                                   if CliRunner._is_claude(_split_cli_cmd(c)))
+                if claude_bound == 0:
+                    log.warning("live mode: 0 agents bound to Claude — copy "
+                                "agent_cmds.example.json to agent_cmds.json "
+                                "(or pass --agent-cmd) so DISPATCH runs a CLI")
         elif self.cli is not None and not self.cli.commands:
             log.warning("%s mode without any --agent-cmd / agent_cmds.json: "
                         "dashboard prompts go to the MCP inbox and nothing runs them", args.mode)
+            if args.mode == "live":
+                log.warning("live mode: 0 agents bound to Claude — copy "
+                            "agent_cmds.example.json to agent_cmds.json before relaunch")
         self.tasks: list[asyncio.Task[Any]] = []
         self.stop_event: asyncio.Event | None = None
         self.mcp_server: Any = None  # office_mcp.OfficeMCP when enabled
@@ -3862,6 +3947,11 @@ class Harness:
             self.cli.commands.pop(agent_id, None)
             self.cli.systems.pop(agent_id, None)
             self.cli.cwds.pop(agent_id, None)
+        # Stop the per-agent worker so a queued/in-flight prompt cannot emit
+        # STATE/LOG after archive (Godot would otherwise respawn the sprite).
+        for t in list(self.tasks):
+            if t.get_name() == f"worker-{agent_id}" and not t.done():
+                t.cancel()
         path = self.hub.cmds_path
         if path and os.path.exists(path):
             try:
@@ -3978,13 +4068,14 @@ class Harness:
             if getattr(self.args, "worktrees", False):
                 self._init_worktrees()
             if (self.cli is not None and self.args.mode in ("live", "cli")
-                    and any(CliRunner._is_claude(shlex.split(c)) for c in self.cli.commands.values())):
+                    and any(CliRunner._is_claude(_split_cli_cmd(c)) for c in self.cli.commands.values())):
                 self.tasks.append(asyncio.create_task(self._setup_check(), name="setup-check"))
             # Prefer stream-json when CLI runner exists
             if self.cli is not None:
                 self.cli.prefer_stream_json = bool(getattr(self.args, "stream_json", True))
             await stop.wait()
             server.close()
+            await server.wait_closed()
             if self.mcp_server is not None:
                 await self.mcp_server.stop()
             if self.lite is not None:
@@ -4010,6 +4101,20 @@ class Harness:
         print("\n  Setup check", flush=True)
         for line in rep.summary_lines():
             print("    " + line, flush=True)
+        # Live-mode Claude binding status (also logged at startup).
+        if getattr(self.args, "mode", None) == "live":
+            cmds = getattr(self.cli, "commands", None) or {}
+            claude_bound = sum(1 for c in cmds.values()
+                               if CliRunner._is_claude(_split_cli_cmd(c)))
+            if claude_bound == 0:
+                msg = ("0 agents bound to Claude in live mode — copy "
+                       "agent_cmds.example.json to agent_cmds.json "
+                       "(run-windows.ps1 / run-mac.command auto-copy on --mode live), "
+                       "then relaunch")
+                print("    WARNING: " + msg, flush=True)
+                log.warning("setup: %s", msg)
+            else:
+                print(f"    Claude CLI bindings: {claude_bound} agent(s)", flush=True)
         for w in rep.warnings():
             log.warning("setup: %s", w)
 
@@ -4124,7 +4229,7 @@ def parse_agent_cmd(value: str) -> tuple[str, str]:
     agent_id, cmd = agent_id.strip(), cmd.strip()
     if not agent_id or not cmd:
         raise argparse.ArgumentTypeError("expected agent_id='command ...'")
-    shlex.split(cmd)  # validate quoting early
+    _split_cli_cmd(cmd)  # validate quoting early
     return agent_id, cmd
 
 

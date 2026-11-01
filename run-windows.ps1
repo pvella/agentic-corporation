@@ -26,6 +26,7 @@ function Find-Godot {
     if ($null -ne $cmd) { return $cmd.Source }
     $candidates = @(
         "$env:LOCALAPPDATA\Programs\Godot\Godot*.exe",
+        "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\GodotEngine.GodotEngine*\Godot_v*-stable_win64.exe",
         "$env:ProgramFiles\Godot\Godot*.exe",
         "$env:USERPROFILE\Downloads\Godot*.exe",
         "$env:USERPROFILE\scoop\apps\godot\current\Godot*.exe",
@@ -64,7 +65,9 @@ $classCache = Join-Path $PSScriptRoot ".godot\global_script_class_cache.cfg"
 if (-not (Test-Path -LiteralPath $classCache)) {
     Write-Host "First-time Godot import (building .godot class cache)..."
     & $godot --headless --path $PSScriptRoot --import
-    if ($LASTEXITCODE -ne 0) {
+    # Godot sometimes returns non-zero even after writing the class cache; treat the
+    # cache file as the real success signal.
+    if (-not (Test-Path -LiteralPath $classCache)) {
         Write-Error "Godot import failed. Try opening the project in the editor once: `"$godot`" --path `"$PSScriptRoot`" --editor"
         exit 1
     }
@@ -95,15 +98,7 @@ if ($needInstall) {
     Get-Date -Format o | Set-Content -LiteralPath $stamp
 }
 
-$cmdsArgs = @()
-$cmdsFile = Join-Path $PSScriptRoot "agent_cmds.json"
-if (Test-Path -LiteralPath $cmdsFile) {
-    $cmdsArgs = @("--agent-cmds-file", "agent_cmds.json")
-    Write-Host "CLI bindings: agent_cmds.json"
-}
-
-$harnessArgs = @("agent_harness.py", "--mcp-port", "8766", "--lite-port", "8787") + $cmdsArgs
-# Live mode: worktrees + stream-json poses (text fallback remains in harness)
+# Detect --mode live early so we can auto-copy agent_cmds when missing.
 $isLive = $false
 foreach ($a in $args) {
   if ($a -eq "live" -or $a -eq "--mode=live") { $isLive = $true }
@@ -111,7 +106,27 @@ foreach ($a in $args) {
 for ($i = 0; $i -lt $args.Count; $i++) {
   if ($args[$i] -eq "--mode" -and ($i + 1) -lt $args.Count -and $args[$i + 1] -eq "live") { $isLive = $true }
 }
-if ($cmdsArgs -contains "live") { $isLive = $true }
+
+$cmdsArgs = @()
+$cmdsFile = Join-Path $PSScriptRoot "agent_cmds.json"
+$cmdsExample = Join-Path $PSScriptRoot "agent_cmds.example.json"
+if ($isLive -and -not (Test-Path -LiteralPath $cmdsFile)) {
+    if (Test-Path -LiteralPath $cmdsExample) {
+        Copy-Item -LiteralPath $cmdsExample -Destination $cmdsFile
+        Write-Host "Copied agent_cmds.example.json -> agent_cmds.json (required for live Claude bindings)"
+    } else {
+        Write-Warning "Live mode but agent_cmds.json is missing and agent_cmds.example.json was not found."
+    }
+}
+if (Test-Path -LiteralPath $cmdsFile) {
+    $cmdsArgs = @("--agent-cmds-file", "agent_cmds.json")
+    Write-Host "CLI bindings: agent_cmds.json"
+} elseif ($isLive) {
+    Write-Warning "Live mode with 0 Claude bindings: create agent_cmds.json (copy from agent_cmds.example.json)."
+}
+
+$harnessArgs = @("agent_harness.py", "--mcp-port", "8766", "--lite-port", "8787") + $cmdsArgs
+# Live mode: worktrees + stream-json poses (text fallback remains in harness)
 if ($isLive) {
   $harnessArgs += @("--worktrees", "--stream-json")
   Write-Host "Harness extras: --worktrees --stream-json"
@@ -128,7 +143,9 @@ Write-Host "Lite ops view: http://127.0.0.1:8787/lite"
 }
 
 try {
-    & $godot --path $PSScriptRoot
+    # Start-Process -Wait keeps the harness alive until the Godot window closes.
+    # Calling & $godot can return early on Windows while the game stays open.
+    Start-Process -FilePath $godot -ArgumentList @("--path", $PSScriptRoot) -WorkingDirectory $PSScriptRoot -Wait
 } finally {
     if ($null -ne $bridge -and -not $bridge.HasExited) {
         Stop-Process -Id $bridge.Id -Force -ErrorAction SilentlyContinue

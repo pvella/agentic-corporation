@@ -81,11 +81,11 @@ def test_credits_mentions_agentsystemlabs():
 
 
 def test_main_gd_has_needs_you_ui():
-    main = (ROOT / "Main.gd").read_text()
+    main = (ROOT / "Main.gd").read_text(encoding="utf-8")
     assert "_cycle_needs_you" in main
     assert "NEEDS_YOU" in main
     assert "_play_needs_chime" in main
-    agent = (ROOT / "Agent.gd").read_text()
+    agent = (ROOT / "Agent.gd").read_text(encoding="utf-8")
     assert "Red desk beacon" in agent
 
 
@@ -205,10 +205,15 @@ def test_colleague_messages_and_calendar_tools(tmp_path: Path, monkeypatch):
     ea_allowed = ea_argv[ea_argv.index("--allowedTools") + 1].split(",")
     dev_allowed = dev_argv[dev_argv.index("--allowedTools") + 1].split(",")
     assert "mcp__office__message_colleague" in ea_allowed and "mcp__office__message_colleague" in dev_allowed
+    for need in ("mcp__office__check_office_inbox", "mcp__office__list_agents",
+                 "mcp__office__report_office_status", "mcp__office__reply_office_message"):
+        assert need in ea_allowed and need in dev_allowed
+    assert "mcp__office__hire_agent" not in ea_allowed  # not blanket MCP / admin
     assert h.M365 + "outlook_calendar_search" in ea_allowed
     assert not any(t.startswith(h.M365) for t in dev_allowed)
     assert not any("send" in t or "delete" in t for t in ea_allowed)
     cfg = Path(ea_argv[ea_argv.index("--mcp-config") + 1])
     assert json.loads(cfg.read_text())["mcpServers"]["office"]["headers"]["Authorization"] == "Bearer secret-token"
-    assert oct(cfg.stat().st_mode & 0o777) == "0o600"
+    if os.name != "nt":
+        assert oct(cfg.stat().st_mode & 0o777) == "0o600"
     assert "secret-token" not in " ".join(ea_argv)

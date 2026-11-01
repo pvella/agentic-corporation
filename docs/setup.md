@@ -8,7 +8,7 @@ First-run checklist for Agentic Corporation (Agent Office). Keep this repo free 
 2. `claude`, then `/login` with **your** claude.ai account.
 3. Optional: connect **Microsoft 365** or **Google Calendar** at claude.ai → Settings → Connectors so the EA and Chief of Staff can read your calendar.
 4. Optional: put your name in `office.json` as `"owner": {"name": "Jane"}` (otherwise `git config user.name` is used).
-5. `cp agent_cmds.example.json agent_cmds.json` to run the agents live with Claude Code.
+5. `cp agent_cmds.example.json agent_cmds.json` to run the agents live with Claude Code (required before live; `run-mac.command --mode live` also auto-copies the example when missing, and the harness Setup check warns if 0 agents are Claude-bound).
 6. Double-click `run-mac.command` and read the **Setup check** it prints.
 7. In the office, ask the Chief of Staff something ("What's the weather today?"), and tell it where you are; it saves that to the office memory.
 
@@ -21,7 +21,7 @@ First-run checklist for Agentic Corporation (Agent Office). Keep this repo free 
 | **Godot** | **4.3+** standard (non-.NET) build from [godotengine.org](https://godotengine.org/download). Tested on 4.3-stable and 4.7.x. Put `godot` on your `PATH` (macOS: `brew install --cask godot`, or point at `Godot.app/Contents/MacOS/Godot`). |
 | **Claude Code** (live agents) | Install the `claude` CLI, run `claude` once and complete `/login` with a **claude.ai** account (an API key alone runs agents but gives no claude.ai connectors, so no calendar). |
 | **Calendar** (optional) | Microsoft 365 or Google Calendar connected at claude.ai → Settings → Connectors. A company admin may need to approve it. |
-| **Optional** | Tailscale (to expose MCP over Funnel), `keyring` on Linux for Vault |
+| **Optional** | Tailscale (to expose MCP over Funnel), `keyring` on Linux for Vault (installed automatically on Windows) |
 
 ## Ports
 
@@ -140,7 +140,7 @@ The Executive bank safe sends `VAULT_UNLOCK` to the harness. On macOS the harnes
 - Build once: `swiftc -O -o tools/vault_unlock tools/vault_unlock.swift -framework LocalAuthentication`
 - The helper is built automatically on first unlock if `swiftc` is available
 
-On Linux/Windows the harness touches a keyring sentinel instead (desktop keyring prompt). The vault re-locks after 2 minutes idle or when the Safe UI is closed. Metadata HMAC uses a Keychain-held key named `__VAULT_HMAC_KEY__`.
+On Windows the harness runs `tools/vault_unlock_windows.ps1`: Windows Hello, or the Windows account password when Hello is not set up (see [windows-setup.md](windows-setup.md#secrets--vault)). On Linux it touches a keyring sentinel instead (desktop keyring prompt). The vault re-locks after 2 minutes idle or when the Safe UI is closed. Metadata HMAC uses a Keychain-held key named `__VAULT_HMAC_KEY__`.
 
 
 ## /lite ops view and NEEDS_YOU

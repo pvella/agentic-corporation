@@ -1750,14 +1750,18 @@ func handle_message(msg: Dictionary) -> void:
 		"SNAPSHOT", "REGISTRY":
 			_apply_snapshot(msg)
 		"STATE_CHANGE":
-			var agent := _get_or_spawn(str(msg.get("agent_id", "")))
-			if agent:
+			# Do not spawn unknowns here — after FIRE, in-flight harness updates
+			# must not resurrect an archived agent (unkillable sprite).
+			var agent: Agent = agents.get(str(msg.get("agent_id", "")))
+			# Fire FX owns the node until finished; ignore harness updates that would
+			# re-route / bubble a leaving agent (main-thread churn after Kill).
+			if agent and not agent.leaving:
 				var tgt := _str_or_empty(msg.get("target"))
 				_apply_state(agent, str(msg.get("state", "IDLE")), tgt, str(msg.get("text", "")))
 				if _debug_activity:
 					_log_debug_activity(agent, str(msg.get("state", "IDLE")), tgt)
 		"LOG_ENTRY":
-			var agent := _get_or_spawn(str(msg.get("agent_id", "")))
+			var agent: Agent = agents.get(str(msg.get("agent_id", "")))
 			if agent:
 				agent.add_log(str(msg.get("log", "")))
 		"COLLABORATE":
@@ -1821,7 +1825,7 @@ func handle_message(msg: Dictionary) -> void:
 				 "meta": {"agent_id": str(msg.get("agent_id", "")), "variant": variant}})
 			_play_fire(msg)
 		"INBOX":
-			var agent := _get_or_spawn(str(msg.get("agent_id", "")))
+			var agent: Agent = agents.get(str(msg.get("agent_id", "")))
 			if agent:
 				agent.unread = maxi(0, int(msg.get("unread", 0)))
 				agent.queue_redraw()
@@ -1899,6 +1903,11 @@ func _apply_snapshot(msg: Dictionary) -> void:
 		_route(agent, target, fresh)
 	for id: String in agents.keys():
 		if not seen.has(id):
+			var doomed: Agent = agents.get(id)
+			# HireFireFx still holds this node — removing here frees it mid-animation
+			# and can peg the main thread (Godot stops responding after Kill).
+			if doomed != null and doomed.leaving:
+				continue
 			_remove_agent(id)
 	drawer.refresh()
 	_harness_up = true
@@ -1993,7 +2002,8 @@ func _apply_collaborate(msg: Dictionary) -> void:
 	var id_list: Array = []
 	for id: Variant in ids:
 		id_list.append(str(id))
-		var a := _get_or_spawn(str(id))
+		# Skip unknown / already-fired agents — never respawn via collaborate.
+		var a: Agent = agents.get(str(id))
 		if a:
 			names.append(a.display_name)
 	var text := str(msg.get("text", ""))
@@ -2004,7 +2014,7 @@ func _apply_collaborate(msg: Dictionary) -> void:
 		_agent_prev_state[str(idv)] = "COLLAB"
 	for i in ids.size():
 		var agent: Agent = agents.get(str(ids[i]))
-		if agent == null:
+		if agent == null or agent.leaving:
 			continue
 		agent.set_state("COLLAB")
 		_route(agent, target)

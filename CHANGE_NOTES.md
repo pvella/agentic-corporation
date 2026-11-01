@@ -1,3 +1,24 @@
+## Office MCP allowlist for live Claude (`--permission-prompts none`)
+
+- Cause: live Claude runs only auto-allowed `mcp__office__message_colleague`, so with `--permission-prompts none` roster/inbox calls (`list_agents`, `check_office_inbox`, …) were denied and CoS reported “needs approval”.
+- Fix: extend `OFFICE_MCP_TOOLS` to the bridge tools agents need (`report_office_status`, `check_office_inbox`, `reply_office_message`, `message_colleague`, `list_agents`, `request_secret`). Still no hire/fire/vault-admin and no `bypassPermissions`.
+
+## agent_cmds live bindings (Windows + Mac)
+
+- Docs: `docs/windows-setup.md` now has an explicit numbered step to `copy agent_cmds.example.json agent_cmds.json` before the first live launch; macOS `docs/setup.md` step 5 notes the same requirement.
+- `run-windows.ps1` / `run-mac.command`: in `--mode live`, auto-copy `agent_cmds.example.json` -> `agent_cmds.json` when the file is missing, and warn if bindings are still absent.
+- Harness Setup check + startup log warn when live mode has **0 agents bound to Claude**.
+- Windows: `_split_cli_cmd` uses `shlex.split(..., posix=False)` so absolute `claude.exe` paths with backslashes are not mangled.
+
+## Windows launcher and test fixes (`feature/windows-vault`)
+
+- `run-windows.ps1` waits for the Godot window with `Start-Process -Wait`, so the harness only stops when you close the game (calling `& $godot` could return early and kill the bridge).
+- Find-Godot also looks under the WinGet Packages folder after `winget install GodotEngine.GodotEngine`.
+- First-time import counts as success if `.godot/global_script_class_cache.cfg` exists (Godot sometimes exits non-zero after writing it).
+- MCP tests on Windows use the Selector event loop, close leftover WebSocket clients on teardown, and the harness awaits `server.wait_closed()` so pytest no longer hangs on Proactor/IOCP.
+- Feature tests read `Main.gd` / `Agent.gd` as UTF-8; Unix `0o600` mode asserts are skipped on Windows; CliHelper PATH checks use `Path` so they work with Windows separators.
+- Docs: `docs/windows-setup.md` and the README Windows shortcut cover winget Godot, native Claude Code install (WSL-only Claude is not used), first import, tests, and live mode, in plain ASCII.
+
 ## Vault (`feature/vault`)
 
 - Shared bot secrets: values in macOS Keychain (`agentic-corp.<NAME>`) / Linux secure store; gitignored `.office_vault.json` metadata only
@@ -49,3 +70,10 @@ In `--mode live` without `--agent-cmd` / `agent_cmds.json`, typing a task in a s
 - `export_presets.cfg` Windows Desktop preset → `build/AgentOffice.windows.x86_64.exe`
 - Docs: [docs/windows-setup.md](docs/windows-setup.md); README quick start / components / limitations
 - Vault secret storage on Windows (Credential Manager via `keyring`) is out of scope here — lands with the vault PR
+
+## Windows vault (`feature/windows-vault`)
+
+- `keyring` added to `requirements.txt` for Windows; values go to Credential Manager. Without it the vault refuses to store values (`UnavailableStore`) instead of falling back to plaintext files, since `chmod 0600` does nothing on Windows
+- `KeyringStore` splits values over 600 chars across `<NAME>.partN` entries with a SHA-256 checked header (Credential Manager's 2560-byte blob limit); existing short/unchunked values read unchanged
+- Unlock: `tools/vault_unlock_windows.ps1`: Windows Hello via `IUserConsentVerifierInterop` (prompt owned by the Godot window), falling back to a CredUI password prompt checked with `LogonUser` against the current user's SID. Previously Windows "unlock" always succeeded with no check
+- `tools/vault_auth.py --password` exercises the fallback; tests in `tests/test_windows_vault.py`

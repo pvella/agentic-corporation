@@ -66,7 +66,7 @@ See `CREDITS.md` (AgentSystemLabs/agent-office MIT inspiration) and `docs/setup.
 
 > **macOS shortcut:** double-click `run-mac.command` to create the venv on first run (Python 3.10+; it picks the newest `python3.x` it finds), start the bridge with the MCP connector on **port 8766** (Godot WebSocket **8765**), print where the token is, and open the Godot client (**Godot 4.3+**; `godot` on your PATH, e.g. `brew install --cask godot`). Copy `agent_cmds.example.json` to `agent_cmds.json` (gitignored) so live agents bind to `claude -p`; run `claude` once and complete `/login` so Keychain auth works. The bridge stops when you close the game. It reinstalls the requirements whenever `requirements.txt` changes. Full checklist: [docs/setup.md](docs/setup.md).
 >
-> **Windows shortcut:** double-click `run-windows.bat` (or run `run-windows.ps1` in PowerShell). Same flow: venv, MCP on 8766, Godot client, bridge stops when the window closes. Needs Python 3.10+ and Godot 4.3+ on PATH (or a `Godot_v*-stable_win64.exe` the script can find). It refuses to start if port 8765 is already in use. Full steps: [docs/windows-setup.md](docs/windows-setup.md).
+> **Windows shortcut:** double-click `run-windows.bat` (or run `run-windows.ps1` in PowerShell). Same flow: venv, MCP on 8766, Godot client, bridge stops when the window closes. Needs Python 3.10+, Godot 4.3+ (`winget install GodotEngine.GodotEngine` is enough; the launcher also finds WinGet/Downloads installs), and for live mode a **native Windows** Claude Code (`irm https://claude.ai/install.ps1 | iex`, then `claude` + `/login` in a new terminal; a WSL-only install is not seen). It refuses to start if port 8765 is already in use. Full steps: [docs/windows-setup.md](docs/windows-setup.md).
 
 ### Setting it up for a new user
 
@@ -546,7 +546,7 @@ godot --headless --path . --script res://tests/smoke_test.gd    # layouts, spawn
 - Without `--stream-json`, CLI output is plain lines, so tool calls don't drive the animation beyond WORKING and the latest line in the bubble. `run-mac.command` turns it on for live mode.
 - The HR interview table has 2–8 seats (`shared.meeting_room.seats`) and isolated wings have 4. Extra collaborators share a seat, slightly offset.
 - The harness keeps the last 200 log lines per agent and nothing is saved to disk. Restarting the harness clears its history.
-- Testing has been on Linux (headless, plus Xvfb with software OpenGL) and macOS. Windows launchers and harness process teardown are implemented but need verification on a real Windows machine (Claude `.cmd` resolution, Credential Manager once the vault lands, and the exported `.exe` + harness pair).
+- Testing has been on Linux (headless, plus Xvfb with software OpenGL) and macOS. Windows launchers and harness process teardown are implemented but need verification on a real Windows machine (Claude `.cmd` resolution, the Credential Manager vault store and Windows Hello / password unlock, and the exported `.exe` + harness pair).
 - The WebSocket has no authentication (see Security). The MCP connector does.
 - Real bots only report what they choose to report; between reports the character holds its last state (in mock mode, until `--live-hold` runs out).
 
@@ -558,9 +558,9 @@ MIT — see [LICENSE](LICENSE).
 
 Encrypted secrets for agents, managed from a **bank safe in the Executive room**.
 
-- **Values** live in the OS keychain (macOS Keychain / Linux keyring / 0600 files). They are never written to git, logs, the UI, or prompts.
+- **Values** live in the OS keychain (macOS Keychain / Windows Credential Manager / Linux keyring or 0600 files). They are never written to git, logs, the UI, or prompts.
 - **Metadata** (name, description, ACL, timestamps) is in gitignored `.office_vault.json`, optionally HMAC-signed with a Keychain-held key. Tampering is flagged on the notice board.
-- **Unlock**: click the Executive safe → harness runs macOS LocalAuthentication (Touch ID or login password via `tools/vault_unlock`). Linux/Windows fall back to a keyring prompt. Session lasts **2 minutes** of idle time or until you close/lock. (The old Server Room safe has been removed.)
+- **Unlock**: click the Executive safe → harness runs macOS LocalAuthentication (Touch ID or login password via `tools/vault_unlock`). Windows uses Windows Hello, or the Windows account password when Hello isn't set up (`tools/vault_unlock_windows.ps1`). Linux falls back to a keyring prompt. Session lasts **2 minutes** of idle time or until you close/lock. (The old Server Room safe has been removed.)
 - **While locked**: `/vault` lists **names only**; grant/remove/add need an unlock.
 - **Safe UI**: table of names, descriptions, allowed-agents checkboxes, created/last-used. Values are never shown or copyable. Add uses a masked field; remove asks for confirm.
 - **Audit**: unlock, failed unlock, grant, revoke, add, remove post to the notice board (names only). Chief of Staff MCP grant/revoke are audited the same way.
