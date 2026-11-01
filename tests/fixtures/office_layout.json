@@ -1,0 +1,215 @@
+{
+  "type": "OFFICE_LAYOUT",
+  "office": {
+    "name": "Agentic Corporation HQ",
+    "rooms": [
+      {
+        "id": "dev_team",
+        "name": "Dev Team",
+        "color": "#4fc3f7",
+        "theme": "wood",
+        "isolated": false,
+        "desks": 6,
+        "members": [
+          {
+            "agent_id": "android_dev",
+            "name": "Android Dev",
+            "role": "Android apps",
+            "color": "#4fc3f7",
+            "desk": "Desk_android_dev"
+          },
+          {
+            "agent_id": "ios_dev",
+            "name": "iOS Dev",
+            "role": "iOS apps",
+            "color": "#81c784",
+            "desk": "Desk_ios_dev"
+          },
+          {
+            "agent_id": "systems_architect",
+            "name": "Systems Architect",
+            "role": "Architecture",
+            "color": "#ffb74d",
+            "desk": "Desk_systems_architect"
+          },
+          {
+            "agent_id": "product_manager",
+            "name": "Product Manager",
+            "role": "Roadmap",
+            "color": "#4db6ac",
+            "desk": "Desk_product_manager"
+          }
+        ],
+        "break_spots": [
+          "Coffee_Machine",
+          "Water_Cooler",
+          "Vending_Machine",
+          "Sofa_1",
+          "Sofa_2",
+          "Yoga_Mat_1",
+          "Yoga_Mat_2",
+          "Meditation_Cushion_1",
+          "Meditation_Cushion_2"
+        ],
+        "chat_spots": [
+          "Chat_Break",
+          "Chat_Corridor",
+          "Chat_dev_team"
+        ],
+        "meeting_target": "Meeting_Room"
+      },
+      {
+        "id": "admin_services",
+        "name": "Admin Services",
+        "color": "#81c784",
+        "theme": "sage",
+        "isolated": false,
+        "desks": 6,
+        "members": [
+          {
+            "agent_id": "ea",
+            "name": "EA",
+            "role": "Executive assistant",
+            "color": "#ffd54f",
+            "desk": "Desk_ea"
+          },
+          {
+            "agent_id": "finance_bot",
+            "name": "Finance Bot",
+            "role": "Finance",
+            "color": "#7986cb",
+            "desk": "Desk_finance_bot"
+          },
+          {
+            "agent_id": "support_desk",
+            "name": "Support Desk",
+            "role": "Customer support",
+            "color": "#64b5f6",
+            "desk": "Desk_support_desk"
+          }
+        ],
+        "break_spots": [
+          "Coffee_Machine",
+          "Water_Cooler",
+          "Vending_Machine",
+          "Sofa_1",
+          "Sofa_2",
+          "Yoga_Mat_1",
+          "Yoga_Mat_2",
+          "Meditation_Cushion_1",
+          "Meditation_Cushion_2"
+        ],
+        "chat_spots": [
+          "Chat_Break",
+          "Chat_Corridor",
+          "Chat_admin_services"
+        ],
+        "meeting_target": "Meeting_Room"
+      },
+      {
+        "id": "special",
+        "name": "Special",
+        "color": "#ce93d8",
+        "theme": "lilac",
+        "isolated": false,
+        "desks": 6,
+        "members": [
+          {
+            "agent_id": "chief_of_staff",
+            "name": "Chief of Staff",
+            "role": "Coordination",
+            "color": "#ff8a65",
+            "desk": "Desk_chief_of_staff"
+          },
+          {
+            "agent_id": "graphic_artist",
+            "name": "Graphic Artist",
+            "role": "Art & design",
+            "color": "#9575cd",
+            "desk": "Desk_graphic_artist"
+          },
+          {
+            "agent_id": "seo_aeo_desk",
+            "name": "SEO & AEO Desk",
+            "role": "Search visibility",
+            "color": "#4dd0e1",
+            "desk": "Desk_seo_aeo_desk"
+          },
+          {
+            "agent_id": "outbound_prospecting",
+            "name": "Outbound Prospecting",
+            "role": "Outreach",
+            "color": "#dce775",
+            "desk": "Desk_outbound_prospecting"
+          }
+        ],
+        "break_spots": [
+          "Coffee_Machine",
+          "Water_Cooler",
+          "Vending_Machine",
+          "Sofa_1",
+          "Sofa_2",
+          "Yoga_Mat_1",
+          "Yoga_Mat_2",
+          "Meditation_Cushion_1",
+          "Meditation_Cushion_2"
+        ],
+        "chat_spots": [
+          "Chat_Break",
+          "Chat_Corridor",
+          "Chat_special"
+        ],
+        "meeting_target": "Meeting_Room"
+      }
+    ],
+    "archived": [],
+    "shared": {
+      "break_room": {
+        "name": "Break Room",
+        "spots": [
+          "Coffee_Machine",
+          "Water_Cooler",
+          "Vending_Machine",
+          "Sofa_1",
+          "Sofa_2",
+          "Yoga_Mat_1",
+          "Yoga_Mat_2",
+          "Meditation_Cushion_1",
+          "Meditation_Cushion_2"
+        ],
+        "foosball": [
+          "Foosball_1",
+          "Foosball_2",
+          "Foosball_3",
+          "Foosball_4"
+        ]
+      },
+      "meeting_room": {
+        "name": "Meeting Room",
+        "seats": 6,
+        "target": "Meeting_Room"
+      },
+      "canteen": {
+        "name": "Canteen",
+        "counter": "Canteen_Counter",
+        "seats": [
+          "Canteen_Seat_1",
+          "Canteen_Seat_2",
+          "Canteen_Seat_3",
+          "Canteen_Seat_4",
+          "Canteen_Seat_5",
+          "Canteen_Seat_6"
+        ]
+      },
+      "rec_room": {
+        "name": "Rec Room",
+        "spots": [
+          "Yoga_Mat_1",
+          "Yoga_Mat_2",
+          "Meditation_Cushion_1",
+          "Meditation_Cushion_2"
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "_comment": "Copy to agent_cmds.json (gitignored). Its presence switches run-mac.command to live mode, and then every agent on the office.json roster (and every new hire) is bound to Claude Code automatically, with a system prompt built from its job description. Add an entry only to override one agent's cmd, cwd or system prompt. Entries for agents that are not on the roster are ignored.",
+  "chief_of_staff": {
+    "cmd": "claude -p --output-format text {prompt}",
+    "cwd": "."
+  }
+}

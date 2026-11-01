@@ -1,0 +1,73 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://Agent.gd" id="1_agent"]
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_body"]
+radius = 9.0
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_click"]
+size = Vector2(34, 66)
+
+[sub_resource type="LabelSettings" id="LabelSettings_name"]
+font_size = 11
+font_color = Color(1, 1, 1, 1)
+
+[node name="Agent" type="CharacterBody2D"]
+collision_layer = 2
+collision_mask = 0
+motion_mode = 1
+script = ExtResource("1_agent")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("CircleShape2D_body")
+
+[node name="NavigationAgent2D" type="NavigationAgent2D" parent="."]
+path_desired_distance = 6.0
+target_desired_distance = 5.0
+path_max_distance = 60.0
+avoidance_enabled = true
+radius = 12.0
+neighbor_distance = 100.0
+max_neighbors = 8
+time_horizon_agents = 0.8
+max_speed = 88.0
+
+[node name="AnimatedSprite2D" type="AnimatedSprite2D" parent="."]
+visible = false
+position = Vector2(0, -32)
+
+[node name="ClickArea" type="Area2D" parent="."]
+collision_layer = 4
+collision_mask = 0
+monitoring = false
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="ClickArea"]
+position = Vector2(0, -30)
+shape = SubResource("RectangleShape2D_click")
+
+[node name="NameLabel" type="Label" parent="."]
+z_index = 3
+offset_left = -40.0
+offset_top = 7.0
+offset_right = 40.0
+offset_bottom = 24.0
+mouse_filter = 2
+text = "Agent"
+label_settings = SubResource("LabelSettings_name")
+horizontal_alignment = 1
+
+[node name="SpeechBubble" type="PanelContainer" parent="."]
+visible = false
+z_index = 20
+offset_left = -40.0
+offset_top = -110.0
+offset_right = 40.0
+offset_bottom = -86.0
+mouse_filter = 2
+
+[node name="Label" type="Label" parent="SpeechBubble"]
+layout_mode = 2
+mouse_filter = 2
+theme_override_font_sizes/font_size = 12
+text = "..."
+horizontal_alignment = 1

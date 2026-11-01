@@ -1,0 +1,68 @@
+# Godot 4
+.godot/
+/android/
+*.translation
+export_credentials.cfg
+
+# Export builds
+/build/
+/exports/
+*.exe
+*.pck
+*.zip
+*.dmg
+*.app/
+*.x86_64
+*.apk
+*.aab
+*.ipa
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.office_token
+.office_inbox.json
+.office_inbox.json.tmp
+.office_notices.json
+.office_notices.json.tmp
+.office_vault.json
+.office_vault.json.tmp
+
+# Claude Code local overrides
+.claude/settings.local.json
+.claude/office-hook.log
+
+# Local CLI bindings for live/cli mode (may point at personal paths)
+agent_cmds.json
+
+# Per-agent Claude Code sessions (live/cli mode)
+.office_claude/
+.office_claude_sessions.json
+tools/vault_unlock
+
+# Deploy / agent scratch files (keep out of the repo; agents read the tree)
+.deploy_*
+.safe_*
+.iso_*
+_ac_*
+.ac_*
+
+# Per-agent git worktrees created by the bridge (--worktrees)
+.agent_worktrees/
+
+# Shared office memory (facts about the owner; personal)
+.office_memory/
+
+# Live office roster: created from office.default.json on first run and
+# rewritten on every hire/fire, so it stays on this machine.
+/office.json

@@ -1,0 +1,273 @@
+{
+  "name": "Agentic Corporation HQ",
+  "_comment": "Frozen generic 13-agent roster for tests (the live office.json changes on hire/fire).",
+  "rooms": [
+    {
+      "id": "executive",
+      "name": "Executive",
+      "color": "#5c6bc0",
+      "theme": "navy",
+      "desks": 3,
+      "members": [
+        {
+          "agent_id": "chief_of_staff",
+          "name": "Chief of Staff",
+          "role": "Chief of Staff",
+          "color": "#4fc3f7",
+          "job": {
+            "title": "Chief of Staff",
+            "department": "Executive",
+            "purpose": "This broadly applicable Leadership and governance agent turns approved goals into traceable work and coordinates handoffs. It does not set strategy, change functional controls, or exceed delegated authority.",
+            "responsibilities": [
+              "Deliver Chief of Staff work agreed with the owner.",
+              "Report progress and blockers in the office."
+            ]
+          }
+        },
+        {
+          "agent_id": "ea",
+          "name": "EA",
+          "role": "Executive Assistant",
+          "color": "#81c784",
+          "job": {
+            "title": "Executive Assistant",
+            "department": "Executive",
+            "purpose": "Executive Assistant for the office.",
+            "responsibilities": [
+              "Deliver Executive Assistant work agreed with the owner.",
+              "Report progress and blockers in the office."
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "engineering",
+      "name": "Engineering",
+      "color": "#4fc3f7",
+      "theme": "wood",
+      "desks": 4,
+      "members": [
+        {
+          "agent_id": "android_dev",
+          "name": "Android Dev",
+          "role": "Android Engineer",
+          "color": "#ffb74d",
+          "job": {
+            "title": "Android Engineer",
+            "department": "Engineering",
+            "purpose": "Android Engineer for the office.",
+            "responsibilities": [
+              "Deliver Android Engineer work agreed with the owner.",
+              "Report progress and blockers in the office."
+            ]
+          }
+        },
+        {
+          "agent_id": "ios_dev",
+          "name": "iOS Dev",
+          "role": "iOS Engineer",
+          "color": "#f06292",
+          "job": {
+            "title": "iOS Engineer",
+            "department": "Engineering",
+            "purpose": "iOS Engineer for the office.",
+            "responsibilities": [
+              "Deliver iOS Engineer work agreed with the owner.",
+              "Report progress and blockers in the office."
+            ]
+          }
+        },
+        {
+          "agent_id": "systems_architect",
+          "name": "Systems Architect",
+          "role": "Systems Architect",
+          "color": "#ba68c8",
+          "job": {
+            "title": "Systems Architect",
+            "department": "Engineering",
+            "purpose": "Systems Architect for the office.",
+            "responsibilities": [
+              "Deliver Systems Architect work agreed with the owner.",
+              "Report progress and blockers in the office."
+            ]
+          }
+        },
+        {
+          "agent_id": "devops",
+          "name": "DevOps",
+          "role": "DevOps Engineer",
+          "color": "#4db6ac",
+          "job": {
+            "title": "DevOps Engineer",
+            "department": "Engineering",
+            "purpose": "DevOps Engineer for the office.",
+            "responsibilities": [
+              "Deliver DevOps Engineer work agreed with the owner.",
+              "Report progress and blockers in the office."
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "product_design",
+      "name": "Product & Design",
+      "color": "#f48fb1",
+      "theme": "lilac",
+      "desks": 5,
+      "members": [
+        {
+          "agent_id": "product_manager",
+          "name": "Product Manager",
+          "role": "Product Manager",
+          "color": "#ffd54f",
+          "job": {
+            "title": "Product Manager",
+            "department": "Product & Design",
+            "purpose": "The Product Management Agent converts signals into requirements, prioritisation evidence and roadmap proposals for product, engineering and artificial intelligence (AI) systems. It does not own strategy or make customer promises.",
+            "responsibilities": [
+              "Deliver Product Manager work agreed with the owner.",
+              "Report progress and blockers in the office."
+            ]
+          }
+        },
+        {
+          "agent_id": "graphic_artist",
+          "name": "Graphic Artist",
+          "role": "Graphic Designer",
+          "color": "#7986cb",
+          "job": {
+            "title": "Graphic Designer",
+            "department": "Product & Design",
+            "purpose": "Graphic Designer for the office.",
+            "responsibilities": [
+              "Deliver Graphic Designer work agreed with the owner.",
+              "Report progress and blockers in the office."
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "operations",
+      "name": "Operations & Support",
+      "color": "#81c784",
+      "theme": "sage",
+      "desks": 5,
+      "members": [
+        {
+          "agent_id": "support_desk",
+          "name": "Support Desk",
+          "role": "Support Lead",
+          "color": "#aed581",
+          "job": {
+            "title": "Support Lead",
+            "department": "Operations & Support",
+            "purpose": "Support Lead for the office.",
+            "responsibilities": [
+              "Deliver Support Lead work agreed with the owner.",
+              "Report progress and blockers in the office."
+            ]
+          }
+        },
+        {
+          "agent_id": "seo_aeo_desk",
+          "name": "SEO & AEO Desk",
+          "role": "SEO / AEO Lead",
+          "color": "#4dd0e1",
+          "job": {
+            "title": "SEO / AEO Lead",
+            "department": "Operations & Support",
+            "purpose": "SEO / AEO Lead for the office.",
+            "responsibilities": [
+              "Deliver SEO / AEO Lead work agreed with the owner.",
+              "Report progress and blockers in the office."
+            ]
+          }
+        },
+        {
+          "agent_id": "outbound_prospecting",
+          "name": "Outbound Prospecting",
+          "role": "Outbound Lead",
+          "color": "#dce775",
+          "job": {
+            "title": "Outbound Lead",
+            "department": "Operations & Support",
+            "purpose": "Outbound Lead for the office.",
+            "responsibilities": [
+              "Deliver Outbound Lead work agreed with the owner.",
+              "Report progress and blockers in the office."
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "finance",
+      "name": "Finance",
+      "color": "#ffb74d",
+      "theme": "carpet",
+      "desks": 3,
+      "members": [
+        {
+          "agent_id": "finance_bot",
+          "name": "Finance Bot",
+          "role": "Finance Manager",
+          "color": "#f48fb1",
+          "job": {
+            "title": "Finance Manager",
+            "department": "Finance",
+            "purpose": "Finance Manager for the office.",
+            "responsibilities": [
+              "Deliver Finance Manager work agreed with the owner.",
+              "Report progress and blockers in the office."
+            ]
+          }
+        },
+        {
+          "agent_id": "financial_planning_and_analysis",
+          "name": "FP&A",
+          "role": "FP&A",
+          "color": "#ffb74d",
+          "job": {
+            "title": "Financial Planning and Analysis Agent",
+            "department": "Finance",
+            "purpose": "The Financial Planning and Analysis (FP&A) Agent prepares draft budgets, rolling forecasts, scenario analysis and management reports from approved data and assumptions. It does not move money, authorize or reallocate budgets, post entries, or make binding commitments.",
+            "responsibilities": [
+              "Deliver FP&A work agreed with the owner.",
+              "Report progress and blockers in the office."
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "special_projects",
+      "name": "Special Projects",
+      "color": "#ce93d8",
+      "theme": "tile",
+      "desks": 5,
+      "members": []
+    }
+  ],
+  "shared": {
+    "break_room": {
+      "name": "Break Room"
+    },
+    "meeting_room": {
+      "name": "Meeting Room",
+      "seats": 6
+    },
+    "canteen": {
+      "name": "Canteen"
+    },
+    "rec_room": {
+      "name": "Rec Room"
+    },
+    "server_room": {
+      "name": "Server Room"
+    }
+  },
+  "archived": []
+}

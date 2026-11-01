@@ -1,0 +1,29 @@
+{
+  "id": "role_custom_example",
+  "title": "Custom Role Agent",
+  "default_name": "Custom Role",
+  "category": "Operations and supply chain",
+  "department": "Operations and supply chain",
+  "room": "special_projects",
+  "color": "#90a4ae",
+  "summary": "Describe the role in one sentence.",
+  "purpose": "Purpose and scope \u2014 what this agent does and must not do.",
+  "responsibilities": [
+    "Responsibility one.",
+    "Responsibility two."
+  ],
+  "tools": [],
+  "tools_text": "Tools, data and access \u2014 approved tools and least-privilege notes.",
+  "repos": [
+    "."
+  ],
+  "reports_to": "Accountable human owner",
+  "human_owner": "Accountable human owner.",
+  "outputs_and_cadence": "",
+  "decision_rights": "",
+  "capabilities_and_tests": "",
+  "performance_measures": "",
+  "handoffs_and_workflow": "",
+  "full_description": "### NN. Custom Role Agent\n\n**Purpose and scope** \u2014 \u2026\n\n**Human owner and applicability** \u2014 \u2026\n\n**Key responsibilities**\n- \u2026\n\n**Outputs and cadence** \u2014 \u2026\n\n**Tools, data and access** \u2014 \u2026\n\n**Decision rights and escalation** \u2014 \u2026\n\n**Required capabilities and acceptance tests** \u2014 \u2026\n\n**Performance measures** \u2014 \u2026\n\n**Handoffs and example workflow** \u2014 \u2026\n",
+  "example": false
+}

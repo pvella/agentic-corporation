@@ -1,0 +1,1779 @@
+## A y-sorted piece of furniture. Main creates one per Office.props entry and
+## parents it under World/Props, so agents walking behind a desk, sofa or
+## table are correctly hidden by it.
+##
+## Desks show their owner's monitor: scrolling code in the agent's colour
+## while it works at the desk, a dim screensaver otherwise. The foosball table
+## animates (spinning rods, rolling ball) while `playing` is true.
+##
+## In the isometric view (Iso.enabled) the same props are drawn as shaded
+## boxes (top + south + east faces). Long pieces (tables, counters, walls ...)
+## are split by Main into several Prop nodes, each drawing only its `clip`
+## slice, so the y-sort (screen y of the slice anchor = world x + y) stays
+## correct for people walking around them. Walls are props too in iso
+## ("wall" kind) so they sort with people.
+extends Node2D
+
+const Office := preload("res://Office.gd")
+const Iso := preload("res://Iso.gd")
+
+var kind := ""
+var rect := Rect2()          ## world-space footprint
+var data: Dictionary = {}
+var owner_agent: Node = null ## Agent at this desk (desks only)
+var playing := false         ## foosball only
+
+var clip := Rect2()          ## iso: the part of `rect` this node draws
+var _t := 0.0
+var _font: Font
+
+
+func setup(d: Dictionary, slice: Rect2 = Rect2()) -> void:
+	kind = str(d.kind)
+	rect = d.rect
+	data = d
+	clip = slice if slice.has_area() else rect
+	_font = ThemeDB.fallback_font
+	if Iso.enabled:
+		position = Iso.to_screen(iso_anchor())
+	else:
+		# Floor coverings sort at the top edge so they stay under walkers.
+		var sy := float(d.get("sort_y", rect.position.y if kind in ["rug", "yoga_mat", "cushion"] else rect.end.y))
+		position = Vector2(rect.position.x, sy) * Iso.SCALE
+	# Rugs/mats are floor paint — keep them under every agent and standing prop.
+	if kind in ["rug", "yoga_mat", "cushion"]:
+		z_index = -20
+		z_as_relative = false
+	set_process(kind in ["desk", "foosball", "servers", "coffee", "water", "plant", "planter", "vending", "fridge", "microwave", "fountain", "lamp", "printer", "aquarium"])
+
+
+## World point whose depth (x + y) orders this prop against people.
+func iso_anchor() -> Vector2:
+	match kind:
+		"chair":
+			return Vector2(rect.get_center().x, float(data.get("sort_y", rect.end.y)))
+		"chairback":
+			return Vector2(rect.get_center().x, rect.position.y + 4.0)
+		"sofa":
+			# Seat + left arm: drawn before whoever sits on it.
+			return Vector2(rect.position.x + 10.0, rect.position.y + 18.0)
+		"sofaarm":
+			return clip.get_center() + Vector2(0, 6)
+		"sofaback":
+			return Vector2(clip.get_center().x, rect.position.y)
+		# Floor layer: north-west corner (min x+y) so rugs/mats always y-sort
+		# under agents and furniture standing on them — never a raised slab.
+		"rug", "yoga_mat", "cushion":
+			var r := clip if clip.has_area() else rect
+			return Vector2(r.position.x, r.position.y)
+	return clip.get_center()
+
+
+func _process(delta: float) -> void:
+	_t += delta
+	queue_redraw()
+
+
+func _draw() -> void:
+	if Iso.enabled:
+		_draw_iso()
+		return
+	# Draw in world coordinates (the node origin is only used for y-sorting).
+	draw_set_transform(-position, 0.0, Vector2.ONE * Iso.SCALE)
+	match kind:
+		"desk": _draw_desk()
+		"chair": _draw_chair()
+		"coffee": _draw_coffee()
+		"counter": _draw_counter()
+		"water": _draw_water()
+		"sofa": _draw_sofa()
+		"foosball": _draw_foosball()
+		"table": _draw_table()
+		"plant": _draw_plant()
+		"planter": _draw_planter()
+		"armchair": _draw_armchair()
+		"coffee_table": _draw_coffee_table()
+		"side_table": _draw_side_table()
+		"beanbag": _draw_beanbag()
+		"printer": _draw_printer()
+		"coat_rack": _draw_coat_rack()
+		"aquarium": _draw_aquarium()
+		"reception": _draw_reception()
+		"bench": _draw_bench()
+		"servers": _draw_servers()
+		"vending": _draw_vending()
+		"fridge": _draw_fridge()
+		"menu": _draw_menu()
+		"microwave": _draw_microwave()
+		"bin": _draw_bin()
+		"yoga_mat": _draw_yoga_mat()
+		"cushion": _draw_cushion()
+		"rug": _draw_rug()
+		"fountain": _draw_fountain()
+		"lamp": _draw_lamp()
+		"bookcase": _draw_bookcase()
+		"filing": _draw_filing()
+		"pinboard": _draw_pinboard()
+		"kanban": _draw_kanban()
+		"chart": _draw_chart()
+		"screen": _draw_screen_wall()
+		"snacks": _draw_snacks()
+		"whiteboard": _draw_pinboard()
+
+
+func _rr(r: Rect2, radius: float, c: Color) -> void:
+	draw_colored_polygon(Office.rounded_rect_points(r, radius), c)
+
+
+func _shadow(r: Rect2, alpha: float = 0.18) -> void:
+	_rr(Rect2(r.position + Vector2(3, 5), r.size), 6, Color(0, 0, 0, alpha))
+
+
+# ---------------------------------------------------------------------------
+func _is_executive_desk() -> bool:
+	return str(data.get("style", "")) == "executive"
+
+
+func _is_executive_chair() -> bool:
+	return str(data.get("style", "")) == "executive"
+
+
+func _draw_exec_nameplate(r: Rect2) -> void:
+	var label := str(data.get("owner", ""))
+	if owner_agent != null and is_instance_valid(owner_agent):
+		if "display_name" in owner_agent:
+			label = str(owner_agent.display_name)
+	if label.is_empty():
+		label = "Chief of Staff"
+	if label.length() > 18:
+		label = label.substr(0, 18)
+	var plate := Rect2(r.position.x + r.size.x * 0.55 - 36, r.end.y - 10, 72, 8)
+	_rr(plate, 2, Color("#c9a227"))
+	_rr(plate.grow(-1.0), 1, Color("#3e2723"))
+	draw_string(_font, Vector2(plate.position.x + 4, plate.end.y - 2), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 7, Color("#ffe082"))
+
+
+func _draw_desk() -> void:
+	var r := rect
+	_shadow(r)
+	# Legs, top surface, darker front edge.
+	draw_rect(Rect2(r.position.x + 4, r.end.y - 4, 5, 8), Color("#5d4037"))
+	draw_rect(Rect2(r.end.x - 9, r.end.y - 4, 5, 8), Color("#5d4037"))
+	_rr(r, 4, Color("#6d4c41"))
+	_rr(Rect2(r.position, Vector2(r.size.x, r.size.y - 8)), 4, Color("#a1887f"))
+	draw_rect(Rect2(r.position.x + 3, r.position.y + 3, r.size.x - 6, 2), Color(1, 1, 1, 0.18))
+
+	if _is_executive_desk():
+		# L-return wing on the left (same wood as top).
+		var wing := Rect2(r.position.x, r.position.y, 40, 78)
+		_shadow(wing)
+		_rr(wing, 4, Color("#5d4037"))
+		_rr(Rect2(wing.position, Vector2(wing.size.x, wing.size.y - 8)), 4, Color("#8d6e63"))
+		# Dual monitors on the far edge.
+		for side: int in [-1, 1]:
+			var mx: float = r.position.x + r.size.x * 0.62 + float(side) * 34.0
+			var mon := Rect2(mx - 28, r.position.y - 42, 56, 40)
+			draw_rect(Rect2(mon.get_center().x - 3, mon.end.y - 2, 6, 8), Color("#37474f"))
+			draw_rect(Rect2(mon.get_center().x - 10, mon.end.y + 5, 20, 3), Color("#37474f"))
+			_rr(mon.grow(1.5), 4, Color("#1c2328"))
+			_rr(mon, 3, Color("#263238"))
+			_draw_screen(mon.grow(-3.0))
+		var kb := Rect2(r.position.x + r.size.x * 0.55 - 24, r.position.y + 16, 48, 9)
+		_draw_keyboard(kb)
+		draw_rect(Rect2(r.end.x - 18, r.position.y + 10, 9, 11), Color("#fafafa"))
+		_draw_exec_nameplate(r)
+	else:
+		# Monitor: stands on the far edge, screen facing us (the agent sits in front).
+		var soft := bool(data.get("soft_monitor", false)) or str(data.get("set", "")) == "cozy"
+		var mon_w := 52.0 if soft else 64.0
+		var mon_h := 36.0 if soft else 44.0
+		var mon := Rect2(r.position.x + r.size.x * 0.5 - mon_w * 0.5, r.position.y - mon_h + 4.0, mon_w, mon_h)
+		var bezel := Color("#5c6b73") if soft else Color("#1c2328")
+		var frame := Color("#78909c") if soft else Color("#263238")
+		draw_rect(Rect2(mon.get_center().x - 4, mon.end.y - 2, 8, 9), Color("#607d8b") if soft else Color("#37474f"))
+		draw_rect(Rect2(mon.get_center().x - 12, mon.end.y + 6, 24, 3), Color("#607d8b") if soft else Color("#37474f"))
+		_rr(mon.grow(1.5), 4, bezel)
+		_rr(mon, 3, frame)
+		_draw_screen(mon.grow(-3.5))
+		# Keyboard + mouse on the near edge, mug on the side.
+		var kb := Rect2(r.position.x + r.size.x * 0.5 - 22, r.position.y + 14, 44, 9)
+		_draw_keyboard(kb)
+		draw_rect(Rect2(r.position.x + 7, r.position.y + 10, 9, 11), Color("#fafafa"))
+		draw_rect(Rect2(r.position.x + 8, r.position.y + 11, 7, 3), Color("#6d4c41"))
+		if (owner_agent == null or not is_instance_valid(owner_agent)) and str(data.get("owner", "")) == "":
+			draw_string(_font, Vector2(r.position.x + 22, r.end.y - 11), "free desk", HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(0, 0, 0, 0.35))
+
+
+func _draw_keyboard(kb: Rect2) -> void:
+	_rr(kb, 2, Color("#cfd8dc"))
+	for k in 5:
+		draw_line(kb.position + Vector2(4 + k * 8, 3), kb.position + Vector2(8 + k * 8, 3), Color("#90a4ae"), 1.0)
+	draw_line(kb.position + Vector2(8, 6), kb.position + Vector2(36, 6), Color("#90a4ae"), 1.0)
+	_rr(Rect2(kb.end.x + 7, kb.position.y + 1, 7, 9), 3, Color("#eceff1"))
+
+
+## Monitor contents (in whatever transform is current): code scrolling in the
+## owner's colour while it works, a red error screen, or a dim screensaver.
+func _draw_screen(screen: Rect2) -> void:
+	var agent := owner_agent if is_instance_valid(owner_agent) else null
+	var col := Color.from_string(str(data.get("color", "")), Color("#4fc3f7"))
+	if agent:
+		col = agent.body_color
+	var active: bool = agent != null and agent.is_seated_at_desk() and agent.state in ["WORKING", "THINKING"]
+	if agent != null and agent.is_seated_at_desk() and agent.state == "ERROR":
+		# Error screen: dark red with a blinking warning bar.
+		draw_rect(screen, Color("#3b0d0d"))
+		draw_rect(Rect2(screen.position.x + 4, screen.position.y + 5, screen.size.x - 8, 6), Color("#e53935", 0.9 if fmod(_t, 1.0) < 0.6 else 0.45))
+		for i in 3:
+			draw_line(Vector2(screen.position.x + 5, screen.position.y + 17 + i * 5), Vector2(screen.position.x + 12 + (i * 9) % 22, screen.position.y + 17 + i * 5), Color("#ef9a9a", 0.8), 1.6)
+	elif active:
+		draw_rect(screen, Color("#0d1b24"))
+		# Scrolling code lines in the agent's colour.
+		var line_h := 4.0
+		var speed := 9.0 if agent.state == "WORKING" else 2.0
+		var scroll := fmod(_t * speed, line_h)
+		var first := int(_t * speed / line_h)
+		var y := screen.position.y + 2.0 - scroll
+		var i := 0
+		while y < screen.end.y - 2.0:
+			if y > screen.position.y:
+				var seed := (first + i) * 7919 + int(rect.position.x)
+				var indent := float((seed % 4) * 4)
+				var w := 8.0 + float((seed / 5) % 26)
+				var lc := col.lightened(0.35) if (seed % 5) != 0 else Color("#e5c07b")
+				draw_line(Vector2(screen.position.x + 3 + indent, y), Vector2(minf(screen.position.x + 3 + indent + w, screen.end.x - 3), y), Color(lc, 0.9), 1.6)
+			y += line_h
+			i += 1
+		# Screen glow + blinking cursor.
+		draw_rect(screen, Color(col, 0.10))
+		if fmod(_t, 1.0) < 0.5:
+			draw_rect(Rect2(screen.position.x + 4, screen.end.y - 5, 4, 2), Color.WHITE)
+	else:
+		# Dim screensaver: a slow drifting dot.
+		draw_rect(screen, Color("#10161a"))
+		var p := screen.position + Vector2(
+			screen.size.x * (0.5 + 0.42 * sin(_t * 0.7 + rect.position.x)),
+			screen.size.y * (0.5 + 0.38 * sin(_t * 0.9 + rect.position.y)))
+		draw_circle(p, 2.2, Color(col, 0.35))
+		draw_circle(p, 4.5, Color(col, 0.08))
+	draw_rect(Rect2(screen.position, Vector2(screen.size.x, 2)), Color(1, 1, 1, 0.06))
+
+
+func _draw_chair() -> void:
+	# Office chair seen from behind: the back covers the sitter's lower back.
+	var r := rect
+	var c := r.get_center()
+	var exec := _is_executive_chair()
+	var base := Color("#3e2723") if exec else Color("#263238")
+	var seat := Color("#5d4037") if exec else Color("#455a64")
+	var stem := Color("#4e342e") if exec else Color("#37474f")
+	draw_circle(Vector2(c.x, r.end.y + 1), 10.0 if exec else 9.0, Color(0, 0, 0, 0.15))
+	draw_line(Vector2(c.x, r.end.y - 6), Vector2(c.x, r.end.y + 2), stem, 3.5 if exec else 3.0)
+	for dx: float in ([-10.0, -3.0, 3.0, 10.0] if exec else [-8.0, 0.0, 8.0]):
+		draw_circle(Vector2(c.x + dx, r.end.y + 2), 1.8, base)
+	_rr(Rect2(r.position.x - 1, r.position.y + 6, r.size.x + 2, r.size.y - 10), 6, base)
+	_rr(Rect2(r.position.x + 2, r.position.y + 8, r.size.x - 4, r.size.y - 15), 5, seat)
+	draw_line(Vector2(r.position.x + 6, r.position.y + 11), Vector2(r.end.x - 6, r.position.y + 11), Color(1, 1, 1, 0.15), 1.5)
+	if exec:
+		# High back + brass rivets.
+		_rr(Rect2(r.position.x + 4, r.position.y - 4, r.size.x - 8, 12), 4, base)
+		draw_circle(Vector2(r.position.x + 8, r.position.y + 14), 1.4, Color("#c9a227"))
+		draw_circle(Vector2(r.end.x - 8, r.position.y + 14), 1.4, Color("#c9a227"))
+
+
+func _draw_coffee() -> void:
+	var r := rect
+	_shadow(r)
+	_rr(r, 5, Color("#3e2723"))
+	_rr(Rect2(r.position + Vector2(4, 4), Vector2(r.size.x - 8, 14)), 3, Color("#c62828"))
+	draw_circle(r.position + Vector2(r.size.x - 12, 11), 2.5, Color("#69f0ae") if fmod(_t, 2.0) < 1.6 else Color("#1b5e20"))
+	draw_rect(Rect2(r.position.x + r.size.x * 0.5 - 7, r.position.y + 22, 14, 3), Color("#212121"))
+	_rr(Rect2(r.position.x + r.size.x * 0.5 - 5, r.end.y - 14, 10, 10), 2, Color("#fafafa"))
+	# Steam.
+	for i in 2:
+		var s := fmod(_t * 12.0 + i * 8.0, 16.0)
+		draw_circle(Vector2(r.position.x + r.size.x * 0.5 + sin(_t * 3.0 + i) * 2.0, r.end.y - 16 - s), 2.0, Color(1, 1, 1, 0.35 * (1.0 - s / 16.0)))
+
+
+func _draw_counter() -> void:
+	var r := rect
+	_shadow(r, 0.12)
+	_rr(r, 3, Color("#b0bec5"))
+	_rr(Rect2(r.position, Vector2(r.size.x, r.size.y - 7)), 3, Color("#eceff1"))
+	_rr(Rect2(r.position.x + r.size.x - 52, r.position.y + 5, 40, 16), 4, Color("#b0bec5"))
+	draw_circle(Vector2(r.position.x + 30, r.position.y + 12), 7.0, Color("#ffcc80"))  # fruit bowl
+	draw_circle(Vector2(r.position.x + 27, r.position.y + 10), 3.0, Color("#e53935"))
+	draw_circle(Vector2(r.position.x + 33, r.position.y + 11), 3.0, Color("#fdd835"))
+
+
+func _draw_water() -> void:
+	var r := rect
+	_shadow(r)
+	_rr(Rect2(r.position.x + 4, r.position.y + 18, r.size.x - 8, r.size.y - 18), 4, Color("#eceff1"))
+	draw_rect(Rect2(r.position.x + 8, r.position.y + 30, r.size.x - 16, 4), Color("#90a4ae"))
+	_rr(Rect2(r.position.x + 7, r.position.y - 6, r.size.x - 14, 26), 9, Color("#4fc3f7", 0.85))
+	draw_rect(Rect2(r.position.x + 11, r.position.y - 2, 4, 16), Color(1, 1, 1, 0.45))
+	var bub := fmod(_t * 10.0, 20.0)
+	draw_circle(Vector2(r.position.x + r.size.x * 0.5 + 3, r.position.y + 16 - bub), 1.5, Color(1, 1, 1, 0.7))
+
+
+func _draw_sofa() -> void:
+	var r := rect
+	_shadow(r)
+	_rr(Rect2(r.position.x, r.position.y + 6, r.size.x, r.size.y - 6), 8, Color("#283593"))
+	_rr(Rect2(r.position.x + 14, r.position.y + 8, r.size.x - 28, r.size.y - 18), 6, Color("#5c6bc0"))
+	draw_line(Vector2(r.get_center().x, r.position.y + 10), Vector2(r.get_center().x, r.end.y - 12), Color("#3f51b5"), 2.0)
+	_rr(Rect2(r.position.x, r.position.y, 16, r.size.y), 7, Color("#3949ab"))
+	_rr(Rect2(r.end.x - 16, r.position.y, 16, r.size.y), 7, Color("#3949ab"))
+
+
+func _draw_foosball() -> void:
+	var r := rect
+	_shadow(r, 0.22)
+	# Legs + cabinet.
+	for lx: float in [r.position.x + 6, r.end.x - 12]:
+		draw_rect(Rect2(lx, r.end.y - 4, 6, 10), Color("#3e2723"))
+	_rr(r, 5, Color("#5d4037"))
+	var field := r.grow(-6)
+	draw_rect(field, Color("#2e7d32"))
+	draw_rect(field, Color(1, 1, 1, 0.5), false, 1.0)
+	draw_line(Vector2(field.get_center().x, field.position.y), Vector2(field.get_center().x, field.end.y), Color(1, 1, 1, 0.45), 1.0)
+	draw_arc(field.get_center(), 7.0, 0, TAU, 16, Color(1, 1, 1, 0.45), 1.0)
+	# Goals.
+	draw_rect(Rect2(field.position.x - 3, field.get_center().y - 8, 3, 16), Color("#eeeeee"))
+	draw_rect(Rect2(field.end.x, field.get_center().y - 8, 3, 16), Color("#eeeeee"))
+	# Ball.
+	var ball := field.get_center()
+	if playing:
+		ball += Vector2(sin(_t * 2.3) * field.size.x * 0.42, sin(_t * 3.7 + 1.0) * field.size.y * 0.36)
+	draw_circle(ball + Vector2(1, 1), 2.6, Color(0, 0, 0, 0.3))
+	draw_circle(ball, 2.6, Color.WHITE)
+	# Rods with little players; they slide and flip while a game is on.
+	var rods := 4
+	for i in rods:
+		var x := field.position.x + field.size.x * (i + 0.5) / rods
+		var team_red := i % 2 == 0
+		var col := Color("#e53935") if team_red else Color("#1e88e5")
+		draw_line(Vector2(x, r.position.y - 6), Vector2(x, r.end.y + 6), Color("#b0bec5"), 2.0)
+		draw_circle(Vector2(x, r.position.y - 7), 2.5, Color("#212121"))
+		draw_circle(Vector2(x, r.end.y + 7), 2.5, Color("#212121"))
+		var slide := sin(_t * (5.0 + i) + i) * 6.0 if playing else 0.0
+		var spin := sin(_t * (9.0 + i * 1.7)) if playing else 1.0  # >0 upright, <0 flipped
+		for k in 2:
+			var py := field.position.y + field.size.y * (0.3 + 0.4 * k) + slide
+			var len := 5.0 * spin
+			draw_rect(Rect2(x - 2.5, py - maxf(len, 0.0) - 2.0, 5, absf(len) + 4.0), col)
+			draw_circle(Vector2(x, py), 2.0, col.lightened(0.3))
+
+
+func _draw_table() -> void:
+	var r := rect
+	_shadow(r, 0.22)
+	_rr(r, 8, Color("#5d4037"))
+	_rr(Rect2(r.position, Vector2(r.size.x, r.size.y - 8)), 8, Color("#8d6e63"))
+	draw_rect(Rect2(r.position.x + 8, r.position.y + 4, r.size.x - 16, 2), Color(1, 1, 1, 0.15))
+	# Papers, laptop and mugs.
+	var n := int(r.size.x / 70.0)
+	for i in n:
+		var px := r.position.x + 24 + i * (r.size.x - 48) / maxf(n - 1, 1)
+		draw_rect(Rect2(px - 9, r.position.y + 14 + (i % 2) * 14, 18, 13), Color(1, 1, 1, 0.85))
+	draw_circle(Vector2(r.end.x - 20, r.position.y + 14), 4.0, Color("#fafafa"))
+
+
+func _draw_plant() -> void:
+	var r := rect
+	var c := r.get_center()
+	draw_circle(c + Vector2(3, 8), r.size.x * 0.42, Color(0, 0, 0, 0.18))
+	_rr(Rect2(c.x - 9, c.y, 18, 15), 4, Color("#8d6e63"))
+	_rr(Rect2(c.x - 10, c.y - 2, 20, 5), 2, Color("#6d4c41"))
+	var sway := sin(_t * 1.2 + r.position.x) * 1.0
+	draw_circle(c + Vector2(-7 + sway, -6), 9, Color("#2e7d32"))
+	draw_circle(c + Vector2(7 + sway, -7), 9, Color("#388e3c"))
+	draw_circle(c + Vector2(sway, -15), 10, Color("#43a047"))
+	draw_circle(c + Vector2(-3 + sway, -17), 4, Color("#66bb6a"))
+	match _plant_variant():
+		"tall":
+			for i in 6:
+				var ang := TAU * i / 6.0 + 0.3
+				draw_line(c + Vector2(sway, -10), c + Vector2(sway, -10) + Vector2(cos(ang), sin(ang)) * 15.0, Color("#2e7d32"), 3.0)
+		"succulent":
+			draw_circle(c + Vector2(sway, -10), 7.0, Color("#a5d6a7"))
+			draw_circle(c + Vector2(sway, -10), 3.5, Color("#66bb6a"))
+		"flower":
+			for fp: Vector2 in [Vector2(-7, -8), Vector2(6, -12), Vector2(-1, -19)]:
+				draw_circle(c + fp + Vector2(sway, 0), 2.5, Color("#f06292"))
+
+
+func _draw_planter() -> void:
+	var r := rect
+	_shadow(r)
+	_rr(r, 4, Color("#8d6e63"))
+	_rr(r.grow(-3), 3, Color("#4e342e"))
+	var along_y := r.size.y >= r.size.x
+	var length := r.size.y if along_y else r.size.x
+	var n := maxi(1, int(length / 24.0))
+	for i in n:
+		var t := (i + 0.5) / n
+		var c := Vector2(r.get_center().x, r.position.y + t * r.size.y) if along_y else Vector2(r.position.x + t * r.size.x, r.get_center().y)
+		draw_circle(c, 8, Color("#388e3c"))
+		draw_circle(c + Vector2(-2, -2), 4, Color("#66bb6a"))
+
+
+func _draw_reception() -> void:
+	var r := rect
+	_shadow(r)
+	_rr(r, 8, Color("#455a64"))
+	_rr(Rect2(r.position, Vector2(r.size.x, r.size.y - 9)), 8, Color("#eceff1"))
+	draw_string(_font, Vector2(r.position.x + 22, r.end.y - 2), "RECEPTION", HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(1, 1, 1, 0.85))
+	draw_circle(Vector2(r.position.x + 20, r.position.y + 12), 5, Color("#ffca28"))
+
+
+func _draw_bench() -> void:
+	var r := rect
+	_shadow(r)
+	_rr(r, 6, Color("#6d4c41"))
+	_rr(r.grow(-4), 5, Color("#a1887f"))
+
+
+func _draw_servers() -> void:
+	var r := rect
+	_shadow(r)
+	_rr(r, 3, Color("#212121"))
+	for i in int(r.size.y / 18.0):
+		var y := r.position.y + 8 + i * 18
+		draw_rect(Rect2(r.position.x + 5, y, r.size.x - 10, 10), Color("#424242"))
+		var on := fmod(_t * (1.0 + i * 0.3), 1.0) < 0.7
+		draw_circle(Vector2(r.end.x - 10, y + 5), 2.0, Color("#69f0ae") if on else Color("#1b5e20"))
+
+
+func _draw_vending() -> void:
+	var r := rect
+	_shadow(r)
+	_rr(r, 4, Color("#b71c1c"))
+	_rr(Rect2(r.position.x + 4, r.position.y + 4, r.size.x - 8, r.size.y - 14), 3, Color("#263238"))
+	for i in 3:
+		for j in 2:
+			draw_circle(r.position + Vector2(12 + i * 10, 12 + j * 10), 3.0, [Color("#4fc3f7"), Color("#ffca28"), Color("#81c784")][(i + j) % 3])
+
+
+# ===========================================================================
+# Isometric drawing
+# ===========================================================================
+const WALL_TOP := Color("#d5d9e0")
+
+## Screen point (in this node's local space) of world point `w` at height `z`.
+func _p(w: Vector2, z: float = 0.0) -> Vector2:
+	return Iso.to_screen(w, z) - position
+
+
+func _poly(pts: Array, c: Color) -> void:
+	draw_colored_polygon(PackedVector2Array(pts), c)
+
+
+## A shaded box standing on world footprint `r` from height z0 to z0 + h,
+## clipped to this node's slice. `south`/`east` override the face colours.
+func _box(r: Rect2, z0: float, h: float, top: Color, south: Color = Color(0, 0, 0, 0), east: Color = Color(0, 0, 0, 0), edge: bool = true) -> void:
+	var full := r
+	r = r.intersection(clip)
+	if r.size.x < 0.01 or r.size.y < 0.01:
+		return
+	var z1 := z0 + h
+	var a := r.position
+	var b := Vector2(r.end.x, r.position.y)
+	var c := r.end
+	var d := Vector2(r.position.x, r.end.y)
+	if south.a == 0.0:
+		south = top.darkened(0.2)
+	if east.a == 0.0:
+		east = top.darkened(0.36)
+	if h > 0.0:
+		_poly([_p(d, z0), _p(c, z0), _p(c, z1), _p(d, z1)], south)
+		_poly([_p(b, z0), _p(c, z0), _p(c, z1), _p(b, z1)], east)
+	_poly([_p(a, z1), _p(b, z1), _p(c, z1), _p(d, z1)], top)
+	if edge:
+		var hl := Color(top.lightened(0.35), 0.55)
+		if r.end.y >= full.end.y - 0.01:
+			draw_line(_p(d, z1), _p(c, z1), hl, 1.0)
+		if r.end.x >= full.end.x - 0.01:
+			draw_line(_p(c, z1), _p(b, z1), hl, 1.0)
+
+
+## Switch drawing to the floor-parallel plane at height z (world coordinates).
+func _plane_top(z: float) -> void:
+	draw_set_transform_matrix(Iso.floor_xf(z, -position))
+
+
+## Vertical plane at world y = y0 facing south: x = world x, y = px below z_top.
+func _plane_south(y0: float, z_top: float) -> void:
+	draw_set_transform_matrix(Iso.south_xf(y0, z_top, -position))
+
+
+## Vertical plane at world x = x0 facing east: x = world y, y = px below z_top.
+func _plane_east(x0: float, z_top: float) -> void:
+	draw_set_transform_matrix(Iso.east_xf(x0, z_top, -position))
+
+
+## Billboard: upright drawing at screen point `p`, scaled like the world.
+func _bb(p: Vector2) -> void:
+	draw_set_transform(p, 0, Vector2.ONE * Iso.SCALE)
+
+
+func _plane_reset() -> void:
+	draw_set_transform_matrix(Transform2D.IDENTITY)
+
+
+## Soft contact shadow on the floor under this slice of `r`.
+func _floor_shadow(r: Rect2, alpha: float = 0.22) -> void:
+	if str(data.get("set", "")) == "cozy":
+		alpha = maxf(alpha, 0.30)
+	var s := Rect2(r.position + Vector2(2, 3), r.size).intersection(clip.grow_individual(0, 0, 3, 4))
+	if not s.has_area():
+		return
+	_plane_top(0.0)
+	draw_rect(s, Color(0, 0, 0, alpha))
+	# Soft oval contact under every prop.
+	# `c` is a world point, so the oval goes through the floor transform too
+	# (a bare draw_set_transform put it hundreds of px away on the grass).
+	var c := s.get_center()
+	var oval := Transform2D(0.0, Vector2(maxf(s.size.x * 0.55, 6.0), maxf(s.size.y * 0.35, 4.0)), 0.0, c)
+	draw_set_transform_matrix(Iso.floor_xf(0.0, -position) * oval)
+	draw_circle(Vector2.ZERO, 1.0, Color(0, 0, 0, 0.16))
+	_plane_reset()
+
+
+## True for the slice drawn last (east/south-most): details that straddle
+## slices are drawn by it so later slices don't paint over them.
+func _last_slice() -> bool:
+	return clip.end.x >= rect.end.x - 0.5 and clip.end.y >= rect.end.y - 0.5
+
+
+func _in_clip(p: Vector2) -> bool:
+	return clip.grow(0.01).has_point(p)
+
+
+func _draw_iso() -> void:
+	match kind:
+		"desk": _iso_desk()
+		"chair": _iso_chair()
+		"chairback": _iso_chairback()
+		"coffee": _iso_coffee()
+		"counter": _iso_counter()
+		"water": _iso_water()
+		"vending": _iso_vending()
+		"sofa": _iso_sofa_seat()
+		"sofaarm": _box(rect, 0, 26, Color("#3949ab"))
+		"sofaback": _iso_sofa_back()
+		"foosball": _iso_foosball()
+		"table": _iso_table()
+		"plant": _iso_plant()
+		"planter": _iso_planter()
+		"armchair": _iso_armchair()
+		"coffee_table": _iso_coffee_table()
+		"side_table": _iso_side_table()
+		"beanbag": _iso_beanbag()
+		"printer": _iso_printer()
+		"coat_rack": _iso_coat_rack()
+		"aquarium": _iso_aquarium()
+		"yoga_mat": _iso_yoga_mat()
+		"cushion": _iso_cushion()
+		"rug": _iso_rug()
+		"fountain": _iso_fountain()
+		"lamp": _iso_lamp()
+		"reception": _iso_reception()
+		"bench": _iso_bench()
+		"servers": _iso_servers()
+		"wall": _iso_wall()
+		"whiteboard": _iso_whiteboard()
+		"pinboard": _iso_pinboard()
+		"kanban": _iso_kanban()
+		"chart": _iso_chart()
+		"bookcase": _iso_bookcase()
+		"filing": _iso_filing()
+		"screen": _iso_screen()
+		"snacks": _iso_snacks()
+		"fridge": _iso_fridge()
+		"menu": _iso_menu()
+		"microwave": _iso_microwave()
+		"bin": _iso_bin()
+		_: _box(rect, 0, 20, Color("#90a4ae"))
+
+
+func _legs(r: Rect2, h: float, c: Color, inset: float = 3.0, size: float = 4.0) -> void:
+	for p: Vector2 in [r.position + Vector2(inset, inset), Vector2(r.end.x - inset - size, r.position.y + inset),
+			Vector2(r.position.x + inset, r.end.y - inset - size), r.end - Vector2(inset + size, inset + size)]:
+		_box(Rect2(p, Vector2(size, size)), 0, h, c, Color(0, 0, 0, 0), Color(0, 0, 0, 0), false)
+
+
+const DESK_H := 26.0
+
+func _iso_desk() -> void:
+	var r := rect
+	_floor_shadow(r)
+	_legs(r, DESK_H - 4.0, Color("#5d4037"))
+	# Modesty panel along the back so the desk reads as a solid piece.
+	_box(Rect2(r.position.x + 3, r.position.y + 3, r.size.x - 6, 3), 6, DESK_H - 10, Color("#6d4c41"))
+	_box(r, DESK_H - 4.0, 4.0, Color("#a1887f"), Color("#7b5e57"), Color("#6d4c41"))
+	# Desk-top clutter: keyboard + mouse near the sitter, a mug.
+	_plane_top(DESK_H)
+	draw_rect(Rect2(r.position.x + 3, r.position.y + 3, r.size.x - 6, 2), Color(1, 1, 1, 0.16))
+	_draw_keyboard(Rect2(r.position.x + r.size.x * 0.5 - 22, r.position.y + 18, 44, 9))
+	if (owner_agent == null or not is_instance_valid(owner_agent)) and str(data.get("owner", "")) == "":
+		draw_string(_font, Vector2(r.position.x + 8, r.end.y - 4), "free desk", HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(0, 0, 0, 0.35))
+	_plane_reset()
+	var cx := r.get_center().x
+	_iso_mug(Vector2(r.position.x + 11.5, r.position.y + 13.5), DESK_H)
+	if _is_executive_desk():
+		# L-return wing (left) + dual monitors (executive dual iso).
+		var wing := Rect2(r.position.x, r.position.y, 40, 78)
+		_box(wing, DESK_H - 4.0, 4.0, Color("#8d6e63"), Color("#6d4c41"), Color("#5d4037"))
+		var z0 := DESK_H + 8.0
+		var mh := 38.0
+		for side: int in [-1, 1]:
+			var mx: float = cx + 12.0 + float(side) * 30.0
+			_box(Rect2(mx - 2, r.position.y + 5, 4, 4), DESK_H, 10, Color("#37474f"))
+			var mon := Rect2(mx - 26, r.position.y + 3, 52, 5)
+			_box(mon, z0, mh, Color("#2b343a"), Color("#1c2328"), Color("#151b1f"))
+			_plane_south(mon.end.y, z0 + mh)
+			draw_rect(Rect2(mx - 24, 2, 48, mh - 4), Color("#263238"))
+			_draw_screen(Rect2(mx - 22.5, 3.5, 45, mh - 7))
+			_plane_reset()
+		_plane_top(DESK_H)
+		_draw_exec_nameplate(r)
+		_plane_reset()
+	else:
+		var style := str(data.get("style", ""))
+		if style == "drafting":
+			# Angled drafting board + lamp + paper roll (no tall monitor).
+			_plane_top(DESK_H)
+			draw_rect(Rect2(r.position.x + 6, r.position.y + 4, r.size.x - 12, r.size.y - 10), Color("#fff8e1"))
+			draw_line(Vector2(r.position.x + 10, r.position.y + 10), Vector2(r.end.x - 14, r.end.y - 12), Color("#bcaaa4"), 1.2)
+			draw_line(Vector2(r.position.x + 14, r.position.y + 18), Vector2(r.end.x - 20, r.end.y - 8), Color("#bcaaa4"), 1.0)
+			_plane_reset()
+			_box(Rect2(r.end.x - 18, r.position.y + 6, 10, 10), DESK_H, 18, Color("#ffcc80"), Color("#ffa726"), Color("#ef6c00"))
+			_box(Rect2(r.position.x + 6, r.position.y + 6, 14, 8), DESK_H, 6, Color("#eceff1"))
+		elif style == "workbench":
+			# Lab bench: tool tray, beaker, cable spool — soft monitor optional.
+			_plane_top(DESK_H)
+			draw_rect(Rect2(r.position.x + 4, r.position.y + 4, 28, 12), Color("#546e7a"))
+			for i in 3:
+				draw_rect(Rect2(r.position.x + 6 + i * 8, r.position.y + 6, 6, 8), [Color("#ef5350"), Color("#42a5f5"), Color("#66bb6a")][i])
+			draw_circle(Vector2(r.end.x - 16, r.position.y + 14), 5.0, Color("#4fc3f7", 0.7))
+			_plane_reset()
+			var soft_wb := bool(data.get("soft_monitor", true))
+			if soft_wb:
+				var stand := Color("#78909c")
+				_box(Rect2(cx - 3, r.position.y + 5, 6, 4), DESK_H, 8, stand)
+				var mon := Rect2(cx - 22, r.position.y + 3, 44, 5)
+				_box(mon, DESK_H + 6.0, 26.0, Color("#90a4ae"), Color("#78909c"), Color("#607d8b"))
+				_plane_south(mon.end.y, DESK_H + 32.0)
+				_draw_screen(Rect2(cx - 19, 2, 38, 22))
+				_plane_reset()
+		elif style == "headset":
+			# Soft monitor + headset cradle on the desk.
+			var stand := Color("#78909c")
+			_box(Rect2(cx - 3, r.position.y + 5, 6, 4), DESK_H, 10, stand)
+			_box(Rect2(cx - 10, r.position.y + 4, 20, 8), DESK_H, 1.5, stand)
+			var mon := Rect2(cx - 25, r.position.y + 3, 50, 5)
+			_box(mon, DESK_H + 8.0, 30.0, Color("#90a4ae"), Color("#78909c"), Color("#607d8b"))
+			_plane_south(mon.end.y, DESK_H + 38.0)
+			_draw_screen(Rect2(cx - 22, 3, 44, 24))
+			_plane_reset()
+			_box(Rect2(r.end.x - 22, r.position.y + 14, 14, 10), DESK_H, 8, Color("#37474f"), Color("#263238"), Color("#1c2328"))
+			_box(Rect2(r.end.x - 20, r.position.y + 16, 10, 6), DESK_H + 8, 4, Color("#90caf9"))
+		else:
+			# Monitor on the far edge, screen facing the sitter (south).
+			var soft := bool(data.get("soft_monitor", false)) or str(data.get("set", "")) == "cozy"
+			var stand := Color("#78909c") if soft else Color("#37474f")
+			_box(Rect2(cx - 3, r.position.y + 5, 6, 4), DESK_H, 10, stand)
+			_box(Rect2(cx - 10, r.position.y + 4, 20, 8), DESK_H, 1.5, stand)
+			var mw := 50.0 if soft else 62.0
+			var mon := Rect2(cx - mw * 0.5, r.position.y + 3, mw, 5)
+			var z0 := DESK_H + 8.0
+			var mh := 32.0 if soft else 40.0
+			var topc := Color("#90a4ae") if soft else Color("#2b343a")
+			var southc := Color("#78909c") if soft else Color("#1c2328")
+			var eastc := Color("#607d8b") if soft else Color("#151b1f")
+			_box(mon, z0, mh, topc, southc, eastc)
+			_plane_south(mon.end.y, z0 + mh)
+			draw_rect(Rect2(cx - mw * 0.5 + 2, 2, mw - 4, mh - 4), Color("#546e7a") if soft else Color("#263238"))
+			_draw_screen(Rect2(cx - mw * 0.5 + 3.5, 3.5, mw - 7, mh - 7))
+			_plane_reset()
+
+
+func _iso_chair() -> void:
+	var r := rect
+	var c := Vector2(r.get_center().x, r.position.y + r.size.y * 0.5 + 1)
+	_floor_shadow(Rect2(c - Vector2(12, 11), Vector2(24, 22)), 0.20)
+	var tint := Color.from_string(str(data.get("color", "")), Color("#455a64"))
+	if str(data.get("color", "")).is_empty():
+		tint = Color("#455a64")
+	var dark := tint.darkened(0.25)
+	var mid := tint.darkened(0.12)
+	_box(Rect2(c - Vector2(2, 2), Vector2(4, 4)), 0, 13, Color("#37474f"), Color(0, 0, 0, 0), Color(0, 0, 0, 0), false)
+	var seat := Rect2(c.x - 12, c.y - 11, 24, 22)
+	_box(seat, 13, 5, tint, dark, mid)
+	# Backrest on the south side (we look at the sitter's back from the south-east).
+	_box(Rect2(seat.position.x + 1, seat.end.y - 4, seat.size.x - 2, 4), 18, 24, mid, tint, dark)
+
+
+## Meeting chair whose sitter faces south (towards us): backrest on the north.
+func _iso_chairback() -> void:
+	var p: Vector2 = data.pos
+	var seat := Rect2(p.x - 12, p.y - 14, 24, 20)
+	_box(Rect2(p - Vector2(2, 6), Vector2(4, 4)), 0, 13, Color("#4e342e"), Color(0, 0, 0, 0), Color(0, 0, 0, 0), false)
+	_box(seat, 13, 5, Color("#8d6e63"), Color("#5d4037"), Color("#4e342e"))
+	_box(Rect2(seat.position.x + 1, seat.position.y, seat.size.x - 2, 4), 18, 26, Color("#795548"), Color("#8d6e63"), Color("#4e342e"))
+
+
+func _iso_coffee() -> void:
+	var r := rect
+	var h := 46.0
+	_floor_shadow(r)
+	_box(r, 0, h, Color("#4e342e"), Color("#3e2723"), Color("#2c1b17"))
+	_plane_south(r.end.y, h)
+	draw_rect(Rect2(r.position.x + 5, 4, r.size.x - 10, 12), Color("#c62828"))
+	draw_circle(Vector2(r.end.x - 11, 10), 2.5, Color("#69f0ae") if fmod(_t, 2.0) < 1.6 else Color("#1b5e20"))
+	draw_rect(Rect2(r.position.x + r.size.x * 0.5 - 8, 20, 16, 4), Color("#212121"))
+	draw_rect(Rect2(r.position.x + r.size.x * 0.5 - 5, h - 16, 10, 10), Color("#fafafa"))
+	_plane_reset()
+	_bb(_p(Vector2(r.position.x + r.size.x * 0.5, r.end.y), 14))
+	for i in 2:
+		var s := fmod(_t * 12.0 + i * 8.0, 16.0)
+		draw_circle(Vector2(sin(_t * 3.0 + i) * 2.0, -s), 2.0, Color(1, 1, 1, 0.35 * (1.0 - s / 16.0)))
+	_plane_reset()
+
+
+func _iso_counter() -> void:
+	var r := rect
+	var h := 30.0
+	var canteen := str(data.get("set", "")) == "canteen"
+	_floor_shadow(r, 0.12)
+	_box(r, 0, h, Color("#eceff1") if canteen else Color("#eceff1"), Color("#b0bec5"), Color("#90a4ae"))
+	# Stainless front strip for a serving counter.
+	if canteen:
+		_plane_south(r.end.y, h)
+		draw_rect(Rect2(r.position.x + 2, 4, r.size.x - 4, 6), Color("#cfd8dc"))
+		_plane_reset()
+	_plane_top(h)
+	if canteen:
+		# Trays of food along the counter: pizza, salad, burgers, fruit bowls.
+		var foods := [
+			{"c": Color("#ef6c00"), "label": "pizza"},
+			{"c": Color("#66bb6a"), "label": "salad"},
+			{"c": Color("#8d6e63"), "label": "burgers"},
+			{"c": Color("#ff7043"), "label": "fruit"},
+		]
+		var n := foods.size()
+		for i in n:
+			var fx := r.position.x + 18.0 + i * ((r.size.x - 36.0) / maxf(n - 1, 1))
+			var tray := Rect2(fx - 14, r.position.y + 6, 28, 20)
+			if not _in_clip(tray.get_center()):
+				continue
+			draw_rect(tray, Color("#eceff1"))
+			draw_rect(tray.grow(-2), foods[i].c)
+			# Garnish dots.
+			draw_circle(tray.get_center() + Vector2(-4, -2), 2.2, Color(1, 1, 1, 0.55))
+			draw_circle(tray.get_center() + Vector2(4, 1), 2.0, Color(0, 0, 0, 0.18))
+		_plane_reset()
+		# Sneeze guard (glass panel rising from the counter front).
+		var guard_h := 28.0
+		_plane_south(r.end.y - 2.0, h + guard_h)
+		var glass := Rect2(r.position.x + 6, 2, r.size.x - 12, guard_h - 4)
+		draw_rect(glass, Color(0.75, 0.9, 1.0, 0.28))
+		draw_rect(glass, Color(1, 1, 1, 0.45), false, 1.0)
+		draw_line(Vector2(glass.position.x + 4, glass.position.y + 3), Vector2(glass.position.x + 18, glass.position.y + 3), Color(1, 1, 1, 0.35), 1.0)
+		_plane_reset()
+		# Metal posts holding the guard.
+		for px in [r.position.x + 10.0, r.end.x - 10.0]:
+			draw_line(_p(Vector2(px, r.end.y - 2), h), _p(Vector2(px, r.end.y - 2), h + guard_h), Color("#90a4ae"), 2.0)
+	else:
+		var sink := Rect2(r.end.x - 52, r.position.y + 6, 40, 18)
+		if _in_clip(sink.get_center()):
+			draw_rect(sink, Color("#b0bec5"))
+			draw_rect(sink.grow(-3), Color("#cfd8dc"))
+		_plane_reset()
+		var bowl := Vector2(r.position.x + 30, r.position.y + 14)
+		if _in_clip(bowl):
+			var bp := _p(bowl, h)
+			draw_set_transform(bp, 0, Vector2(1, 0.55) * Iso.SCALE)
+			draw_circle(Vector2.ZERO, 9.0, Color("#ffcc80"))
+			_bb(bp)
+			draw_circle(Vector2(-3, -3), 3.2, Color("#e53935"))
+			draw_circle(Vector2(3, -2), 3.2, Color("#fdd835"))
+			draw_circle(Vector2(0, -5), 3.0, Color("#7cb342"))
+			_plane_reset()
+
+
+func _iso_water() -> void:
+	var r := rect
+	_floor_shadow(r)
+	var base := r.grow(-6)
+	_box(base, 0, 34, Color("#eceff1"), Color("#cfd8dc"), Color("#b0bec5"))
+	_plane_south(base.end.y, 34)
+	draw_rect(Rect2(base.position.x + 6, 10, base.size.x - 12, 4), Color("#90a4ae"))
+	draw_circle(Vector2(base.get_center().x - 4, 20), 1.8, Color("#e53935"))
+	draw_circle(Vector2(base.get_center().x + 4, 20), 1.8, Color("#1e88e5"))
+	_plane_reset()
+	# Bottle (billboard).
+	_bb(_p(base.get_center(), 34))
+	_rr(Rect2(-10, -30, 20, 30), 8, Color("#4fc3f7", 0.85))
+	draw_rect(Rect2(-6, -26, 3, 18), Color(1, 1, 1, 0.45))
+	var bub := fmod(_t * 10.0, 22.0)
+	draw_circle(Vector2(3, -4 - bub), 1.5, Color(1, 1, 1, 0.7))
+	_plane_reset()
+
+
+func _iso_vending() -> void:
+	var r := rect
+	var h := 74.0
+	_floor_shadow(r)
+	_box(r, 0, h, Color("#c62828"), Color("#b71c1c"), Color("#8e1414"))
+	_plane_south(r.end.y, h)
+	var glass := Rect2(r.position.x + 4, 8, r.size.x - 16, h - 26)
+	draw_rect(glass, Color("#1c2a33"))
+	var cols := [Color("#4fc3f7"), Color("#ffca28"), Color("#81c784"), Color("#f06292")]
+	for row in 4:
+		for i in 3:
+			draw_rect(Rect2(glass.position.x + 3 + i * 8, glass.position.y + 4 + row * 11, 5, 7), cols[(row + i) % 4])
+		draw_line(Vector2(glass.position.x, glass.position.y + 12 + row * 11), Vector2(glass.end.x, glass.position.y + 12 + row * 11), Color(1, 1, 1, 0.25), 1.0)
+	draw_rect(Rect2(glass.position.x, glass.position.y, 3, glass.size.y), Color(1, 1, 1, 0.12))
+	draw_rect(Rect2(r.end.x - 10, 12, 6, 14), Color("#eceff1"))
+	draw_rect(Rect2(r.position.x + 6, h - 14, r.size.x - 20, 7), Color("#111111"))
+	_plane_reset()
+	_plane_top(h)
+	draw_rect(Rect2(r.position.x + 2, r.position.y + 2, r.size.x - 4, 4), Color(1, 1, 1, 0.12))
+	_plane_reset()
+
+
+func _iso_sofa_back() -> void:
+	var r := rect
+	_box(Rect2(r.position.x, r.position.y, r.size.x, 12), 0, 40, Color("#3949ab"), Color("#3f51b5"), Color("#283593"))
+
+
+func _iso_sofa_seat() -> void:
+	var r := rect
+	_floor_shadow(r)
+	var seat := Rect2(r.position.x + 14, r.position.y + 12, r.size.x - 28, r.size.y - 12)
+	_box(seat, 0, 16, Color("#5c6bc0"), Color("#3949ab"), Color("#303f9f"))
+	_plane_top(16)
+	draw_line(Vector2(r.get_center().x, seat.position.y + 2), Vector2(r.get_center().x, seat.end.y - 2), Color("#3f51b5"), 2.0)
+	_plane_reset()
+	_box(Rect2(r.position.x, r.position.y, 14, r.size.y), 0, 26, Color("#3949ab"))
+
+
+func _iso_foosball() -> void:
+	var r := rect
+	var h := 30.0
+	_floor_shadow(r, 0.22)
+	_legs(r, h - 10, Color("#3e2723"), 4.0, 6.0)
+	_box(r, h - 10, 10, Color("#5d4037"), Color("#4e342e"), Color("#3e2723"))
+	var field := r.grow(-6)
+	_plane_top(h)
+	draw_rect(field, Color("#2e7d32"))
+	draw_rect(field, Color(1, 1, 1, 0.5), false, 1.0)
+	draw_line(Vector2(field.get_center().x, field.position.y), Vector2(field.get_center().x, field.end.y), Color(1, 1, 1, 0.45), 1.0)
+	draw_arc(field.get_center(), 7.0, 0, TAU, 16, Color(1, 1, 1, 0.45), 1.0)
+	draw_rect(Rect2(field.position.x - 3, field.get_center().y - 8, 3, 16), Color("#eeeeee"))
+	draw_rect(Rect2(field.end.x, field.get_center().y - 8, 3, 16), Color("#eeeeee"))
+	var ball := field.get_center()
+	if playing:
+		ball += Vector2(sin(_t * 2.3) * field.size.x * 0.42, sin(_t * 3.7 + 1.0) * field.size.y * 0.36)
+	draw_circle(ball + Vector2(1, 1), 2.6, Color(0, 0, 0, 0.3))
+	_plane_reset()
+	_bb(_p(ball, h))
+	draw_circle(Vector2(0, -2.5), 2.6, Color.WHITE)
+	_plane_reset()
+	var ks := Iso.SCALE
+	# Rods across the table (north-south) with little upright players.
+	var rods := 4
+	for i in rods:
+		var x := field.position.x + field.size.x * (i + 0.5) / rods
+		var col := Color("#e53935") if i % 2 == 0 else Color("#1e88e5")
+		var rz := h + 7.0
+		draw_line(_p(Vector2(x, r.position.y - 7), rz), _p(Vector2(x, r.end.y + 7), rz), Color("#b0bec5"), 2.0 * ks)
+		draw_circle(_p(Vector2(x, r.position.y - 8), rz), 2.5 * ks, Color("#212121"))
+		draw_circle(_p(Vector2(x, r.end.y + 8), rz), 2.8 * ks, Color("#212121"))
+		var slide := sin(_t * (5.0 + i) + i) * 6.0 if playing else 0.0
+		var spin := sin(_t * (9.0 + i * 1.7)) if playing else 1.0
+		for k in 2:
+			var py := field.position.y + field.size.y * (0.3 + 0.4 * k) + slide
+			_bb(_p(Vector2(x, py), h))
+			var len := 9.0 * spin
+			draw_rect(Rect2(-2.5, -maxf(len, 0.0) - 2.0, 5, absf(len) + 3.0), col)
+			draw_circle(Vector2(0, -7.0), 2.0, col.lightened(0.35))
+			_plane_reset()
+
+
+func _iso_table() -> void:
+	var r := rect
+	var h := 26.0
+	var canteen := str(data.get("set", "")) == "canteen"
+	_floor_shadow(r, 0.2)
+	_legs(r, h - 5, Color("#4e342e"), 6.0, 6.0)
+	_box(r, h - 5, 5, Color("#a1887f") if canteen else Color("#8d6e63"), Color("#6d4c41"), Color("#5d4037"))
+	_plane_top(h)
+	draw_rect(Rect2(r.position.x + 8, r.position.y + 4, r.size.x - 16, 2).intersection(clip), Color(1, 1, 1, 0.15))
+	if canteen:
+		# Place settings / trays of food on the dining tables.
+		var foods := [Color("#ef6c00"), Color("#66bb6a"), Color("#8d6e63"), Color("#ff7043"), Color("#42a5f5")]
+		var slots := maxi(2, int(r.size.x / 40.0))
+		for i in slots:
+			var px := r.position.x + 18.0 + i * ((r.size.x - 36.0) / maxf(slots - 1, 1))
+			var py := r.position.y + (14.0 if i % 2 == 0 else 28.0)
+			if not _in_clip(Vector2(px, py)):
+				continue
+			# Tray
+			draw_rect(Rect2(px - 10, py - 7, 20, 14), Color("#eceff1"))
+			# Plate
+			draw_circle(Vector2(px - 2, py), 5.5, Color("#fafafa"))
+			draw_circle(Vector2(px - 2, py), 3.5, foods[i % foods.size()])
+			# Cup
+			draw_rect(Rect2(px + 5, py - 3, 4, 5), Color("#fff8e1"))
+	else:
+		var n := int(r.size.x / 70.0)
+		for i in n:
+			var px := r.position.x + 24 + i * (r.size.x - 48) / maxf(n - 1, 1)
+			var paper := Rect2(px - 9, r.position.y + 14 + (i % 2) * 22, 18, 13)
+			if _in_clip(paper.get_center()):
+				draw_rect(paper, Color(1, 1, 1, 0.85))
+				draw_line(paper.position + Vector2(3, 4), paper.position + Vector2(14, 4), Color("#90a4ae"), 1.0)
+				draw_line(paper.position + Vector2(3, 8), paper.position + Vector2(11, 8), Color("#90a4ae"), 1.0)
+		_plane_reset()
+		var mug := Vector2(r.end.x - 20, r.position.y + 14)
+		if _in_clip(mug):
+			_box(Rect2(mug - Vector2(4, 4), Vector2(8, 8)), h, 8, Color("#fafafa"))
+			return
+	_plane_reset()
+
+
+## Plant look: "leafy", "tall" (palm), "succulent" or "flower". Unless the
+## layout picks one, it is chosen from the position so neighbours differ.
+func _plant_variant() -> String:
+	var v := str(data.get("variant", ""))
+	if v != "":
+		return v
+	# Desk-side plants are small: a tall pot or bowl there reads as a stray block.
+	var looks := ["leafy", "tall", "succulent", "flower"] if rect.size.x >= 24.0 else ["leafy", "flower"]
+	return looks[absi(int(rect.position.x) * 7 + int(rect.position.y) * 13) % looks.size()]
+
+
+func _iso_plant() -> void:
+	var r := rect
+	var c := r.get_center()
+	var look := _plant_variant()
+	_plane_top(0)
+	draw_circle(c + Vector2(3, 4), r.size.x * 0.4, Color(0, 0, 0, 0.16))
+	_plane_reset()
+	var sway := sin(_t * 1.2 + r.position.x) * 1.0
+	match look:
+		"tall":
+			# Slim ceramic pot, palm fronds fanning out above head height.
+			_box(Rect2(c - Vector2(8, 8), Vector2(16, 16)), 0, 22, Color("#bcaaa4"), Color("#a1887f"), Color("#8d6e63"))
+			_box(Rect2(c - Vector2(1.5, 1.5), Vector2(3, 3)), 22, 18, Color("#795548"), Color(0, 0, 0, 0), Color(0, 0, 0, 0), false)
+			_bb(_p(c, 40))
+			for i in 7:
+				var ang := -PI * 0.5 + (i - 3) * 0.42 + sway * 0.03
+				var tip := Vector2(cos(ang), sin(ang) * 0.7 + 0.35) * 22.0
+				var mid := tip * 0.5 + Vector2(0, -4)
+				draw_colored_polygon(PackedVector2Array([Vector2.ZERO, mid + tip.orthogonal().normalized() * 3.0, tip, mid - tip.orthogonal().normalized() * 3.0]),
+					Color("#388e3c") if i % 2 == 0 else Color("#43a047"))
+			_plane_reset()
+		"succulent":
+			# Low wide terracotta bowl with a rosette.
+			_box(Rect2(c - Vector2(11, 11), Vector2(22, 22)), 0, 9, Color("#c08060"), Color("#b0705a"), Color("#8d5a46"))
+			_bb(_p(c, 9))
+			for i in 6:
+				var a := TAU * i / 6.0
+				draw_circle(Vector2(cos(a) * 7.0, sin(a) * 3.5 - 3.0), 4.5, Color("#81c784") if i % 2 == 0 else Color("#a5d6a7"))
+			draw_circle(Vector2(0, -5), 4.0, Color("#66bb6a"))
+			_plane_reset()
+		_:
+			_box(Rect2(c - Vector2(9, 9), Vector2(18, 18)), 0, 16, Color("#8d6e63"), Color("#a1887f"), Color("#6d4c41"))
+			_plane_top(16)
+			draw_rect(Rect2(c - Vector2(7, 7), Vector2(14, 14)), Color("#4e342e"))
+			_plane_reset()
+			_bb(_p(c, 16))
+			draw_circle(Vector2(-8 + sway, -9), 10, Color("#2e7d32"))
+			draw_circle(Vector2(8 + sway, -11), 10, Color("#388e3c"))
+			draw_circle(Vector2(sway, -21), 11, Color("#43a047"))
+			draw_circle(Vector2(-4 + sway, -25), 4.5, Color("#66bb6a"))
+			draw_circle(Vector2(6 + sway, -17), 3.5, Color("#66bb6a"))
+			if look == "flower":
+				for fp: Vector2 in [Vector2(-9, -13), Vector2(7, -19), Vector2(-2, -27), Vector2(9, -8), Vector2(-5, -20)]:
+					draw_circle(fp + Vector2(sway, 0), 2.6, Color("#f06292"))
+					draw_circle(fp + Vector2(sway, 0), 1.0, Color("#fff59d"))
+			_plane_reset()
+
+
+## Long low planter box (hub zone dividers). Sliced in iso; each slice draws
+## its own run of shrubs so the row sorts correctly against walkers.
+func _iso_planter() -> void:
+	_floor_shadow(rect)
+	_box(rect, 0, 14, Color("#8d6e63"), Color("#a1887f"), Color("#6d4c41"))
+	var s := rect.intersection(clip)
+	_plane_top(14)
+	draw_rect(s.grow(-3), Color("#4e342e"))
+	_plane_reset()
+	var along_y := rect.size.y >= rect.size.x
+	var length := s.size.y if along_y else s.size.x
+	var n := maxi(1, int(length / 26.0))
+	for i in n:
+		var t := (i + 0.5) / n
+		var c := Vector2(s.get_center().x, s.position.y + t * s.size.y) if along_y else Vector2(s.position.x + t * s.size.x, s.get_center().y)
+		var sway := sin(_t * 1.1 + c.x * 0.05 + c.y * 0.05) * 0.8
+		_bb(_p(c, 14))
+		draw_circle(Vector2(-5 + sway, -5), 7, Color("#2e7d32"))
+		draw_circle(Vector2(5 + sway, -6), 7, Color("#388e3c"))
+		draw_circle(Vector2(sway, -11), 7.5, Color("#43a047"))
+		draw_circle(Vector2(-2 + sway, -14), 3, Color("#66bb6a"))
+		_plane_reset()
+
+
+func _iso_reception() -> void:
+	var r := rect
+	var h := 34.0
+	_floor_shadow(r)
+	_box(r, 0, h, Color("#eceff1"), Color("#546e7a"), Color("#455a64"))
+	if _last_slice():
+		_plane_south(r.end.y, h)
+		draw_string(_font, Vector2(r.position.x + 30, 21), "RECEPTION", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.9))
+		_plane_reset()
+	var bell := Vector2(r.position.x + 20, r.position.y + 12)
+	if _in_clip(bell):
+		_bb(_p(bell, h))
+		draw_circle(Vector2(0, -3), 4.5, Color("#ffca28"))
+		_plane_reset()
+
+
+func _iso_bench() -> void:
+	var r := rect
+	_floor_shadow(r)
+	_legs(r, 12, Color("#4e342e"), 3.0, 5.0)
+	_box(r.grow(-1), 12, 6, Color("#a1887f"), Color("#8d6e63"), Color("#6d4c41"))
+
+
+func _iso_servers() -> void:
+	var r := rect
+	var h := 70.0
+	_floor_shadow(r)
+	_box(r, 0, h, Color("#303030"), Color("#212121"), Color("#151515"))
+	_plane_south(r.end.y, h)
+	for i in int((h - 10) / 12.0):
+		var y := 6.0 + i * 12.0
+		draw_rect(Rect2(r.position.x + 4, y, r.size.x - 8, 8), Color("#424242"))
+		var on := fmod(_t * (1.0 + i * 0.3), 1.0) < 0.7
+		draw_circle(Vector2(r.end.x - 8, y + 4), 1.8, Color("#69f0ae") if on else Color("#1b5e20"))
+	_plane_reset()
+
+
+## Wall slice. data: h (height), color, and optionally windows ("south" or
+## "east": the visible inner face of a tall back wall gets windows).
+func _iso_wall() -> void:
+	var h := float(data.get("h", 30.0))
+	var c: Color = data.get("color", Color("#8a909c"))
+	var top := c.lightened(0.45)
+	_box(rect, 0, h, top, c.lightened(0.12), c.darkened(0.12), false)
+	var face := str(data.get("windows", ""))
+	if face != "" and h > 48.0:
+		# Windows every 96 px along the wall; each slice paints its own part.
+		var wh := h - 30.0
+		if face == "south":
+			_plane_south(rect.end.y, h)
+			var x := rect.position.x + 40.0
+			while x < rect.end.x - 40.0:
+				var win := Rect2(x, 10.0, 52.0, wh).intersection(Rect2(clip.position.x, -1000, clip.size.x, 3000))
+				if win.has_area():
+					draw_rect(win, Color("#9fc7e6"))
+					draw_rect(Rect2(win.position.x, win.position.y, win.size.x, 3), Color("#cfe6f5"))
+					if x + 26.0 >= win.position.x and x + 26.0 <= win.end.x:
+						draw_line(Vector2(x + 26.0, 10.0), Vector2(x + 26.0, 10.0 + wh), c.lightened(0.3), 2.0)
+				x += 96.0
+		else:
+			_plane_east(rect.end.x, h)
+			var y := rect.position.y + 40.0
+			while y < rect.end.y - 40.0:
+				var win := Rect2(y, 10.0, 52.0, wh).intersection(Rect2(clip.position.y, -1000, clip.size.y, 3000))
+				if win.has_area():
+					draw_rect(win, Color("#8db7d6"))
+					draw_rect(Rect2(win.position.x, win.position.y, win.size.x, 3), Color("#c2dcef"))
+					if y + 26.0 >= win.position.x and y + 26.0 <= win.end.x:
+						draw_line(Vector2(y + 26.0, 10.0), Vector2(y + 26.0, 10.0 + wh), c.lightened(0.2), 2.0)
+				y += 96.0
+		_plane_reset()
+	# Crisp top edge.
+	var r := rect.intersection(clip)
+	if r.end.y >= rect.end.y - 0.01:
+		draw_line(_p(Vector2(r.position.x, r.end.y), h), _p(r.end, h), Color(1, 1, 1, 0.35), 1.0)
+	if r.end.x >= rect.end.x - 0.01:
+		draw_line(_p(r.end, h), _p(Vector2(r.end.x, r.position.y), h), Color(1, 1, 1, 0.2), 1.0)
+
+
+## Whiteboard hung on a north/west wall. Optional variant=schematic.
+func _iso_whiteboard() -> void:
+	var r := rect
+	var z0 := 14.0
+	var h := 40.0
+	_box(r, z0, h, Color("#cfd8dc"), Color("#b0bec5"), Color("#eceff1"))
+	_plane_east(r.end.x, z0 + h)
+	draw_rect(Rect2(r.position.y, 0, r.size.y, h), Color("#90a4ae"), false, 2.0)
+	var variant := str(data.get("variant", ""))
+	if variant == "schematic":
+		for i in 4:
+			draw_line(Vector2(r.position.y + 10, 8 + i * 7), Vector2(r.position.y + 90, 8 + i * 7), Color("#546e7a"), 1.2)
+		draw_circle(Vector2(r.position.y + 40, 18), 6.0, Color("#4fc3f7", 0.5))
+		draw_rect(Rect2(r.position.y + 70, 12, 18, 18), Color("#81c784", 0.5), false, 1.5)
+	else:
+		var cols := [Color("#e57373"), Color("#64b5f6"), Color("#81c784")]
+		for i in 3:
+			draw_line(Vector2(r.position.y + 14, 10 + i * 9), Vector2(r.position.y + 50 + i * 18, 10 + i * 9), cols[i], 2.0)
+		draw_rect(Rect2(r.position.y + 80, 8, 26, 20), Color("#ffe082"))
+	draw_rect(Rect2(r.position.y + 10, h - 5, 40, 3), Color("#78909c"))
+	_plane_reset()
+
+
+# ---- canteen extras -----------------------------------------------------------
+func _draw_fridge() -> void:
+	var r := rect
+	_shadow(r)
+	_rr(r, 4, Color("#37474f"))
+	_rr(Rect2(r.position + Vector2(3, 4), r.size - Vector2(6, 10)), 3, Color("#263238"))
+	# Coloured cans / bottles behind glass.
+	var cols := [Color("#e53935"), Color("#1e88e5"), Color("#43a047"), Color("#fdd835"), Color("#8e24aa")]
+	for row in 3:
+		for i in 3:
+			var c: Color = cols[(row + i) % cols.size()]
+			draw_rect(Rect2(r.position.x + 6 + i * 10, r.position.y + 8 + row * 12, 7, 9), c)
+	draw_rect(Rect2(r.position.x + 4, r.end.y - 8, r.size.x - 8, 4), Color("#546e7a"))
+	draw_circle(Vector2(r.end.x - 8, r.position.y + 8), 2.0, Color("#69f0ae") if fmod(_t, 2.0) < 1.5 else Color("#1b5e20"))
+
+
+func _draw_menu() -> void:
+	var r := rect
+	_rr(r, 3, Color("#5d4037"))
+	_rr(r.grow(-3), 2, Color("#fff8e1"))
+	for i in 4:
+		draw_line(r.position + Vector2(6, 7 + i * 5), r.position + Vector2(r.size.x - 8, 7 + i * 5), Color("#8d6e63"), 1.2)
+	draw_rect(Rect2(r.position.x + 4, r.position.y + 2, r.size.x - 8, 4), Color("#ef6c00"))
+
+
+func _draw_microwave() -> void:
+	var r := rect
+	_shadow(r)
+	_rr(r, 3, Color("#546e7a"))
+	_rr(Rect2(r.position + Vector2(3, 4), Vector2(r.size.x * 0.62, r.size.y - 10)), 2, Color("#212121"))
+	draw_rect(Rect2(r.end.x - 12, r.position.y + 6, 6, 8), Color("#90a4ae"))
+	draw_circle(Vector2(r.end.x - 9, r.end.y - 8), 2.0, Color("#ffca28") if fmod(_t, 1.6) < 0.8 else Color("#795548"))
+
+
+func _draw_bin() -> void:
+	var r := rect
+	_shadow(r, 0.12)
+	_rr(r, 3, Color("#455a64"))
+	draw_rect(Rect2(r.position.x + 2, r.position.y - 3, r.size.x - 4, 5), Color("#37474f"))
+	draw_rect(Rect2(r.position.x + 5, r.position.y + 4, r.size.x - 10, 3), Color("#607d8b"))
+
+
+func _iso_fridge() -> void:
+	var r := rect
+	var h := 64.0
+	_floor_shadow(r)
+	_box(r, 0, h, Color("#455a64"), Color("#37474f"), Color("#263238"))
+	_plane_south(r.end.y, h)
+	var glass := Rect2(r.position.x + 4, 6, r.size.x - 10, h - 18)
+	draw_rect(glass, Color("#1c2a33"))
+	var cols := [Color("#e53935"), Color("#1e88e5"), Color("#43a047"), Color("#fdd835"), Color("#8e24aa"), Color("#26c6da")]
+	for row in 4:
+		for i in 2:
+			draw_rect(Rect2(glass.position.x + 4 + i * 12, glass.position.y + 4 + row * 11, 8, 8), cols[(row * 2 + i) % cols.size()])
+		draw_line(Vector2(glass.position.x, glass.position.y + 13 + row * 11), Vector2(glass.end.x, glass.position.y + 13 + row * 11), Color(1, 1, 1, 0.2), 1.0)
+	draw_rect(Rect2(glass.position.x, glass.position.y, 3, glass.size.y), Color(1, 1, 1, 0.15))
+	draw_circle(Vector2(r.end.x - 8, 10), 2.2, Color("#69f0ae") if fmod(_t, 2.0) < 1.5 else Color("#1b5e20"))
+	_plane_reset()
+	_plane_top(h)
+	draw_rect(Rect2(r.position.x + 2, r.position.y + 2, r.size.x - 4, 4), Color(1, 1, 1, 0.12))
+	_plane_reset()
+
+
+func _iso_menu() -> void:
+	var r := rect
+	var h := 40.0
+	# Wall-mounted board: thin box raised off the floor.
+	_box(r, 18, h - 10, Color("#5d4037"), Color("#4e342e"), Color("#3e2723"))
+	_plane_south(r.end.y, 18 + h - 10)
+	var board := Rect2(r.position.x + 3, 4, r.size.x - 6, h - 18)
+	draw_rect(board, Color("#fff8e1"))
+	draw_rect(Rect2(board.position.x, board.position.y, board.size.x, 5), Color("#ef6c00"))
+	for i in 4:
+		draw_line(Vector2(board.position.x + 4, board.position.y + 10 + i * 5), Vector2(board.end.x - 4, board.position.y + 10 + i * 5), Color("#8d6e63"), 1.2)
+	# Price dots
+	for i in 4:
+		draw_circle(Vector2(board.end.x - 7, board.position.y + 10 + i * 5), 1.4, Color("#43a047"))
+	_plane_reset()
+
+
+func _iso_microwave() -> void:
+	var r := rect
+	var h := 28.0
+	_floor_shadow(r, 0.1)
+	_box(r, 8, h, Color("#607d8b"), Color("#546e7a"), Color("#455a64"))
+	_plane_south(r.end.y, 8 + h)
+	var window := Rect2(r.position.x + 4, 6, r.size.x * 0.58, h - 12)
+	draw_rect(window, Color("#212121"))
+	draw_rect(window.grow(-2), Color("#37474f", 0.6))
+	draw_rect(Rect2(r.end.x - 12, 8, 6, 8), Color("#cfd8dc"))
+	draw_circle(Vector2(r.end.x - 9, h - 6), 2.0, Color("#ffca28") if fmod(_t, 1.6) < 0.8 else Color("#795548"))
+	_plane_reset()
+
+
+func _iso_bin() -> void:
+	var r := rect
+	var h := 22.0
+	_floor_shadow(r, 0.12)
+	_box(r, 0, h, Color("#546e7a"), Color("#455a64"), Color("#37474f"))
+	_plane_top(h)
+	draw_rect(Rect2(r.position.x + 2, r.position.y + 2, r.size.x - 4, 4), Color("#263238"))
+	# Lid flap
+	draw_rect(Rect2(r.position.x + 4, r.position.y + 3, r.size.x - 8, 2), Color("#78909c"))
+	_plane_reset()
+
+
+func _draw_rug() -> void:
+	var r := clip if clip.has_area() else rect
+	# Same muted room tint as the iso rug.
+	var tint := Color.from_string(str(data.get("color", "#a1887f")), Color("#a1887f")).lerp(Color("#cfc5b4"), 0.4)
+	_rr(r, 16, Color(tint.darkened(0.1), 0.5))
+	_rr(r.grow(-8), 12, Color(tint.lightened(0.06), 0.35))
+	# Soft fringe
+	for i in 8:
+		var x := r.position.x + 10 + i * (r.size.x - 20) / 7.0
+		draw_line(Vector2(x, r.position.y + 2), Vector2(x, r.position.y + 8), Color("#6d4c41", 0.5), 1.5)
+
+
+func _draw_yoga_mat() -> void:
+	var r := clip if clip.has_area() else rect
+	var tint := Color.from_string(str(data.get("tint", "#81c784")), Color("#81c784"))
+	_shadow(r, 0.12)
+	_rr(r, 6, tint.darkened(0.15))
+	_rr(r.grow(-3), 5, tint)
+	# Rolled edge stripe
+	draw_rect(Rect2(r.position.x + 4, r.position.y + 4, r.size.x - 8, 4), tint.lightened(0.2))
+	draw_rect(Rect2(r.position.x + 4, r.end.y - 8, r.size.x - 8, 4), tint.lightened(0.2))
+
+
+func _draw_cushion() -> void:
+	var r := clip if clip.has_area() else rect
+	var tint := Color.from_string(str(data.get("tint", "#ce93d8")), Color("#ce93d8"))
+	_shadow(r, 0.15)
+	# Roundish cushion
+	var c := r.get_center()
+	draw_circle(c + Vector2(1, 2), minf(r.size.x, r.size.y) * 0.48, Color(0, 0, 0, 0.18))
+	draw_circle(c, minf(r.size.x, r.size.y) * 0.48, tint.darkened(0.1))
+	draw_circle(c + Vector2(-2, -2), minf(r.size.x, r.size.y) * 0.38, tint.lightened(0.12))
+	# Button
+	draw_circle(c, 3.0, tint.darkened(0.25))
+
+
+func _draw_fountain() -> void:
+	var r := clip if clip.has_area() else rect
+	var c := r.get_center()
+	_shadow(r, 0.2)
+	# Stone basin
+	_rr(Rect2(r.position.x, r.position.y + r.size.y * 0.35, r.size.x, r.size.y * 0.55), 8, Color("#90a4ae"))
+	_rr(Rect2(r.position.x + 4, r.position.y + r.size.y * 0.4, r.size.x - 8, r.size.y * 0.4), 6, Color("#78909c"))
+	# Water pool
+	var water := Color(0.4, 0.75, 0.9, 0.75)
+	_rr(Rect2(r.position.x + 8, r.position.y + r.size.y * 0.45, r.size.x - 16, r.size.y * 0.28), 5, water)
+	# Animated ripples / spout
+	var bob := sin(_t * 4.0) * 2.0
+	draw_circle(Vector2(c.x, r.position.y + 10 + bob), 5.0, Color(0.6, 0.9, 1.0, 0.85))
+	for i in 3:
+		var yy := r.position.y + 16 + i * 6 + bob * 0.5
+		draw_circle(Vector2(c.x, yy), 2.0 + i * 0.8, Color(0.7, 0.95, 1.0, 0.55 - i * 0.12))
+	# Soft mist
+	draw_circle(Vector2(c.x - 8, r.position.y + 22), 3.0, Color(1, 1, 1, 0.25 + 0.1 * sin(_t * 3.0)))
+	draw_circle(Vector2(c.x + 8, r.position.y + 20), 2.5, Color(1, 1, 1, 0.2 + 0.1 * cos(_t * 2.5)))
+
+
+func _draw_lamp() -> void:
+	var r := clip if clip.has_area() else rect
+	var base := Rect2(r.position.x + r.size.x * 0.3, r.end.y - 10, r.size.x * 0.4, 8)
+	_rr(base, 2, Color("#5d4037"))
+	# Stem
+	draw_rect(Rect2(r.get_center().x - 2, r.position.y + 14, 4, r.size.y - 22), Color("#6d4c41"))
+	# Shade
+	var shade := Rect2(r.position.x + 2, r.position.y + 2, r.size.x - 4, 16)
+	_rr(shade, 3, Color("#ffe082"))
+	_rr(shade.grow(-2), 2, Color("#fff59d"))
+	# Calm warm glow pulse
+	var pulse := 0.18 + 0.08 * sin(_t * 1.6)
+	draw_circle(r.get_center() + Vector2(0, -2), 22.0, Color(1.0, 0.92, 0.55, pulse))
+
+
+func _iso_rug() -> void:
+	# Flat floor-plane only. Raised SE faces on a big rug read as grey-brown
+	# rectangles sitting on the grass past the room walls.
+	var tint := Color.from_string(str(data.get("color", "#a1887f")), Color("#a1887f"))
+	# Muted toward a warm neutral so room accent colours (e.g. #4fc3f7) read
+	# as a soft rug, not a saturated paint slab.
+	tint = tint.lerp(Color("#cfc5b4"), 0.4)
+	var r := clip if clip.has_area() else rect
+	_plane_top(0.0)
+	draw_rect(r, Color(tint.darkened(0.1), 0.5))
+	draw_rect(r.grow(-8), Color(tint.lightened(0.06), 0.35))
+	_plane_reset()
+
+
+func _iso_yoga_mat() -> void:
+	var tint := Color.from_string(str(data.get("tint", "#81c784")), Color("#81c784"))
+	var r := clip if clip.has_area() else rect
+	_plane_top(0.0)
+	draw_rect(r, tint.darkened(0.12))
+	draw_rect(r.grow(-3), tint)
+	_plane_reset()
+
+
+func _iso_cushion() -> void:
+	# Flat floor cushion — no raised box (raised height sorted above walkers).
+	var tint := Color.from_string(str(data.get("tint", "#ce93d8")), Color("#ce93d8"))
+	var r := Rect2(rect.get_center() - Vector2(16, 12), Vector2(32, 24))
+	_plane_top(0.0)
+	draw_circle(r.get_center() + Vector2(1, 2), minf(r.size.x, r.size.y) * 0.48, Color(0, 0, 0, 0.14))
+	draw_circle(r.get_center(), minf(r.size.x, r.size.y) * 0.48, tint.darkened(0.08))
+	draw_circle(r.get_center() + Vector2(-2, -2), minf(r.size.x, r.size.y) * 0.36, tint.lightened(0.1))
+	_plane_reset()
+
+
+func _iso_fountain() -> void:
+	_box(rect, 0, 18, Color("#78909c"), Color("#90a4ae"), Color("#b0bec5"), false)
+	# Animated water blip in screen space near top of box
+	var bob := sin(_t * 4.0) * 2.0
+	var c := Iso.to_screen(rect.get_center()) - position
+	draw_circle(c + Vector2(0, -22 + bob), 4.0, Color(0.6, 0.9, 1.0, 0.85))
+
+
+func _iso_lamp() -> void:
+	# Floor lamp: flat base, slim pole, lit shade. (A bare brown post read as
+	# a stray block next to walls.)
+	var ctr := rect.get_center()
+	_box(Rect2(ctr - Vector2(5, 5), Vector2(10, 10)), 0, 2, Color("#455a64"), Color(0, 0, 0, 0), Color(0, 0, 0, 0), false)
+	_box(Rect2(ctr - Vector2(1.5, 1.5), Vector2(3, 3)), 2, 24, Color("#546e7a"), Color(0, 0, 0, 0), Color(0, 0, 0, 0), false)
+	_box(Rect2(ctr - Vector2(6, 6), Vector2(12, 12)), 24, 9, Color("#fff8e1"), Color("#ffe082"), Color("#ffd54f"), false)
+	var pulse := 0.14 + 0.05 * sin(_t * 1.6)
+	var c := Iso.to_screen(ctr, 28.0) - position
+	draw_circle(c, 14.0 * Iso.SCALE, Color(1.0, 0.92, 0.55, pulse))
+
+
+# ---- room-personality props (cozy diorama rollout) ---------------------------
+func _draw_bookcase() -> void:
+	var r := rect
+	_shadow(r)
+	_rr(r, 3, Color("#6d4c41"))
+	for i in 3:
+		var y := r.position.y + 6 + i * (r.size.y / 3.5)
+		draw_rect(Rect2(r.position.x + 3, y, r.size.x - 6, 3), Color("#5d4037"))
+		var cols := [Color("#e57373"), Color("#64b5f6"), Color("#81c784"), Color("#ffb74d"), Color("#ba68c8")]
+		for j in 4:
+			draw_rect(Rect2(r.position.x + 5 + j * 5, y - 10, 4, 10), cols[(i + j) % cols.size()])
+
+
+func _draw_filing() -> void:
+	var r := rect
+	_shadow(r)
+	_rr(r, 3, Color("#78909c"))
+	for i in 3:
+		var y := r.position.y + 6 + i * ((r.size.y - 12) / 3.0)
+		draw_rect(Rect2(r.position.x + 3, y, r.size.x - 6, (r.size.y - 16) / 3.0 - 2), Color("#90a4ae"))
+		draw_rect(Rect2(r.get_center().x - 4, y + 4, 8, 3), Color("#546e7a"))
+
+
+func _draw_pinboard() -> void:
+	var r := rect
+	_rr(r, 2, Color("#a1887f"))
+	_rr(Rect2(r.position + Vector2(2, 2), r.size - Vector2(4, 4)), 2, Color("#fff8e1"))
+	var cols := [Color("#ef9a9a"), Color("#90caf9"), Color("#a5d6a7"), Color("#ffe082"), Color("#ce93d8")]
+	for i in 5:
+		var px := r.position.x + 6 + (i % 3) * 18
+		var py := r.position.y + 5 + int(i / 3) * 10
+		draw_rect(Rect2(px, py, 14, 8), cols[i])
+
+
+func _draw_kanban() -> void:
+	var r := rect
+	_rr(r, 2, Color("#546e7a"))
+	_rr(Rect2(r.position + Vector2(2, 2), r.size - Vector2(4, 4)), 2, Color("#eceff1"))
+	var cols := [Color("#ef5350"), Color("#ffca28"), Color("#66bb6a")]
+	for col_i in 3:
+		var x := r.position.x + 6 + col_i * (r.size.x / 3.2)
+		draw_rect(Rect2(x, r.position.y + 4, r.size.x / 4.0, 3), cols[col_i])
+		for row in 2:
+			draw_rect(Rect2(x, r.position.y + 10 + row * 8, r.size.x / 4.5, 6), cols[col_i].lightened(0.35))
+
+
+func _draw_chart() -> void:
+	var r := rect
+	_rr(r, 2, Color("#5d4037"))
+	_rr(Rect2(r.position + Vector2(2, 2), r.size - Vector2(4, 4)), 2, Color("#fafafa"))
+	for i in 4:
+		var h := 6.0 + i * 3.0
+		draw_rect(Rect2(r.position.x + 8 + i * 12, r.end.y - 4 - h, 8, h), Color("#42a5f5"))
+
+
+func _draw_screen_wall() -> void:
+	var r := rect
+	_rr(r, 2, Color("#263238"))
+	_rr(Rect2(r.position + Vector2(3, 3), r.size - Vector2(6, 6)), 2, Color("#1565c0"))
+
+
+func _draw_snacks() -> void:
+	var r := rect
+	_shadow(r, 0.12)
+	_rr(r, 3, Color("#fff3e0"))
+	var cols := [Color("#ef5350"), Color("#ffca28"), Color("#66bb6a"), Color("#42a5f5")]
+	for i in 4:
+		draw_rect(Rect2(r.position.x + 4 + i * 8, r.position.y + 4, 6, 10), cols[i])
+
+
+func _iso_bookcase() -> void:
+	var r := rect
+	var h := 56.0
+	_floor_shadow(r)
+	_box(r, 0, h, Color("#8d6e63"), Color("#6d4c41"), Color("#5d4037"))
+	_plane_south(r.end.y, h)
+	var cols := [Color("#e57373"), Color("#64b5f6"), Color("#81c784"), Color("#ffb74d"), Color("#ba68c8")]
+	for shelf in 3:
+		var y := 8.0 + shelf * 16.0
+		draw_rect(Rect2(r.position.x + 2, y, r.size.x - 4, 2), Color("#5d4037"))
+		for j in mini(4, int((r.size.x - 6) / 6.0)):
+			draw_rect(Rect2(r.position.x + 4 + j * 6, y - 12, 5, 12), cols[(shelf + j) % cols.size()])
+	_plane_reset()
+
+
+func _iso_filing() -> void:
+	var r := rect
+	var h := 48.0
+	_floor_shadow(r)
+	_box(r, 0, h, Color("#90a4ae"), Color("#78909c"), Color("#607d8b"))
+	_plane_south(r.end.y, h)
+	for i in 3:
+		var y := 6.0 + i * 14.0
+		draw_rect(Rect2(r.position.x + 3, y, r.size.x - 6, 11), Color("#b0bec5"))
+		draw_rect(Rect2(r.get_center().x - 5, y + 4, 10, 3), Color("#546e7a"))
+	_plane_reset()
+
+
+func _iso_pinboard() -> void:
+	var r := rect
+	var z0 := 16.0
+	var h := 36.0
+	_box(r, z0, h, Color("#a1887f"), Color("#8d6e63"), Color("#6d4c41"))
+	_plane_south(r.end.y, z0 + h)
+	draw_rect(Rect2(r.position.x + 2, 2, r.size.x - 4, h - 4), Color("#fff8e1"))
+	var variant := str(data.get("variant", "pins"))
+	var cols := [Color("#ef9a9a"), Color("#90caf9"), Color("#a5d6a7"), Color("#ffe082"), Color("#ce93d8"), Color("#ffab91")]
+	if variant == "mood":
+		for i in 6:
+			var px := 6.0 + (i % 3) * 28.0
+			var py := 6.0 + int(i / 3) * 14.0
+			draw_rect(Rect2(r.position.x + px, py, 22, 12), cols[i])
+	else:
+		for i in 5:
+			var px := 8.0 + i * 16.0
+			draw_rect(Rect2(r.position.x + px, 8 + (i % 2) * 10, 12, 9), cols[i])
+			draw_circle(Vector2(r.position.x + px + 6, 7 + (i % 2) * 10), 1.6, Color("#c62828"))
+	_plane_reset()
+
+
+func _iso_kanban() -> void:
+	var r := rect
+	var z0 := 14.0
+	var h := 38.0
+	_box(r, z0, h, Color("#546e7a"), Color("#455a64"), Color("#37474f"))
+	_plane_south(r.end.y, z0 + h)
+	draw_rect(Rect2(r.position.x + 2, 2, r.size.x - 4, h - 4), Color("#eceff1"))
+	var cols := [Color("#ef5350"), Color("#ffca28"), Color("#66bb6a")]
+	var labels := ["To do", "Doing", "Done"]
+	for col_i in 3:
+		var x := r.position.x + 6 + col_i * ((r.size.x - 12) / 3.0)
+		var w := (r.size.x - 18) / 3.0
+		draw_rect(Rect2(x, 4, w, 4), cols[col_i])
+		draw_string(_font, Vector2(x, 14), labels[col_i], HORIZONTAL_ALIGNMENT_LEFT, -1, 7, Color("#546e7a"))
+		for row in 2:
+			draw_rect(Rect2(x + 1, 16 + row * 9, w - 2, 7), cols[col_i].lightened(0.4))
+	_plane_reset()
+
+
+func _iso_chart() -> void:
+	var r := rect
+	var z0 := 14.0
+	var h := 38.0
+	_box(r, z0, h, Color("#5d4037"), Color("#4e342e"), Color("#3e2723"))
+	_plane_south(r.end.y, z0 + h)
+	draw_rect(Rect2(r.position.x + 2, 2, r.size.x - 4, h - 4), Color("#fafafa"))
+	# Bar chart
+	for i in 5:
+		var bh := 8.0 + i * 4.0 + sin(_t + i) * 2.0
+		draw_rect(Rect2(r.position.x + 10 + i * 18, h - 6 - bh, 12, bh), Color("#42a5f5"))
+	# Trend line
+	draw_line(Vector2(r.position.x + 8, h - 20), Vector2(r.end.x - 8, 10), Color("#ef5350"), 1.5)
+	_plane_reset()
+
+
+func _iso_screen() -> void:
+	var r := rect
+	var z0 := 18.0
+	var h := 42.0
+	_box(r, z0, h, Color("#263238"), Color("#1c2328"), Color("#151b1f"))
+	_plane_south(r.end.y, z0 + h)
+	draw_rect(Rect2(r.position.x + 3, 3, r.size.x - 6, h - 8), Color("#1565c0"))
+	# Soft presentation glow
+	var pulse := 0.15 + 0.05 * sin(_t * 2.0)
+	draw_rect(Rect2(r.position.x + 8, 8, r.size.x - 16, h - 18), Color(1, 1, 1, pulse))
+	draw_rect(Rect2(r.get_center().x - 10, h - 4, 20, 3), Color("#90a4ae"))
+	_plane_reset()
+
+
+func _iso_snacks() -> void:
+	var r := rect
+	_floor_shadow(r, 0.14)
+	_box(r, 0, 10, Color("#fff3e0"), Color("#ffe0b2"), Color("#ffcc80"))
+	_plane_top(10)
+	var cols := [Color("#ef5350"), Color("#ffca28"), Color("#66bb6a"), Color("#42a5f5")]
+	for i in mini(4, int(r.size.x / 8.0)):
+		draw_rect(Rect2(r.position.x + 3 + i * 8, r.position.y + 2, 6, 6), cols[i % cols.size()])
+	_plane_reset()
+
+
+# ---- room furnishing pass (lounges, beanbags, copiers, coat racks, aquarium) --
+func _tint(fallback: String) -> Color:
+	return Color.from_string(str(data.get("color", fallback)), Color(fallback))
+
+
+## Back / arm boxes of an armchair whose seat faces `facing` (n/s/e/w).
+func _armchair_parts(r: Rect2) -> Array[Rect2]:
+	const B := 9.0
+	const A := 8.0
+	match str(data.get("facing", "s")):
+		"e":
+			return [Rect2(r.position, Vector2(B, r.size.y)), Rect2(r.position, Vector2(r.size.x, A)), Rect2(r.position.x, r.end.y - A, r.size.x, A)]
+		"w":
+			return [Rect2(r.end.x - B, r.position.y, B, r.size.y), Rect2(r.position, Vector2(r.size.x, A)), Rect2(r.position.x, r.end.y - A, r.size.x, A)]
+		"n":
+			return [Rect2(r.position.x, r.end.y - B, r.size.x, B), Rect2(r.position, Vector2(A, r.size.y)), Rect2(r.end.x - A, r.position.y, A, r.size.y)]
+		_:
+			return [Rect2(r.position, Vector2(r.size.x, B)), Rect2(r.position, Vector2(A, r.size.y)), Rect2(r.end.x - A, r.position.y, A, r.size.y)]
+
+
+func _iso_armchair() -> void:
+	var r := rect.grow(-2)
+	var tint := _tint("#7e57c2")
+	_floor_shadow(r)
+	var parts := _armchair_parts(r)
+	# Painter's order: whatever sits further back (smaller x + y) first.
+	var pieces: Array = [[r, 0.0, 13.0, tint.lightened(0.08)]]
+	pieces.append([parts[0], 0.0, 30.0, tint.darkened(0.12)])
+	pieces.append([parts[1], 0.0, 20.0, tint.darkened(0.05)])
+	pieces.append([parts[2], 0.0, 20.0, tint.darkened(0.05)])
+	pieces.sort_custom(func(p: Array, q: Array) -> bool:
+		var a: Rect2 = p[0]
+		var b: Rect2 = q[0]
+		return a.get_center().x + a.get_center().y < b.get_center().x + b.get_center().y)
+	for pc: Array in pieces:
+		var col: Color = pc[3]
+		_box(pc[0], pc[1], pc[2], col, col.darkened(0.15), col.darkened(0.3))
+
+
+func _draw_armchair() -> void:
+	var r := rect.grow(-2)
+	var tint := _tint("#7e57c2")
+	_shadow(r)
+	_rr(r, 6, tint)
+	var parts := _armchair_parts(r)
+	_rr(parts[0], 4, tint.darkened(0.25))
+	_rr(parts[1], 3, tint.darkened(0.12))
+	_rr(parts[2], 3, tint.darkened(0.12))
+
+
+func _iso_coffee_table() -> void:
+	var r := rect
+	_floor_shadow(r, 0.18)
+	_legs(r, 10, Color("#5d4037"), 3.0, 4.0)
+	_box(r, 10, 4, Color("#bcaaa4"), Color("#8d6e63"), Color("#795548"))
+	_plane_top(14)
+	var c := r.get_center()
+	draw_rect(Rect2(c + Vector2(2, -6), Vector2(13, 10)), Color("#42a5f5"))
+	draw_rect(Rect2(c + Vector2(3, -5), Vector2(11, 2)), Color("#e3f2fd"))
+	draw_circle(c + Vector2(-9, -1), 3.6, Color("#fafafa"))
+	draw_circle(c + Vector2(-9, -1), 2.2, Color("#6d4c41"))
+	_plane_reset()
+
+
+func _draw_coffee_table() -> void:
+	var r := rect
+	_shadow(r, 0.15)
+	_rr(r, 6, Color("#a1887f"))
+	var c := r.get_center()
+	draw_rect(Rect2(c + Vector2(2, -6), Vector2(13, 10)), Color("#42a5f5"))
+	draw_circle(c + Vector2(-9, -1), 3.6, Color("#fafafa"))
+
+
+func _iso_side_table() -> void:
+	var c := rect.get_center()
+	_box(Rect2(c - Vector2(1.5, 1.5), Vector2(3, 3)), 0, 12, Color("#5d4037"), Color(0, 0, 0, 0), Color(0, 0, 0, 0), false)
+	_plane_top(12)
+	draw_circle(c, 7.0, Color("#a1887f"))
+	draw_circle(c + Vector2(1, 1), 2.5, Color("#fafafa"))
+	_plane_reset()
+
+
+func _draw_side_table() -> void:
+	var c := rect.get_center()
+	draw_circle(c + Vector2(2, 3), 7.0, Color(0, 0, 0, 0.15))
+	draw_circle(c, 7.0, Color("#a1887f"))
+	draw_circle(c + Vector2(1, 1), 2.5, Color("#fafafa"))
+
+
+func _iso_beanbag() -> void:
+	var r := rect
+	var tint := _tint("#ef5350")
+	var c := r.get_center()
+	_plane_top(0)
+	draw_circle(c + Vector2(2, 3), r.size.x * 0.48, Color(0, 0, 0, 0.18))
+	_plane_reset()
+	_bb(_p(c, 0))
+	var w := r.size.x * 0.5
+	draw_circle(Vector2(0, -7), w * 0.95, tint.darkened(0.2))
+	draw_circle(Vector2(-2, -11), w * 0.82, tint)
+	draw_arc(Vector2(1, -9), w * 0.5, PI * 0.15, PI * 0.85, 10, tint.darkened(0.12), 2.0)
+	draw_circle(Vector2(-7, -16), w * 0.28, tint.lightened(0.25))
+	_plane_reset()
+
+
+func _draw_beanbag() -> void:
+	var r := rect
+	var tint := _tint("#ef5350")
+	var c := r.get_center()
+	draw_circle(c + Vector2(2, 4), r.size.x * 0.48, Color(0, 0, 0, 0.18))
+	draw_circle(c, r.size.x * 0.46, tint.darkened(0.15))
+	draw_circle(c + Vector2(-2, -2), r.size.x * 0.36, tint)
+	draw_circle(c + Vector2(-6, -6), r.size.x * 0.12, tint.lightened(0.25))
+
+
+func _iso_printer() -> void:
+	var r := rect
+	_floor_shadow(r)
+	_box(r, 0, 22, Color("#78909c"), Color("#607d8b"), Color("#546e7a"))
+	if str(data.get("style", "")) == "3d":
+		# 3D printer: open frame with a part growing on the bed.
+		var f := r.grow(-4)
+		for p: Vector2 in [f.position, Vector2(f.end.x - 3, f.position.y), Vector2(f.position.x, f.end.y - 3), f.end - Vector2(3, 3)]:
+			_box(Rect2(p, Vector2(3, 3)), 22, 22, Color("#37474f"), Color(0, 0, 0, 0), Color(0, 0, 0, 0), false)
+		_box(Rect2(f.get_center() - Vector2(5, 5), Vector2(10, 10)), 22, 5.0 + 3.0 * (0.5 + 0.5 * sin(_t * 0.8)), Color("#ff7043"))
+		_box(Rect2(f.position, Vector2(f.size.x, 3)), 44, 3, Color("#455a64"))
+		return
+	var top := r.grow(-3)
+	_box(top, 22, 12, Color("#eceff1"), Color("#cfd8dc"), Color("#b0bec5"))
+	_plane_top(34)
+	draw_rect(Rect2(top.position.x + 4, top.position.y + 3, top.size.x - 8, 9), Color("#90a4ae"))
+	draw_rect(Rect2(top.position.x + 6, top.end.y - 10, top.size.x - 12, 7), Color("#ffffff"))
+	_plane_reset()
+	var led := _p(Vector2(top.end.x - 5, top.end.y), 30.0)
+	draw_circle(led, 1.6 * Iso.SCALE, Color(0.4, 1.0, 0.5, 0.6 + 0.4 * sin(_t * 3.0)))
+
+
+func _draw_printer() -> void:
+	var r := rect
+	_shadow(r)
+	_rr(r, 4, Color("#607d8b"))
+	_rr(r.grow(-3), 3, Color("#eceff1") if str(data.get("style", "")) != "3d" else Color("#37474f"))
+	if str(data.get("style", "")) == "3d":
+		_rr(Rect2(r.get_center() - Vector2(5, 5), Vector2(10, 10)), 2, Color("#ff7043"))
+	else:
+		draw_rect(Rect2(r.position.x + 8, r.end.y - 12, r.size.x - 16, 7), Color.WHITE)
+		draw_circle(Vector2(r.end.x - 7, r.position.y + 7), 2.0, Color(0.4, 1.0, 0.5, 0.6 + 0.4 * sin(_t * 3.0)))
+
+
+func _iso_coat_rack() -> void:
+	var c := rect.get_center()
+	_plane_top(0)
+	draw_circle(c + Vector2(1, 2), 9.0, Color(0, 0, 0, 0.18))
+	draw_circle(c, 7.0, Color("#4e342e"))
+	_plane_reset()
+	_box(Rect2(c - Vector2(1.5, 1.5), Vector2(3, 3)), 0, 52, Color("#6d4c41"), Color(0, 0, 0, 0), Color(0, 0, 0, 0), false)
+	_bb(_p(c, 52))
+	draw_colored_polygon(PackedVector2Array([Vector2(-2, 2), Vector2(-9, 5), Vector2(-11, 24), Vector2(-2, 24)]), Color("#5c6bc0"))
+	draw_colored_polygon(PackedVector2Array([Vector2(2, 2), Vector2(8, 5), Vector2(9, 19), Vector2(2, 19)]), Color("#ef6c00"))
+	draw_circle(Vector2(0, -1), 3.0, Color("#8d6e63"))
+	draw_rect(Rect2(-5, -6, 10, 3), Color("#37474f"))
+	draw_rect(Rect2(-3, -10, 6, 5), Color("#37474f"))
+	_plane_reset()
+
+
+func _draw_coat_rack() -> void:
+	var c := rect.get_center()
+	draw_circle(c + Vector2(2, 3), 9.0, Color(0, 0, 0, 0.18))
+	draw_circle(c, 8.0, Color("#4e342e"))
+	draw_circle(c + Vector2(-4, 0), 4.0, Color("#5c6bc0"))
+	draw_circle(c + Vector2(4, 1), 3.5, Color("#ef6c00"))
+	draw_circle(c, 2.5, Color("#37474f"))
+
+
+## Long tank on a cabinet; fish swim along its long axis.
+func _iso_aquarium() -> void:
+	var r := rect
+	_floor_shadow(r)
+	_box(r, 0, 18, Color("#4e342e"), Color("#5d4037"), Color("#3e2723"))
+	var g := r.grow(-1)
+	_plane_top(18)
+	draw_rect(g, Color("#d7ccc8"))  # sand
+	_plane_reset()
+	var along_x := r.size.x >= r.size.y
+	var length := r.size.x if along_x else r.size.y
+	var fish := [Color("#ff9800"), Color("#ffeb3b"), Color("#29b6f6")]
+	for i in fish.size():
+		var t := 0.5 + 0.38 * sin(_t * (0.5 + i * 0.17) + i * 2.1)
+		var dir := signf(cos(_t * (0.5 + i * 0.17) + i * 2.1))
+		var w := (g.position + Vector2(t * length, g.size.y * (0.3 + 0.2 * i))) if along_x else (g.position + Vector2(g.size.x * (0.3 + 0.2 * i), t * length))
+		var s := _p(w, 26.0 + i * 5.0 + sin(_t * 2.0 + i) * 1.5)
+		var fx := Vector2(dir, dir * 0.5) if along_x else Vector2(-dir, dir * 0.5)
+		draw_circle(s, 2.6 * Iso.SCALE * 0.7, fish[i])
+		draw_colored_polygon(PackedVector2Array([s - fx * 3.0, s - fx * 7.0 + Vector2(0, -2.5), s - fx * 7.0 + Vector2(0, 2.5)]), fish[i].darkened(0.15))
+	var bub := _p(g.get_center(), 22.0 + fmod(_t * 12.0, 22.0))
+	draw_circle(bub, 1.5, Color(1, 1, 1, 0.7))
+	_box(g, 18, 28, Color(0.6, 0.88, 1.0, 0.22), Color(0.35, 0.72, 0.95, 0.35), Color(0.3, 0.62, 0.88, 0.35), true)
+
+
+func _draw_aquarium() -> void:
+	var r := rect
+	_shadow(r)
+	_rr(r, 4, Color("#4e342e"))
+	_rr(r.grow(-3), 3, Color("#4fc3f7"))
+	var along_x := r.size.x >= r.size.y
+	var length := r.size.x if along_x else r.size.y
+	for i in 3:
+		var t := 0.5 + 0.38 * sin(_t * (0.5 + i * 0.17) + i * 2.1)
+		var p := r.position + (Vector2(t * length, r.size.y * (0.3 + 0.2 * i)) if along_x else Vector2(r.size.x * (0.3 + 0.2 * i), t * length))
+		draw_circle(p, 2.5, [Color("#ff9800"), Color("#ffeb3b"), Color("#1565c0")][i])
+
+
+## Desk mug: rounded body in a per-desk colour, coffee on top, side handle.
+## (A plain white box here read as a stray cube on every desk.)
+func _iso_mug(at: Vector2, z: float) -> void:
+	var cols := [Color("#fafafa"), Color("#ef5350"), Color("#42a5f5"), Color("#ffca28"), Color("#66bb6a"), Color("#ab47bc")]
+	var col: Color = cols[absi(hash(Vector2i(rect.position))) % cols.size()]  # desks sit on a grid: hash, not a linear mix
+	_bb(_p(at, z))
+	draw_arc(Vector2(3.6, -4.5), 2.4, -PI * 0.5, PI * 0.5, 8, col.darkened(0.15), 1.4)
+	draw_rect(Rect2(-3.6, -8.0, 7.2, 8.0), col)
+	_ellipse(Vector2(0, 0), 3.6, 1.6, col.darkened(0.2))
+	draw_rect(Rect2(-3.6, -8.0, 7.2, 7.0), col)
+	draw_rect(Rect2(-3.6, -8.0, 1.6, 7.0), col.lightened(0.25))
+	_ellipse(Vector2(0, -8.0), 3.6, 1.6, col.lightened(0.1))
+	_ellipse(Vector2(0, -8.0), 2.8, 1.1, Color("#5d4037"))
+	_plane_reset()
+
+
+func _ellipse(c: Vector2, rx: float, ry: float, col: Color) -> void:
+	var pts := PackedVector2Array()
+	for i in 14:
+		var a := TAU * i / 14.0
+		pts.append(c + Vector2(cos(a) * rx, sin(a) * ry))
+	draw_colored_polygon(pts, col)
